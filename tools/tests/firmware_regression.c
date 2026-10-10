@@ -104,7 +104,7 @@ static void service_can(void)
 {
     User_CAN_RxItem_t frame;
     while(xQueueReceive(g_can_rx_queue,&frame,0)==pdPASS) {
-        if(frame.fifo==0)User_CAN_ProcessFifo0(&frame);else User_CAN_ProcessFifo1(&frame);
+        User_CAN_ProcessFifo0(&frame);
     }
 }
 static void receive(uint16_t id,unsigned dlc,unsigned count)
@@ -128,12 +128,10 @@ static void test_can(void)
     assert(test_tx_header.StdId==0x703&&test_tx_header.DLC==2&&test_tx_data[0]==7);
     test_rx_header.RTR=1;test_rx_pending=1;invalid=g_can_rx_invalid_count;
     HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);assert(g_can_rx_invalid_count==invalid+1);
-    test_rx_header=(CAN_RxHeaderTypeDef){.StdId=0x50,.DLC=8};
-    memset(test_rx_data,0,8);test_rx_data[0]=0x55;test_rx_data[1]=0x51;test_rx_data[2]=0x34;test_rx_data[3]=0x12;
-    test_rx_pending=1;HAL_CAN_RxFifo1MsgPendingCallback(&hcan1);service_can();
-    assert(test_tx_header.StdId==0x61&&g_can_dashboard_data.imu_accel[0]==0x1234);
-    test_rx_header.DLC=2;test_rx_pending=1;invalid=g_can_rx_invalid_count;
-    HAL_CAN_RxFifo1MsgPendingCallback(&hcan1);service_can();assert(g_can_rx_invalid_count==invalid+1);
+    /* 0x050 的 IMU 设备已停用，车手屏不再转发 0x060..0x066；即使该 ID 到达也不得产生发送。 */
+    memset(test_rx_data,0,8);test_rx_data[0]=0x55;test_rx_data[1]=0x51;
+    unsigned tx_before=test_tx_count;
+    receive(0x50,8,1);service_can();assert(test_tx_count==tx_before);
     puts("CAN: bounded FIFO, queue saturation, short/remote frames, valid DLCs and steering relay passed");
 }
 /* Every DASH_VALID_* bit, for tests that feed hand-built telemetry to the UI. */

@@ -69,18 +69,6 @@ typedef struct {
 	/* DBC BO_1283 Debug3 / BO_1284 Debug4: Diagnostic_number_1~4 = AMK1~4 = RL/RR/FL/FR */
 	/* Wheel order: 0=LF, 1=LR, 2=RF, 3=RR (remapped like torque/rpm) */
 	uint32_t diag_num[4];
-	/* DBC BO_97 IMU_Accel: IMU_AccelX/Y/Z (0.00048828125,0) g */
-	int32_t imu_accel[3];
-	/* DBC BO_98 IMU_Gyro: IMU_GyroX/Y/Z (0.0610352,0) deg/s */
-	int32_t imu_gyro[3];
-	/* DBC BO_99 IMU_Roll: IMU_Angle_Roll (0.005493,0) deg */
-	int32_t imu_roll;
-	/* DBC BO_100 IMU_Pitch: IMU_Angle_Pitch (0.005493,0) deg */
-	int32_t imu_pitch;
-	/* DBC BO_101 IMU_Yaw: IMU_Angle_Yaw (0.005493,0) deg */
-	int32_t imu_yaw;
-	/* DBC BO_102 IMU_Magnetic: IMU_MagX/Y/Z (1,0) */
-	int32_t imu_mag[3];
 	/* 非DBC: 信号强度等级 */
 	int32_t signal_level;
 	/* 非DBC: 报警激活标志 */

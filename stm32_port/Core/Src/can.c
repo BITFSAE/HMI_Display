@@ -43,7 +43,7 @@ static uint8_t CAN_RxData[8];
 
 typedef struct {
   uint16_t id;
-  uint8_t dlc, bus, fifo;
+  uint8_t dlc, bus;
   uint8_t data[8];
 } User_CAN_RxItem_t;
 
@@ -58,7 +58,6 @@ volatile uint32_t g_can_rx_queue_peak;
 /* Bus-off events seen via HAL_CAN_ErrorCallback; recovery itself is ABOM in hardware. */
 volatile uint32_t g_can_bus_off_count;
 static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame);
-static void User_CAN_ProcessFifo1(const User_CAN_RxItem_t *frame);
 
 void CAN_StartServiceTask(void)
 {
@@ -93,7 +92,6 @@ static void User_CAN_ReceiveIRQ(CAN_HandleTypeDef *hcan, uint32_t fifo)
     frame.id = (uint16_t)header.StdId;
     frame.dlc = (uint8_t)header.DLC;
     frame.bus = hcan == &hcan2 ? 2U : 1U;
-    frame.fifo = fifo == CAN_RX_FIFO1 ? 1U : 0U;
     if(xQueueSendFromISR(g_can_rx_queue, &frame, &wake) != pdPASS) {
       g_can_rx_drop_count++;
     }
@@ -114,8 +112,6 @@ uint16_t CAN1_RX_MSG_ID_BANK1[4] = {0x506, 0x509, 0x508, 0x507};
 uint16_t CAN1_RX_MSG_ID_BANK2[4] = {0x503, 0x504, 0x5A0, 0x5A1};
 /* Bank4: FanController_Status(0x5A2 BO_1442), BrakePedal forward(0x306 BO_774) */
 uint16_t CAN1_RX_MSG_ID_BANK4[4] = {0x5A2, 0x306, 0x5A2, 0x306};
-/* Bank3: IMU_Raw(0x50 BO_80) -> FIFO1 */
-uint16_t CAN1_RX_MSG_ID_BANK3[4] = {0x050, 0x050, 0x050, 0x050};
 /* Bank5: Tire-temperature cells 1..16, four cells per frame. */
 uint16_t CAN1_RX_MSG_ID_BANK5[4] = {0x071, 0x072, 0x073, 0x074};
 /* Bank14: Vehicle_CanB.dbc steering wheel on CAN2 - DriveMode(0x310), SlipLevel(0x700), RecorderToggle(0x701), ErrorClear(0x702) */
@@ -561,18 +557,8 @@ void CAN1_Filter_Config(void)
 	CAN_FilterInitStructure.FilterMaskIdLow = CAN1_RX_MSG_ID_BANK4[3] << 5;
 	HAL_CAN_ConfigFilter(&hcan1, &CAN_FilterInitStructure);
 
-	/* Bank 3: IMU_Raw(0x50) -> FIFO1 */
-	CAN_FilterInitStructure.FilterBank = 0x03;
-	CAN_FilterInitStructure.FilterFIFOAssignment = CAN_FILTER_FIFO1;
-	CAN_FilterInitStructure.FilterIdHigh = CAN1_RX_MSG_ID_BANK3[0] << 5;
-	CAN_FilterInitStructure.FilterIdLow = CAN1_RX_MSG_ID_BANK3[1] << 5;
-	CAN_FilterInitStructure.FilterMaskIdHigh = CAN1_RX_MSG_ID_BANK3[2] << 5;
-	CAN_FilterInitStructure.FilterMaskIdLow = CAN1_RX_MSG_ID_BANK3[3] << 5;
-	HAL_CAN_ConfigFilter(&hcan1, &CAN_FilterInitStructure);
-
 	/* Bank 5: tire-temperature frames 0x071..0x074 -> FIFO0 */
 	CAN_FilterInitStructure.FilterBank = 0x05;
-	CAN_FilterInitStructure.FilterFIFOAssignment = CAN_FILTER_FIFO0;
 	CAN_FilterInitStructure.FilterIdHigh = CAN1_RX_MSG_ID_BANK5[0] << 5;
 	CAN_FilterInitStructure.FilterIdLow = CAN1_RX_MSG_ID_BANK5[1] << 5;
 	CAN_FilterInitStructure.FilterMaskIdHigh = CAN1_RX_MSG_ID_BANK5[2] << 5;
@@ -720,8 +706,7 @@ void CAN_ServiceTask(void *argument)
   for(;;) {
     /* Wake at least every CAN_TIMEOUT_POLL_MS so silent sources time out. */
     if(xQueueReceive(g_can_rx_queue, &frame, pdMS_TO_TICKS(CAN_TIMEOUT_POLL_MS)) == pdPASS) {
-      if(frame.fifo == 0U) User_CAN_ProcessFifo0(&frame);
-      else User_CAN_ProcessFifo1(&frame);
+      User_CAN_ProcessFifo0(&frame);
     }
     User_CAN_ServiceTimeouts(HAL_GetTick());
   }
@@ -741,7 +726,6 @@ void CAN_ServiceTask(void *argument)
  *   BO_1442 FanController_Status=0x5A2 (Fan1/2/3_RPM + PWM1/2_Duty),
  *   BO_103/104 GPS telemetry=0x067/0x068, BO_1952/1953=0x7A0/0x7A1(Display->WirelessGateway),
  *   BO_113..116 tire-temperature cells 1..16=0x071..0x074,
- *   BO_80   IMU_Raw=0x50,
  *   Vehicle_CanB.dbc BO_1792=0x700(SlipLevel), BO_1793=0x701(RecorderToggle), BO_1794=0x702(ErrorClear),
  *   all SteeringWheel->Display only; merged into BO_1795=0x703(SteeringCmd, Display->ECU)
  * Wheel order mapping: DBC {RL,RR,FL,FR}(0,1,2,3) -> Dashboard {LF,LR,RF,RR}(0,1,2,3)
@@ -1232,88 +1216,6 @@ void CAN_SendGPSTelemetry(const CAN_GPSTelemetry_t * telemetry, uint32_t frames)
   if((frames & CAN_GPS_TX_MOTION) != 0U) User_CAN_SendDlc(CAN_ID_GPS_MOTION, motion_data, 8U);
   if((frames & CAN_GPS_TX_STATUS) != 0U) User_CAN_SendDlc(CAN_ID_GPS_STATUS, status_data, 8U);
   if((frames & CAN_GPS_TX_LAP) != 0U) User_CAN_SendDlc(CAN_ID_GPS_LAP, lap_data, 8U);
-}
-
-/*
- * @func: CAN FIFO1 callback - IMU raw data relay/parse
- * DBC BO_80 IMU_Raw 0x50: IMU_Header(0|8), IMU_SubType(8|8), IMU_RawData(16|48)
- * SubType dispatches to DBC parsed messages:
- *   0x50=Time(BO_96), 0x51=Accel(BO_97), 0x52=Gyro(BO_98),
- *   0x53=Angle(BO_99~101 SubCmd 1/2/3), 0x54=Magnetic(BO_102)
- */
-void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan)
-{
-  User_CAN_ReceiveIRQ(hcan, CAN_RX_FIFO1);
-}
-
-static void User_CAN_ProcessFifo1(const User_CAN_RxItem_t *frame)
-{
-  if(frame->bus != 1U || frame->dlc != 8U) { g_can_rx_invalid_count++; return; }
-  RxHeader.StdId = frame->id;
-  RxHeader.DLC = frame->dlc;
-  for(uint32_t i = 0U; i < 8U; i++) CAN_RxData[i] = frame->data[i];
-
-	/* DBC: IMU_Header must be 0x55 */
-	if(RxHeader.StdId != 0x50U) return;
-	if(CAN_RxData[0] != 0x55U) return;
-
-	switch(CAN_RxData[1])
-	{
-	  case 0x50U:  /* DBC IMU_SubType=0x50: Time -> relay 0x60 BO_96 */
-	    User_CAN_Send_sq(0x60, CAN_RxData);
-	    break;
-	  case 0x51U:  /* DBC IMU_SubType=0x51: Accel -> relay 0x61 BO_97 */
-	  {
-	    User_CAN_Send_sq(0x61, CAN_RxData);
-	    /* DBC BO_97: IMU_AccelX(0|16), IMU_AccelY(16|16), IMU_AccelZ(32|16), raw int16 */
-	    g_can_dashboard_data.imu_accel[0] = (int32_t)(int16_t)(CAN_RxData[2] | ((uint16_t)CAN_RxData[3] << 8));
-	    g_can_dashboard_data.imu_accel[1] = (int32_t)(int16_t)(CAN_RxData[4] | ((uint16_t)CAN_RxData[5] << 8));
-	    g_can_dashboard_data.imu_accel[2] = (int32_t)(int16_t)(CAN_RxData[6] | ((uint16_t)CAN_RxData[7] << 8));
-	    break;
-	  }
-	  case 0x52U:  /* DBC IMU_SubType=0x52: Gyro -> relay 0x62 BO_98 */
-	  {
-	    User_CAN_Send_sq(0x62, CAN_RxData);
-	    /* DBC BO_98: IMU_GyroX(0|16), IMU_GyroY(16|16), IMU_GyroZ(32|16), raw int16 */
-	    g_can_dashboard_data.imu_gyro[0] = (int32_t)(int16_t)(CAN_RxData[2] | ((uint16_t)CAN_RxData[3] << 8));
-	    g_can_dashboard_data.imu_gyro[1] = (int32_t)(int16_t)(CAN_RxData[4] | ((uint16_t)CAN_RxData[5] << 8));
-	    g_can_dashboard_data.imu_gyro[2] = (int32_t)(int16_t)(CAN_RxData[6] | ((uint16_t)CAN_RxData[7] << 8));
-	    break;
-	  }
-	  case 0x53U:  /* DBC IMU_SubType=0x53: Angle(SubCmd) -> relay 0x63/0x64/0x65 BO_99/100/101 */
-	  {
-	    if(CAN_RxData[2] == 0x01U)
-	    {
-	      User_CAN_Send_sq(0x63, CAN_RxData);
-	      /* DBC BO_99 IMU_Roll: IMU_Angle_Roll(0|16), TODO: verify byte offset with IMU firmware */
-	      g_can_dashboard_data.imu_roll = (int32_t)(int16_t)(CAN_RxData[2] | ((uint16_t)CAN_RxData[3] << 8));
-	    }
-	    else if(CAN_RxData[2] == 0x02U)
-	    {
-	      User_CAN_Send_sq(0x64, CAN_RxData);
-	      /* DBC BO_100 IMU_Pitch: IMU_Angle_Pitch(0|16), TODO: verify byte offset with IMU firmware */
-	      g_can_dashboard_data.imu_pitch = (int32_t)(int16_t)(CAN_RxData[2] | ((uint16_t)CAN_RxData[3] << 8));
-	    }
-	    else if(CAN_RxData[2] == 0x03U)
-	    {
-	      User_CAN_Send_sq(0x65, CAN_RxData);
-	      /* DBC BO_101 IMU_Yaw: IMU_Angle_Yaw(0|16), TODO: verify byte offset with IMU firmware */
-	      g_can_dashboard_data.imu_yaw = (int32_t)(int16_t)(CAN_RxData[2] | ((uint16_t)CAN_RxData[3] << 8));
-	    }
-	    break;
-	  }
-	  case 0x54U:  /* DBC IMU_SubType=0x54: Magnetic -> relay 0x66 BO_102 */
-	  {
-	    User_CAN_Send_sq(0x66, CAN_RxData);
-	    /* DBC BO_102: IMU_MagX(0|16), IMU_MagY(16|16), IMU_MagZ(32|16), raw int16 */
-	    g_can_dashboard_data.imu_mag[0] = (int32_t)(int16_t)(CAN_RxData[2] | ((uint16_t)CAN_RxData[3] << 8));
-	    g_can_dashboard_data.imu_mag[1] = (int32_t)(int16_t)(CAN_RxData[4] | ((uint16_t)CAN_RxData[5] << 8));
-	    g_can_dashboard_data.imu_mag[2] = (int32_t)(int16_t)(CAN_RxData[6] | ((uint16_t)CAN_RxData[7] << 8));
-	    break;
-	  }
-	  default:
-	    break;
-	}
 }
 
 /* USER CODE END 1 */

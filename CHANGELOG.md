@@ -6,13 +6,24 @@
 
 均已对照 2026-10-10 的代码核对，尚未处理。
 
-- **CANB 接口登记**：`0x102` 心跳、IMU 转发帧 DLC 与布局、IMU 角度字节偏移、`0x050` 发送节点与中央库不一致，明细见 [`docs/can_interface.md`](docs/can_interface.md#与中央库尚未对齐的部分)。涉及外部消费的帧，先在 `vehicle-interfaces` 评审，再改本仓库。
+- **`0x102` 心跳**：中央库未登记，工作区内所有固件也没有接收方（来自旧版 F103 板）。确认是否保留；不用则从固件去掉，要用则先在 `vehicle-interfaces` 登记。明细见 [`docs/can_interface.md`](docs/can_interface.md#与中央库尚未对齐的部分)。
 - **GPS 接收机持久设置**：`gps.c` 每次上电都发 `SAVECONFIG`，每次开机写一次 UM982 非易失存储，需评估写入寿命，或只在配置变化时保存。
 - **模拟器与真机配置不一致**：模拟器根目录 `lv_conf.h` 为 32 位色、LVGL 池 1 MB；真机为 RGB565、60 KiB（CCM）。界面已共用 `dashboard_view.c`，但内存预算仍无法在模拟器上验证。
 - **背光点亮时机**：代码上背光在 `Dashboard_UI_Init` 末尾由 TIM14 PWM 以 100% 点亮，早于随后 `lv_refr_now` 的首帧，而 `main.c` 原注释称「首帧后开背光」。上板确认开机是否闪现未刷新的 GRAM 内容，必要时把 PWM 启动移到首帧之后。
 - **未使用或用途不明的外设**：USART1、USART6 已初始化但应用层未使用；PC2（输入）、PC3（输出）`.ioc` 无标签、代码未引用。确认后可从 `.ioc` 移除或补充标签。
 - **缺少自动化用例**：圈速过线、冲刺计时的几何判断没有回归用例。
 - **体积较大的源文件**：`dashboard_ui.c`、`can.c`（CubeMX 生成文件的 USER 区内承载了解码、转发和 GPS 遥测）建议拆成独立模块。
+
+## 2026-10-10 停用 IMU 接收与转发
+
+`0x050` 的 IMU 设备已不存在，车手屏不再接收 `0x050`，也不再向 CANB 发 `0x060..0x066`。
+
+- `can.c`：删除 CAN1 过滤器 bank3、FIFO1 回调与 IMU 解析转发；队列项去掉 `fifo` 字段。`main.c` 不再开启 FIFO1 接收通知。`dashboard_ui.h` 删除未被界面使用的 `imu_*` 字段。
+- `docs/can_interface.md`：删除 IMU 的接收、发送和「尚未对齐」条目，过滤器表去掉 FIFO 列。
+- 回归测试：原 `0x050` 转发断言改为「`0x050` 到达不产生发送」。
+- 已验证：`./build_fw.sh` 通过且无警告，Flash 243,236 B（61.9%）、主 SRAM 92,032 B（70.2%）、CCM 61,440 B（93.8%）；`python3 tools/run_firmware_tests.py` 通过。`./run_sim_mac.sh --build-only` 无需重编（模拟器不含 `can.c`）。
+- 未验证：CubeIDE 完整构建；上板后 CAN1 的 FIFO1 中断确实不再触发；`CAN1_RX1_IRQn` 仍由 `.ioc` 使能，未改。
+- 中央库 `vehicle-interfaces` 同步删除 `0x050`、`0x060..0x066`（分支 `can/retire-imu-0x050`），网关 `CANRS485_G473`、`CAN2RS485` 同步删除对应处理，见各仓库的更新记录。
 
 ## 2026-10-10 仓库整理
 
