@@ -10,10 +10,24 @@
 | `src/`、`CMakeLists.txt`、`config/`、`lv_conf.h`、`run_sim_mac.sh` | PC/macOS 模拟器（SDL2 + FreeRTOS） |
 | `build_fw.sh`、`build_fw.mk` | 固件命令行构建 |
 | `tools/` | 字体和 Logo 生成、固件内存报告、固件回归测试、GPS 测试数据生成（`gen_nmea.py`，输出 UM982 NMEA 测试语句） |
-| `docs/` | 设计与参考文档，`docs/reference/` 放 Unicore（UM982）命令手册 |
+| `docs/` | 设计与参考文档，索引见下节 |
 | `legacy/` | 不参与构建的遗留与参考资料，含旧版 F103 板（另一个 `.ioc`），见 [legacy/README.md](legacy/README.md) |
 | `lvgl/`、`FreeRTOS/`、`SDL2-2.32.10/` | 第三方源码，见下节 |
 | `simulator.code-workspace`、`lv_conf.defaults`、`licence.txt` | 上游 `lv_port_pc_vscode` 遗留：前者是 Windows 旧流程的工作区文件，含作者本机路径（`cmake.cmakePath`、构建任务），需自行修改才能用；`lv_conf.defaults` 未被构建引用；`licence.txt` 是上游 MIT 许可证 |
+
+### 文档索引
+
+| 文档 | 内容 |
+| --- | --- |
+| [硬件映射](docs/hardware.md) | 时钟、引脚、CAN 位时序、FSMC 读写时序、背光、触摸、指示灯编码、与 `.ioc` 的有意差异 |
+| [CAN 接口](docs/can_interface.md) | CAN1/CAN2 收发全表、超时与有效性、方向盘帧处理、发送队列、与中央库未对齐项 |
+| [配置表](docs/configuration.md) | GPS、圈速、CAN、显示与实时的可调常量：位置、单位、影响 |
+| [GPS、圈速与冲刺](docs/gps_lap.md) | NMEA 处理、信号等级、里程、过线检测、75 m 冲刺、模式锁、降级行为 |
+| [仪表盘界面](docs/dashboard_ui.md) | 布局、触摸区域、绘制约束、字库与 Logo、验证命令 |
+| [固件资源与性能优化](docs/firmware_optimization.md) | Flash/SRAM/CCM 预算、任务与栈、运行诊断 |
+| [里程存储](docs/odometer_storage.md) | 内部 Flash 扇区 7 的记录格式与掉电行为 |
+| [更新记录](CHANGELOG.md) | 完成的变更、未验证项与待办 |
+| `docs/reference/` | Unicore（UM982）高精度产品命令手册 PDF |
 
 ### 第三方源码
 
@@ -234,53 +248,3 @@ int main(void) {
     /* ... rest of your application ...*/
 }
 ```
-
-## 仪表盘显示项与 CAN 数据来源
-
-PC 模拟器（`src/freertos_main.c`，只负责演示数据和窗口）与 STM32F407 真机固件（`stm32_port/`）共用 `dashboard_view.c` 这一套界面。
-CAN 接口以 [vehicle-interfaces](https://github.com/BITFSAE/vehicle-interfaces) 仓库 `can/Vehicle_CanB.dbc` 和 `docs/CANB接口.md` 为准，与本仓库同级存放时路径为 `../vehicle-interfaces/can/Vehicle_CanB.dbc`；本仓库不再保留 DBC 副本。Display 发送的 GPS 帧（`0x301/0x067/0x068` 每 50 ms，`0x7A0` 每 500 ms，`0x7A1` 每 200 ms）已在该仓库登记为 Display 已确认，对应分支 `can/display-gps-telemetry`，合并后以 `main` 提交号为准。
-
-| 显示项 | 报文 | 说明 |
-| --- | --- | --- |
-| 高压总压/总流/SOC | 0x4B0 BMS_PackStatus | 右上 HV / SOC；按 byte5 bit0/1/2 分别判定电压/电流/SOC 有效，无效显示 `--`（bit3/4 为单体、温度完整位，与这三项无关）。电流充电为正、放电为负，显示原值 |
-| 整车功率 | 由 0x4B0 计算 | PWR / PK；P = −V×I（放电为正），充电和回收显示 0；电压、电流任一无效则 `--` |
-| 油门开度 | 0x305 DataLogger APS_OpenPct | 中央大速度数字右侧绿色条 |
-| 刹车开度 | 0x306 BrakePedal_0x306（ECU 网关转发 CANC 0x270 IBS_Info） | 中央大速度数字左侧红色条；源信号为 WCBS AB_BrkPdlPct，20ms |
-| 四电机扭矩/转速/温度 | 0x502 / 0x505 / 0x506 | 底部四列 T / N / Tm |
-| 逆变器温度 | 0x507 Debug7 Inverter_temperature | 底部 Ti，按温度着色 |
-| IGBT 温度 | 0x508 Debug8 | 参与右上面板 MAX T 计算 |
-| 四电机报错码 | 0x503 / 0x504 Diagnostic_number | 底部 E 行，非零红色显示低 16 位。`Diagnostic_number_1..4` = AMK1..4 = RL/RR/FL/FR，与扭矩、转速同一套轮位重映射 |
-| 低压电压/电流/功率 | 0x5A0 PDM_LowVoltageBus | 右上 LV V / LV A / LV W；四个字段同时为占位值（0x7FFF/0x7FFF/0xFFFF/0xFFFF）表示 INA226 离线，显示 `--` |
-| 低压电池侧（备用） | 0x5A1 PDM_LowVoltageBattery | 已解析，UI 显示母线值 |
-| 三风扇转速 + PWM 占空比 | 0x5A2 FanController_Status | 右上 F1/F2/F3；DBC 仅两路实测占空比，F3 显示 `--` |
-| MAX T | 0x506/0x507/0x508 取最大 | 电机/逆变器/IGBT 四轮最大值 |
-
-CAN1 过滤器为 ID 白名单模式（`can.c` 中 `CAN1_RX_MSG_ID_BANK*`），新增接收 ID 时需同步更新过滤器表。
-
-### 数据有效性与超时
-
-`dashboard_data_t.valid_mask` 按报文族记录有效位（`DASH_VALID_*`）。上电时全部为 0，对应数值显示 `--`（踏板条清空），收到有效帧后才显示；源帧自报无效（0x4B0 有效位、PDM 离线占位）或超时同样回到 `--`。CAN 任务至少每 100 ms 唤醒一次检查超时：
-
-| 报文 | 超时 |
-| --- | --- |
-| 0x4B0（500 ms） | 2000 ms |
-| 0x5A0、0x5A2（100 ms） | 1500 ms（`CANB接口.md` 第 8.2 节的失联门限） |
-| ECU 0x305/0x306/0x502..0x509 | 1000 ms（周期仍为暂定值，故取宽松门限） |
-
-TMAX 只统计新鲜的电机/逆变器/IGBT 温度，全部失效时显示 `--`。胎温 0x071..0x074 周期未登记，暂无超时。
-
-### 方向盘帧（CAN2）
-
-- `0x310`：只接受 byte0 为 ASCII `0`..`3`（48..51），其余丢弃，不转发也不显示。
-- `0x700`：滑级超出 0..7 的帧丢弃，不发 `0x703`。
-- `0x701/0x702`：只在上升沿动作（DBC 约定）。上一帧为 0，或上一个 1 帧距今超过 300 ms，才算一次新按下；按住期间的重复帧不再触发。方向盘实际是单帧还是重复发送、是否发 0 帧尚未确认，300 ms 是兼容两种发送方式的假设。
-- `0x703` 的滑级在收到第一个有效 `0x700` 之前为 0；协议没有「滑级未知」的编码。
-
-### CAN 控制器
-
-CAN1、CAN2 均为 500 kbit/s，开启自动重传（NART 关）和自动 bus-off 恢复（ABOM），在 CubeMX 工程里设置。总线繁忙时低优先级帧（`0x703`、`0x7A0/0x7A1`）仲裁失败会自动重发，不再直接丢失；bus-off 由硬件恢复，`g_can_bus_off_count` 记录发生次数。无节点应答（台架单机）时发送邮箱会持续重试，软件队列满后丢新帧并计入 `g_user_can_tx_drop_count`，总线接上后先发出积压的旧帧。
-
-
-### 夜间模式
-
-左侧面板底部的圆形眼睛图标（日间睛开/夜间闭眼）：触摸后背光降至 45%，再触恢复。真机由 PF9 改接 TIM14_CH1 1kHz PWM 控制（用户代码区初始化，不依赖 CubeMX 重生）；模拟器用全屏 55% 黑色遮罩模拟，键盘 n 键可切换。
