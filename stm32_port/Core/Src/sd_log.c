@@ -1,9 +1,12 @@
+/* USER CODE BEGIN sd_log */
 #include "sd_log.h"
 #include "fatfs.h"
 #include "sdio.h"
 #include "main.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "semphr.h"
+#include "firmware_diag.h"
 
 static const char g_test_text[] = "Manba Outlaws\r\nSD OK\r\n";
 
@@ -30,6 +33,18 @@ static StackType_t g_sd_odometer_task_stack[768U];
 static volatile uint32_t g_sd_odometer_pending_m;
 static volatile uint8_t g_sd_odometer_save_pending;
 static uint32_t g_sd_odometer_sequence;
+static StaticSemaphore_t g_sd_mutex_control;
+static SemaphoreHandle_t g_sd_mutex;
+static uint32_t g_sd_initial_odometer_m;
+static volatile uint8_t g_sd_initial_odometer_ready;
+volatile uint32_t g_sd_odometer_save_fail_count;
+
+static uint8_t sd_lock(void)
+{
+    if(g_sd_mutex == NULL) return 0U;
+    return xSemaphoreTake(g_sd_mutex, portMAX_DELAY) == pdTRUE;
+}
+
 
 static uint32_t sd_odometer_checksum(uint32_t sequence, uint32_t total_m)
 {
@@ -57,7 +72,7 @@ static uint8_t sd_odometer_read_file(const char * path,
     return 1U;
 }
 
-uint8_t SD_Odometer_Load(uint32_t * total_m)
+static uint8_t sd_odometer_load_locked(uint32_t * total_m)
 {
     sd_odometer_record_t record_a;
     sd_odometer_record_t record_b;
@@ -86,7 +101,15 @@ uint8_t SD_Odometer_Load(uint32_t * total_m)
     return 0U;
 }
 
-static uint8_t sd_odometer_save(uint32_t total_m)
+uint8_t SD_Odometer_Load(uint32_t *total_m)
+{
+    if(sd_lock() == 0U) return 0U;
+    uint8_t loaded = sd_odometer_load_locked(total_m);
+    (void)xSemaphoreGive(g_sd_mutex);
+    return loaded;
+}
+
+static uint8_t sd_odometer_save_locked(uint32_t total_m)
 {
     sd_odometer_record_t record;
     const char * path;
@@ -121,11 +144,40 @@ static uint8_t sd_odometer_save(uint32_t total_m)
     return 1U;
 }
 
+static uint8_t sd_odometer_save(uint32_t total_m)
+{
+    if(sd_lock() == 0U) return 0U;
+    uint8_t saved = sd_odometer_save_locked(total_m);
+    (void)xSemaphoreGive(g_sd_mutex);
+    return saved;
+}
+
+static void sd_odometer_initialize(void)
+{
+    uint32_t total_m = 0U;
+    (void)SD_Odometer_Load(&total_m);
+    taskENTER_CRITICAL();
+    g_sd_initial_odometer_m = total_m;
+    g_sd_initial_odometer_ready = 1U;
+    taskEXIT_CRITICAL();
+}
+
+uint8_t SD_Odometer_GetInitial(uint32_t *total_m)
+{
+    if(total_m == NULL || g_sd_initial_odometer_ready == 0U) return 0U;
+    taskENTER_CRITICAL();
+    *total_m = g_sd_initial_odometer_m;
+    taskEXIT_CRITICAL();
+    return 1U;
+}
+
 static void SD_Odometer_Task(void * argument)
 {
     uint32_t pending_m;
 
     (void)argument;
+    sd_odometer_initialize();
+    SD_Log_InitAndWrite(NULL);
     for(;;) {
         vTaskDelay(pdMS_TO_TICKS(1000U));
         if(g_sd_odometer_save_pending == 0U) continue;
@@ -141,6 +193,7 @@ static void SD_Odometer_Task(void * argument)
             taskEXIT_CRITICAL();
         }
         else {
+            g_sd_odometer_save_fail_count++;
             /* Missing or faulty cards are retried slowly without blocking GPS. */
             vTaskDelay(pdMS_TO_TICKS(9000U));
         }
@@ -150,10 +203,13 @@ static void SD_Odometer_Task(void * argument)
 void SD_Odometer_StartTask(void)
 {
     if(g_sd_odometer_task_handle != NULL) return;
+    g_sd_mutex = xSemaphoreCreateMutexStatic(&g_sd_mutex_control);
+    configASSERT(g_sd_mutex != NULL);
     g_sd_odometer_task_handle =
         xTaskCreateStatic(SD_Odometer_Task, "ODO_Save", 768U, NULL,
                           tskIDLE_PRIORITY + 1U, g_sd_odometer_task_stack,
                           &g_sd_odometer_task_control);
+    Firmware_Diag_RegisterTask(FW_TASK_SD, g_sd_odometer_task_handle, "SD", sizeof(g_sd_odometer_task_stack));
 }
 
 void SD_Odometer_RequestSave(uint32_t total_m)
@@ -166,7 +222,7 @@ void SD_Odometer_RequestSave(uint32_t total_m)
 
 static void led_red_on(void)  { HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET); }
 
-void SD_Log_InitAndWrite(const dashboard_data_t * data)
+static void sd_log_init_and_write_locked(const dashboard_data_t * data)
 {
     FRESULT fr = FR_OK;
     FIL     fil;
@@ -237,7 +293,7 @@ void SD_Log_InitAndWrite(const dashboard_data_t * data)
 
     /* success: green off -> on (visible change) */
     HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_RESET);
-    HAL_Delay(300);
+    vTaskDelay(pdMS_TO_TICKS(300U));
     HAL_GPIO_WritePin(LED_GREEN_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_SET);
     return;
 
@@ -249,3 +305,11 @@ log_failed:
     (void)f_mount(NULL, SDPath, 0);
     led_red_on();
 }
+
+void SD_Log_InitAndWrite(const dashboard_data_t *data)
+{
+    if(sd_lock() == 0U) return;
+    sd_log_init_and_write_locked(data);
+    (void)xSemaphoreGive(g_sd_mutex);
+}
+/* USER CODE END sd_log */

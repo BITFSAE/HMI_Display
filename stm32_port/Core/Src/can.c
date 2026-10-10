@@ -23,6 +23,10 @@
 /* USER CODE BEGIN Includes */
 #include "cmsis_os2.h"
 #include "dashboard_ui.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+#include "firmware_diag.h"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN 0 */
@@ -31,8 +35,72 @@ uint8_t CAN_TxData[] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 };
 uint32_t CAN1_TxMail;
 uint32_t CAN1_ID = 0x102;
 static uint8_t g_can_heartbeat_counter;
-CAN_RxHeaderTypeDef RxHeader;
-uint8_t CAN_RxData[8] = { 0 };
+/* Only the CAN service task owns the decode workspace. IRQs enqueue compact
+ * frames, never scan dashboard state or run protocol/UI logic. */
+static CAN_RxHeaderTypeDef RxHeader;
+static uint8_t CAN_RxData[8];
+#define USER_CAN_RX_QUEUE_CAPACITY 64U
+
+typedef struct {
+  uint16_t id;
+  uint8_t dlc, bus, fifo;
+  uint8_t data[8];
+} User_CAN_RxItem_t;
+
+static StaticQueue_t g_can_rx_queue_control;
+static uint8_t g_can_rx_queue_storage[USER_CAN_RX_QUEUE_CAPACITY * sizeof(User_CAN_RxItem_t)];
+static QueueHandle_t g_can_rx_queue;
+static StaticTask_t g_can_task_control;
+static StackType_t g_can_task_stack[1024U];
+volatile uint32_t g_can_rx_drop_count;
+volatile uint32_t g_can_rx_invalid_count;
+volatile uint32_t g_can_rx_queue_peak;
+static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame);
+static void User_CAN_ProcessFifo1(const User_CAN_RxItem_t *frame);
+
+void CAN_StartServiceTask(void)
+{
+  g_can_rx_queue = xQueueCreateStatic(USER_CAN_RX_QUEUE_CAPACITY, sizeof(User_CAN_RxItem_t),
+                                     g_can_rx_queue_storage, &g_can_rx_queue_control);
+  configASSERT(g_can_rx_queue != NULL);
+  TaskHandle_t handle = xTaskCreateStatic(CAN_ServiceTask, "CAN", 1024U, NULL,
+                                          (UBaseType_t)osPriorityNormal + 2U,
+                                          g_can_task_stack, &g_can_task_control);
+  Firmware_Diag_RegisterTask(FW_TASK_CAN, handle, "CAN", sizeof(g_can_task_stack));
+}
+
+/* Capture at most the FIFO occupancy seen on entry (hardware depth is three).
+ * No unbounded drain loop can keep the CPU trapped in a busy-bus interrupt. */
+static void User_CAN_ReceiveIRQ(CAN_HandleTypeDef *hcan, uint32_t fifo)
+{
+  BaseType_t wake = pdFALSE;
+  uint32_t count = HAL_CAN_GetRxFifoFillLevel(hcan, fifo);
+  if(count > 3U) count = 3U;
+  for(uint32_t i = 0U; i < count; i++) {
+    CAN_RxHeaderTypeDef header;
+    User_CAN_RxItem_t frame = {0};
+    if(HAL_CAN_GetRxMessage(hcan, fifo, &header, frame.data) != HAL_OK) {
+      g_can_rx_invalid_count++;
+      break;
+    }
+    if(header.IDE != CAN_ID_STD || header.RTR != CAN_RTR_DATA || header.DLC > 8U) {
+      g_can_rx_invalid_count++;
+      continue;
+    }
+    if(g_can_rx_queue == NULL || Dashboard_UI_IsStartupComplete() == 0U) continue;
+    frame.id = (uint16_t)header.StdId;
+    frame.dlc = (uint8_t)header.DLC;
+    frame.bus = hcan == &hcan2 ? 2U : 1U;
+    frame.fifo = fifo == CAN_RX_FIFO1 ? 1U : 0U;
+    if(xQueueSendFromISR(g_can_rx_queue, &frame, &wake) != pdPASS) {
+      g_can_rx_drop_count++;
+    }
+    uint32_t depth = uxQueueMessagesWaitingFromISR(g_can_rx_queue);
+    if(depth > g_can_rx_queue_peak) g_can_rx_queue_peak = depth;
+  }
+  portYIELD_FROM_ISR(wake);
+}
+
 /* DBC Vehicle_CanB.dbc filter ID list */
 /* Bank0: BMS_PackStatus(0x4B0 BO_1200), DataLogger(0x305 BO_773), Debug2_Torque(0x502 BO_1282), Debug5_Velocity(0x505 BO_1285) */
 uint16_t CAN1_RX_MSG_ID_BANK0[4] = {0x4B0, 0x305, 0x502, 0x505};
@@ -540,12 +608,13 @@ void CAN1_SendHeartbeat(void)
 void CAN_ServiceTask(void *argument)
 {
   /* USER CODE BEGIN CAN_ServiceTask */
+  User_CAN_RxItem_t frame;
   (void)argument;
-
-  for(;;)
-  {
-    /* CAN service task - currently handled in interrupts */
-    osDelay(1000);
+  for(;;) {
+    if(xQueueReceive(g_can_rx_queue, &frame, portMAX_DELAY) == pdPASS) {
+      if(frame.fifo == 0U) User_CAN_ProcessFifo0(&frame);
+      else User_CAN_ProcessFifo1(&frame);
+    }
   }
   /* USER CODE END CAN_ServiceTask */
 }
@@ -675,31 +744,27 @@ static void User_CAN_HandleSteeringWheel(const CAN_RxHeaderTypeDef * rx,
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
-	/* CAN2 is the steering-wheel bus: relay to CAN1 and update the dashboard. */
-	if(hcan == &hcan2)
-	{
-		CAN_RxHeaderTypeDef rx2;
-		uint8_t data2[8] = {0};
-		if(HAL_CAN_GetRxMessage(hcan, CAN_FILTER_FIFO0, &rx2, data2) != HAL_OK)
-		{
-			Error_Handler();
-		}
-		if(Dashboard_UI_IsStartupComplete() == 0U) {
-			return;
-		}
-		User_CAN_HandleSteeringWheel(&rx2, data2);
-		return;
-	}
+  User_CAN_ReceiveIRQ(hcan, CAN_RX_FIFO0);
+}
 
-	if(HAL_CAN_GetRxMessage(hcan, CAN_FILTER_FIFO0, &RxHeader, CAN_RxData)!= HAL_OK)
-	{
-		Error_Handler();
-	}
-	/* Empty the hardware FIFO during startup, but do not let vehicle traffic
-	 * alter UI/application state until the boot animation is fully complete. */
-	if(Dashboard_UI_IsStartupComplete() == 0U) {
-		return;
-	}
+static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
+{
+  RxHeader.StdId = frame->id;
+  RxHeader.DLC = frame->dlc;
+  if(frame->bus == 2U) {
+    if(frame->dlc < 1U) { g_can_rx_invalid_count++; return; }
+    User_CAN_HandleSteeringWheel(&RxHeader, frame->data);
+    return;
+  }
+  uint32_t min_dlc = 8U;
+  switch(frame->id) {
+    case 0x4B0: min_dlc = 7U; break;
+    case 0x305: min_dlc = 6U; break;
+    case 0x509: min_dlc = 5U; break;
+    default: break;
+  }
+  if(frame->dlc < min_dlc) { g_can_rx_invalid_count++; return; }
+  for(uint32_t i = 0U; i < 8U; i++) CAN_RxData[i] = frame->data[i];
 
 	switch(RxHeader.StdId)
 	{
@@ -1037,10 +1102,15 @@ void CAN_SendGPSTelemetry(const CAN_GPSTelemetry_t * telemetry)
  */
 void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
-	if(HAL_CAN_GetRxMessage(hcan, CAN_FILTER_FIFO1, &RxHeader, CAN_RxData)!= HAL_OK)
-	{
-		Error_Handler();
-	}
+  User_CAN_ReceiveIRQ(hcan, CAN_RX_FIFO1);
+}
+
+static void User_CAN_ProcessFifo1(const User_CAN_RxItem_t *frame)
+{
+  if(frame->bus != 1U || frame->dlc != 8U) { g_can_rx_invalid_count++; return; }
+  RxHeader.StdId = frame->id;
+  RxHeader.DLC = frame->dlc;
+  for(uint32_t i = 0U; i < 8U; i++) CAN_RxData[i] = frame->data[i];
 
 	/* DBC: IMU_Header must be 0x55 */
 	if(RxHeader.StdId != 0x50U) return;

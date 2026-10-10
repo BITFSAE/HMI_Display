@@ -42,6 +42,11 @@ _estack = ORIGIN(RAM) + LENGTH(RAM); /* end of "RAM" Ram type memory */
 _Min_Heap_Size = 0x200; /* required amount of heap */
 _Min_Stack_Size = 0x400; /* required amount of stack */
 
+/* USER CODE BEGIN MSP_Stack */
+/* Resolve this before SECTIONS so ld accounts for the complete reservation. */
+_Min_Stack_Size = 0x2000;
+/* USER CODE END MSP_Stack */
+
 /* Memories definition */
 MEMORY
 {
@@ -207,3 +212,11 @@ SECTIONS
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
 }
+
+/* USER CODE BEGIN Memory_Budget */
+/* Boot/HAL and nested IRQs use MSP. UI rendering uses its own task stack. */
+ASSERT(_ebss + _Min_Heap_Size + _Min_Stack_Size <= _estack,
+       "Main SRAM cannot accommodate heap and 8 KiB MSP reservation")
+/* LVGL owns [0x10000000, 0x1000f000) through LV_MEM_ADR, outside sections. */
+ASSERT(SIZEOF(.ccmram) == 0, "CCMRAM is reserved for the LVGL memory pool")
+/* USER CODE END Memory_Budget */

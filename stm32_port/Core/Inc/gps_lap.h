@@ -1,3 +1,4 @@
+/* USER CODE BEGIN gps_lap */
 #ifndef __GPS_LAP_H
 #define __GPS_LAP_H
 
@@ -28,6 +29,7 @@ typedef struct {
 
 #if GPS_LAP_ENABLE
 
+void GPS_Lap_InitLock(void);
 void GPS_Lap_SetStartLine(float lat, float lon, float track);
 void GPS_Lap_SetFinishLine(float lat, float lon, float track);
 uint8_t GPS_Lap_StartAtCurrent(const GPS_Data_t * data);
@@ -79,3 +81,5 @@ int32_t GPS_Lap_GetCurrentLapNum(void);
 void GPS_LapProcess(const GPS_Data_t * data);
 
 #endif
+
+/* USER CODE END gps_lap */

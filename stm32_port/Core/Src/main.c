@@ -35,6 +35,7 @@
 #include "../lvgl/lvgl.h"
 #include "dashboard_ui.h"
 #include "sd_log.h"
+#include "firmware_diag.h"
 
 /* USER CODE END Includes */
 
@@ -141,8 +142,7 @@ static void LCD_SetAddressWindow(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t
   LCD_REG = 0x2C;
 }
 
-/* The Debug configuration builds at -O0. Keep the hot FSMC pixel loop locally
- * optimized so UI refresh bandwidth does not depend on the IDE build profile. */
+/* Keep the hot FSMC loop optimized independently of the build profile. */
 static void __attribute__((optimize("O3")))
 LCD_WritePixels(const uint16_t * colors, uint32_t pixel_count)
 {
@@ -242,12 +242,18 @@ void LED_Diag_SetBootStage(uint8_t stage)
 
 static void lvgl_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
 {
+  uint32_t start_cycles = DWT->CYCCNT;
   uint32_t width = (uint32_t)(area->x2 - area->x1 + 1);
   uint32_t height = (uint32_t)(area->y2 - area->y1 + 1);
 
   LCD_SetAddressWindow((uint16_t)area->x1, (uint16_t)area->y1, (uint16_t)area->x2, (uint16_t)area->y2);
   LCD_WritePixels((const uint16_t *)px_map, width * height);
   g_lvgl_flush_count++;
+  g_firmware_diag.flushed_pixels += width * height;
+  uint32_t elapsed_cycles = DWT->CYCCNT - start_cycles;
+  if(elapsed_cycles > g_firmware_diag.flush_max_cycles) {
+    g_firmware_diag.flush_max_cycles = elapsed_cycles;
+  }
   lv_display_flush_ready(disp);
 }
 
@@ -268,6 +274,7 @@ void LVGL_Port_Init(void)
   Dashboard_UI_Init();
   lv_refr_now(g_lvgl_display);
   LED_Diag_SetBootStage(2);
+  LCD_Backlight_On();
 }
 
 // 2. 商家标准的 SSD1963 初始化序列
@@ -439,9 +446,8 @@ int main(void)
   SSD1963_HardReset();
   SSD1963_Init();
   LED_Diag_SetBootStage(1);
-  LVGL_Port_Init();
-  HAL_Delay(10);
-  LCD_Backlight_On();
+  Firmware_Diag_Init();
+  /* The Dashboard task initializes LVGL and enables backlight after its first frame. */
 #endif
   /* USER CODE END 2 */
 

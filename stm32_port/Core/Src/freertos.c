@@ -32,8 +32,9 @@
 #include "touch.h"
 #include "gps.h"
 #include "sd_log.h"
+#include "firmware_diag.h"
 
-extern void LCD_FillColor(uint16_t color);
+extern void LVGL_Port_Init(void);
 extern volatile uint32_t g_lvgl_flush_count;
 /* USER CODE END Includes */
 
@@ -55,7 +56,7 @@ extern volatile uint32_t g_lvgl_flush_count;
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 
-#define DASHBOARD_TASK_STACK_WORDS 2048U
+#define DASHBOARD_TASK_STACK_WORDS 3072U
 
 static StaticTask_t g_dashboard_task_control;
 static StackType_t g_dashboard_task_stack[DASHBOARD_TASK_STACK_WORDS];
@@ -64,9 +65,14 @@ static TaskHandle_t g_dashboard_task_handle;
 volatile uint32_t g_freertos_fault_code;
 volatile const char * g_freertos_fault_task_name;
 
+static StaticTask_t g_touch_task_control;
+static StackType_t g_touch_task_stack[1024U];
 osThreadId_t touchTaskHandle;
 const osThreadAttr_t touchTask_attributes = {
   .name = "touchTask",
+  .cb_mem = &g_touch_task_control,
+  .cb_size = sizeof(g_touch_task_control),
+  .stack_mem = g_touch_task_stack,
   .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
@@ -123,7 +129,10 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* creation of touchTask */
+  configASSERT(defaultTaskHandle != NULL);
   touchTaskHandle = osThreadNew(Touch_ServiceTask, NULL, &touchTask_attributes);
+  Firmware_Diag_RegisterTask(FW_TASK_TOUCH, touchTaskHandle, "Touch", sizeof(g_touch_task_stack));
+  CAN_StartServiceTask();
   GPS_Init();
   /* USER CODE END RTOS_THREADS */
 
@@ -145,9 +154,8 @@ void StartDefaultTask(void *argument)
   /* USER CODE BEGIN StartDefaultTask */
   (void)argument;
 
-  /* The generated 4 KiB default task is only a bootstrap. LVGL rendering now
-   * uses a dedicated 8 KiB static stack so a downward stack overflow cannot
-   * overwrite the FreeRTOS timer queue placed immediately below ucHeap. */
+  /* All LVGL operations, including initialization and the first frame,
+   * run on a monitored 12 KiB task stack rather than the boot MSP. */
   g_dashboard_task_handle = xTaskCreateStatic(Dashboard_ServiceTask,
                                                "Dashboard",
                                                DASHBOARD_TASK_STACK_WORDS,
@@ -157,6 +165,7 @@ void StartDefaultTask(void *argument)
                                                &g_dashboard_task_control);
   if(g_dashboard_task_handle == NULL) {
     taskDISABLE_INTERRUPTS();
+    Firmware_Diag_RecordFault(4U);
     g_freertos_fault_code = 4U;
     g_freertos_fault_task_name = "Dashboard";
     HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET);
@@ -164,9 +173,8 @@ void StartDefaultTask(void *argument)
     for(;;) { }
   }
 
-  /* Exercise mount/write/sync once after the scheduler starts. The exported
-   * g_sd_diag_* values identify the exact failing layer in a debugger. */
-  SD_Log_InitAndWrite(Dashboard_UI_GetCurrentData());
+  Firmware_Diag_RegisterTask(FW_TASK_DASHBOARD, g_dashboard_task_handle,
+                            "Dashboard", sizeof(g_dashboard_task_stack));
 
   vTaskDelete(NULL);
   /* Execution must not continue after deleting the bootstrap task. */
@@ -181,13 +189,15 @@ static void Dashboard_ServiceTask(void * argument)
 {
   uint32_t delay_ms;
   uint32_t last_heartbeat_tick = 0U;
-  uint32_t last_flush_count = 0U;
+  uint32_t loop_start_cycles;
   uint32_t last_can_heartbeat_tick = 0U;
 
   (void)argument;
+  LVGL_Port_Init();
 
   for(;;)
   {
+    loop_start_cycles = DWT->CYCCNT;
     Dashboard_UI_Process();
     if(Dashboard_UI_IsStartupComplete() != 0U) {
       Touch_Process();
@@ -206,9 +216,11 @@ static void Dashboard_ServiceTask(void * argument)
       CAN1_SendHeartbeat();
     }
 
-    if(g_lvgl_flush_count != last_flush_count) {
-      last_flush_count = g_lvgl_flush_count;
+    uint32_t loop_cycles = DWT->CYCCNT - loop_start_cycles;
+    if(loop_cycles > g_firmware_diag.display_loop_max_cycles) {
+      g_firmware_diag.display_loop_max_cycles = loop_cycles;
     }
+    Firmware_Diag_Sample();
 
     if(delay_ms < 5U) {
       delay_ms = 5U;
@@ -226,6 +238,7 @@ static void Dashboard_ServiceTask(void * argument)
 
 void Fault_Diagnostic_Assert(void)
 {
+  Firmware_Diag_RecordFault(1U);
   g_freertos_fault_code = 1U;
   g_freertos_fault_task_name = "configASSERT";
   /* Both LEDs solid identifies a FreeRTOS configASSERT.  CPU fault handlers
@@ -238,6 +251,7 @@ void vApplicationStackOverflowHook(TaskHandle_t task, char * task_name)
 {
   (void)task;
   taskDISABLE_INTERRUPTS();
+  Firmware_Diag_RecordFault(2U);
   g_freertos_fault_code = 2U;
   g_freertos_fault_task_name = task_name;
   HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET);
@@ -248,6 +262,7 @@ void vApplicationStackOverflowHook(TaskHandle_t task, char * task_name)
 void vApplicationMallocFailedHook(void)
 {
   taskDISABLE_INTERRUPTS();
+  Firmware_Diag_RecordFault(3U);
   g_freertos_fault_code = 3U;
   g_freertos_fault_task_name = "FreeRTOS heap";
   HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_RESET);

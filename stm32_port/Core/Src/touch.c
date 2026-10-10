@@ -1,9 +1,11 @@
+/* USER CODE BEGIN touch */
 #include "touch.h"
 
 #include "main.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "firmware_diag.h"
 
 #if TOUCH_TYPE_CAP
 #include "gt911.h"
@@ -101,6 +103,7 @@ void Touch_ServiceTask(void *argument)
 
     init_ok = Touch_Cap_Init();
     if(init_ok == 0U) {
+        Firmware_Diag_UnregisterTask(FW_TASK_TOUCH);
         vTaskDelete(NULL);
     }
 
@@ -330,6 +333,7 @@ void Touch_ServiceTask(void *argument)
     }
 
     if(Touch_Xpt2046Init() != 0U) {
+        Firmware_Diag_UnregisterTask(FW_TASK_TOUCH);
         vTaskDelete(NULL);
     }
 
@@ -367,3 +371,5 @@ void Touch_ServiceTask(void *argument)
 }
 
 #endif
+
+/* USER CODE END touch */

@@ -1,6 +1,9 @@
+/* USER CODE BEGIN gt911 */
 #include "gt911.h"
 #include "main.h"
 #include "touch.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 #if TOUCH_TYPE_CAP
 
@@ -13,10 +16,21 @@ extern I2C_HandleTypeDef hi2c1;
 gt911_dev_t g_gt911_dev;
 static uint8_t g_gt911_i2c_addr = GT911_I2C_ADDR_5D;
 
-static void GT911_I2CDelay(void)
+/* Preserve the verified bit-bang delay when the project switches to -Os. */
+static void __attribute__((optimize("O0"))) GT911_I2CDelay(void)
 {
     for(volatile uint32_t i = 0U; i < GT911_I2C_DELAY_COUNT; i++) {
         __NOP();
+    }
+}
+
+static void GT911_DelayMs(uint32_t duration_ms)
+{
+    if(xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+        vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    }
+    else {
+        HAL_Delay(duration_ms);
     }
 }
 
@@ -227,22 +241,22 @@ static void GT911_ResetForAddress(uint8_t addr)
 
     GT911_IntOut();
     GT911_RstHigh();
-    HAL_Delay(20);
+    GT911_DelayMs(20);
     GT911_RstLow();
-    HAL_Delay(20);
+    GT911_DelayMs(20);
     HAL_GPIO_WritePin(IPS_INT_GPIO_Port, IPS_INT_Pin, GPIO_PIN_RESET);
-    HAL_Delay(20);
+    GT911_DelayMs(20);
     HAL_GPIO_WritePin(IPS_INT_GPIO_Port, IPS_INT_Pin,
                       (addr == GT911_I2C_ADDR_14) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_Delay(20);
+    GT911_DelayMs(20);
     GT911_RstHigh();
 
     HAL_GPIO_WritePin(IPS_INT_GPIO_Port, IPS_INT_Pin, GPIO_PIN_RESET);
-    HAL_Delay(50);
+    GT911_DelayMs(50);
     GT911_IntIn();
     __HAL_GPIO_EXTI_CLEAR_IT(IPS_INT_Pin);
     HAL_NVIC_EnableIRQ(EXTI4_IRQn);
-    HAL_Delay(20);
+    GT911_DelayMs(20);
 }
 
 uint8_t GT911_Init(void)
@@ -332,3 +346,5 @@ uint8_t GT911_Scan(void)
 }
 
 #endif /* TOUCH_TYPE_CAP */
+
+/* USER CODE END gt911 */

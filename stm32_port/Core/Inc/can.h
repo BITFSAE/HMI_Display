@@ -73,6 +73,7 @@ void User_CAN_Send(void);
 void User_CAN_Send_sq(uint32_t CAN_ID_NEW,uint8_t* CAN_TxData_NEW);
 void CAN1_SendHeartbeat(void);
 void CAN_ServiceTask(void *argument);
+void CAN_StartServiceTask(void);
 void CAN_SendGPSSpeed(int32_t speed_kmh_tenths);
 void CAN_SendGPSTelemetry(const CAN_GPSTelemetry_t * telemetry);
 /* USER CODE END Prototypes */

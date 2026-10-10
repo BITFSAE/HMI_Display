@@ -1529,6 +1529,26 @@
 
 /*--END OF LV_CONF_H--*/
 
+/* USER CODE BEGIN Hardware_Profile */
+/* Fixed-coordinate dashboard: no flex/grid layout or observer bindings. */
+#undef LV_FONT_MONTSERRAT_32
+#define LV_FONT_MONTSERRAT_32 0 /* Single-letter modes use dashboard_mode_font. */
+#undef LV_USE_FLEX
+#define LV_USE_FLEX 0
+#undef LV_USE_GRID
+#define LV_USE_GRID 0
+#undef LV_USE_OBSERVER
+#define LV_USE_OBSERVER 0
+#undef LV_BUILD_EXAMPLES
+#define LV_BUILD_EXAMPLES 0
+#undef LV_BUILD_DEMOS
+#define LV_BUILD_DEMOS 0
+#undef LV_ASSERT_HANDLER_INCLUDE
+#define LV_ASSERT_HANDLER_INCLUDE "firmware_diag.h"
+#undef LV_ASSERT_HANDLER
+#define LV_ASSERT_HANDLER Firmware_Diag_LvglAssert();
+/* USER CODE END Hardware_Profile */
+
 #endif /*LV_CONF_H*/
 
 #endif /*End of "Content enable"*/

@@ -51,8 +51,9 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 ./build_fw.sh clean   # 全量重编
 ```
 
-- 规则在 `build_fw.mk`：编译参数照搬 `stm32_port/.cproject` 的 Debug 配置（`-O0 -g3`，Cortex-M4F 硬浮点，链接 `STM32F407ZETX_FLASH.ld`），源码目录与 LVGL 排除清单直接读 `.cproject`，新增 `.c/.s` 无需改动。
-- 产物 `stm32_port/build_vscode/DATA_COLLECTION_INTEGRAL.elf`（已被 `.gitignore` 忽略）。不复用 `stm32_port/Debug/` 的 makefile：其中 `Core/lvgl/**` 的 `subdir.mk` 未入库，且 `makefile` 写死了 Windows 下的链接脚本绝对路径。
+- 规则在 `build_fw.mk`：编译参数与 `stm32_port/.cproject` 的 Debug 配置一致（`-Os -g3`，Cortex-M4F 硬浮点，链接 `STM32F407ZETX_FLASH.ld`），源码目录与 LVGL 排除清单直接读 `.cproject`，新增 `.c/.s` 无需改动。
+- 产物位于 `stm32_port/build_vscode/`，包括 ELF、BIN、HEX、MAP 和内存报告（已被 `.gitignore` 忽略）。构建会打印 Flash、主 SRAM、CCM 占用和最大单函数栈帧。参数或工具链变化时自动重编。不复用 `stm32_port/Debug/` 的 makefile：其中 `Core/lvgl/**` 的 `subdir.mk` 未入库，且 `makefile` 写死了 Windows 下的链接脚本绝对路径。
+- 固件优化、任务栈、运行诊断和回归验证见 [固件资源与性能优化](docs/firmware_optimization.md)。CubeIDE 用户需重新构建，历史 Debug 产物不代表本次修改。
 - 工具链优先取 STM32 VS Code 扩展 bundles 里的 GNU Tools for STM32，否则用 PATH 中的 `arm-none-eabi-gcc`（已验证 ARM 官方 15.2.rel1 同样可构建）。
 - VS Code 任务：`Build Firmware`、`Rebuild Firmware (clean)`（`Tasks: Run Task`），编译报错可点击跳转。
 - 窗口内按键：空格循环模式，`S/Q/E/C` 选模式，`0`–`7` 滑移等级，`R` 圈速记录，`N` 夜间模式，`F` 切换告警，`[` `]`/`G` 信号强度，`Esc`/`X` 退出。

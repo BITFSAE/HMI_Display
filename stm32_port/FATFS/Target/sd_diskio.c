@@ -130,7 +130,18 @@ const Diskio_drvTypeDef  SD_Driver =
 };
 
 /* USER CODE BEGIN beforeFunctionSection */
-/* can be used to modify / undefine following code or add new code */
+/* The generated readiness loops otherwise spin for up to SD_TIMEOUT. Yield
+ * between unsuccessful probes so GPS/display tasks continue to run. */
+static uint32_t SD_CardStateCooperative(void)
+{
+  uint32_t state = BSP_SD_GetCardState();
+  if((state != SD_TRANSFER_OK) && (__get_IPSR() == 0U) &&
+     (osKernelGetState() == osKernelRunning)) {
+    (void)osDelay(1U);
+  }
+  return state;
+}
+#define BSP_SD_GetCardState() SD_CardStateCooperative()
 /* USER CODE END beforeFunctionSection */
 
 /* Private functions ---------------------------------------------------------*/

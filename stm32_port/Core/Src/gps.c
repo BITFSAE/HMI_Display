@@ -1,3 +1,4 @@
+/* USER CODE BEGIN gps */
 #include "main.h"
 #include "gps.h"
 #include "gps_lap.h"
@@ -6,6 +7,8 @@
 #include "sd_log.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "firmware_diag.h"
+#include "cmsis_os2.h"
 #include <math.h>
 #include <string.h>
 
@@ -15,6 +18,11 @@ extern DMA_HandleTypeDef hdma_usart3_rx;
 uint8_t g_gps_dma_buf[GPS_DMA_BUF_SIZE];
 
 static TaskHandle_t g_gps_task_handle = NULL;
+static StaticTask_t g_gps_task_control;
+static StackType_t g_gps_task_stack[3072U];
+volatile uint32_t g_gps_poll_gap_max_ms;
+volatile uint32_t g_gps_dma_late_poll_count;
+static uint32_t g_gps_poll_tick;
 static GPS_Data_t  g_gps_data;
 static uint32_t    g_gps_dma_last_pos;
 static uint32_t    g_gps_sentence_count;
@@ -49,6 +57,7 @@ static uint32_t    g_odometer_total_m;
 static uint32_t    g_odometer_checkpoint_m;
 static int32_t     g_odometer_ui_tenths;
 static uint8_t     g_odometer_anchor_valid;
+static uint8_t     g_odometer_initialized;
 
 #define GPS_GSV_EXPIRE_MS             12000U
 #define GPS_HPR_EXPIRE_MS               1500U
@@ -73,11 +82,12 @@ static uint8_t     g_odometer_anchor_valid;
 static void gps_odometer_init(void)
 {
 	g_odometer_total_m = 0U;
-	(void)SD_Odometer_Load(&g_odometer_total_m);
+	(void)SD_Odometer_GetInitial(&g_odometer_total_m);
 	g_odometer_checkpoint_m = g_odometer_total_m;
 	g_odometer_fraction_m = 0.0f;
 	g_odometer_anchor_valid = 0U;
 	g_odometer_ui_tenths = (int32_t)(g_odometer_total_m / 100U);
+	g_odometer_initialized = 1U;
 	Dashboard_UI_SubmitOdometer(g_odometer_ui_tenths);
 }
 
@@ -93,6 +103,7 @@ static void gps_odometer_process(float latitude, float longitude,
 	uint32_t whole_m;
 	int32_t ui_tenths;
 
+	if(g_odometer_initialized == 0U) return;
 	if((latitude < -90.0f) || (latitude > 90.0f) ||
 	   (longitude < -180.0f) || (longitude > 180.0f) ||
 	   ((latitude == 0.0f) && (longitude == 0.0f))) {
@@ -168,9 +179,8 @@ static uint16_t gps_angle_to_cdeg(float angle)
 {
 	int32_t scaled;
 
-	if(angle != angle) return 0U;
-	while(angle < 0.0f) angle += 360.0f;
-	while(angle >= 360.0f) angle -= 360.0f;
+	if(!isfinite(angle) || angle < 0.0f || angle > 360.0f) return 0U;
+	if(angle == 360.0f) angle = 0.0f;
 	scaled = (int32_t)((angle * 100.0f) + 0.5f);
 	if(scaled >= 36000) scaled = 0;
 	return (uint16_t)scaled;
@@ -342,6 +352,15 @@ static const char * nmea_get_field(const char * buf, int32_t idx,
 	return start;
 }
 
+/* Reject oversized numeric fields before signed accumulation can overflow. */
+static uint8_t nmea_append_digit(int32_t *value, char digit, int32_t limit)
+{
+    int32_t next = (int32_t)(digit - '0');
+    if(*value > (limit - next) / 10) return 0U;
+    *value = (*value * 10) + next;
+    return 1U;
+}
+
 static int32_t nmea_field_atoi(const char * buf, int32_t idx)
 {
 	char fld[16];
@@ -352,7 +371,7 @@ static int32_t nmea_field_atoi(const char * buf, int32_t idx)
 	const char * s = fld;
 	if(*s == '-') { sign = -1; s++; }
 	while(*s >= '0' && *s <= '9') {
-		val = val * 10 + (int32_t)(*s - '0');
+		if(nmea_append_digit(&val, *s, INT32_MAX) == 0U) return 0;
 		s++;
 	}
 	return val * sign;
@@ -374,7 +393,10 @@ static int32_t nmea_field_atoi_tenths(const char * buf, int32_t idx, int32_t * o
 	else if(*s == '+') { s++; }
 
 	while(*s >= '0' && *s <= '9') {
-		int_part = int_part * 10 + (int32_t)(*s - '0');
+		if(nmea_append_digit(&int_part, *s, INT32_MAX / 10) == 0U) {
+			*out_frac = 0;
+			return 0;
+		}
 		s++;
 	}
 	if(*s == '.') {
@@ -404,7 +426,7 @@ static int32_t nmea_field_atoi_milli(const char * buf, int32_t idx)
 	else if(*s == '+') { s++; }
 
 	while(*s >= '0' && *s <= '9') {
-		int_part = int_part * 10 + (int32_t)(*s - '0');
+		if(nmea_append_digit(&int_part, *s, INT32_MAX / 1000) == 0U) return 0;
 		s++;
 	}
 	if(*s == '.') {
@@ -420,6 +442,7 @@ static int32_t nmea_field_atoi_milli(const char * buf, int32_t idx)
 		frac_digits++;
 	}
 
+	if(frac_part > INT32_MAX - int_part * 1000) return 0;
 	return sign * ((int_part * 1000) + frac_part);
 }
 
@@ -439,7 +462,7 @@ static int32_t nmea_parse_speed_kmh_centi(const char * buf, int32_t idx)
 	else if(*s == '+') { s++; }
 
 	while(*s >= '0' && *s <= '9') {
-		int_part = int_part * 10 + (int32_t)(*s - '0');
+		if(nmea_append_digit(&int_part, *s, INT32_MAX / 1000) == 0U) return 0;
 		s++;
 	}
 	if(*s == '.') {
@@ -456,6 +479,7 @@ static int32_t nmea_parse_speed_kmh_centi(const char * buf, int32_t idx)
 	}
 
 	/* RMC speed is knots. Convert 0.001 kn to 0.01 km/h with rounding. */
+	if(frac_part > INT32_MAX - int_part * 1000) return 0;
 	int32_t knot_milli = sign * ((int_part * 1000) + frac_part);
 	return (int32_t)(((int64_t)knot_milli * 1852 + 5000) / 10000);
 }
@@ -473,6 +497,7 @@ static int32_t nmea_parse_track_int(const char * buf, int32_t idx)
 {
 	int32_t frac;
 	int32_t int_part = nmea_field_atoi_tenths(buf, idx, &frac);
+	if(int_part < 0 || int_part > 360) return 0;
 	if(frac < 0) frac = -frac;
 	return int_part * 10 + (frac % 10);
 }
@@ -519,7 +544,7 @@ static float nmea_parse_coord_deg(const char * buf, int32_t idx, int32_t hemi_id
 
 	if((p == NULL) || (fld[0] == '\0')) return 0.0f;
 	while(*s >= '0' && *s <= '9') {
-		raw_int = raw_int * 10 + (int32_t)(*s - '0');
+		if(nmea_append_digit(&raw_int, *s, 18059) == 0U) return 0.0f;
 		s++;
 	}
 	if(*s == '.') {
@@ -725,8 +750,11 @@ static void parse_GNHPR(const char * sentence)
 	int32_t quality = nmea_field_atoi(sentence, 5);
 	uint8_t valid = ((quality == 4) || (quality == 5)) ? 1U : 0U;
 
-	while(heading < 0.0f) heading += 360.0f;
-	while(heading >= 360.0f) heading -= 360.0f;
+	if(!isfinite(heading) || heading < 0.0f || heading > 360.0f) {
+		heading = 0.0f;
+		valid = 0U;
+	}
+	if(heading == 360.0f) heading = 0.0f;
 
 	taskENTER_CRITICAL();
 	g_gps_data.heading_angle = heading;
@@ -803,6 +831,19 @@ static void GPS_ProcessByte(uint8_t byte)
 
 static void GPS_SentenceProcess(void)
 {
+    uint32_t now = HAL_GetTick();
+    if(g_gps_poll_tick != 0U) {
+        uint32_t gap = now - g_gps_poll_tick;
+        if(gap > g_gps_poll_gap_max_ms) g_gps_poll_gap_max_ms = gap;
+        /* 512 bytes at 115200 baud/8N1 can wrap in about 44 ms. This is a
+         * possible-overrun indicator, not an exact lost-byte count. */
+        if(gap >= 44U) {
+            g_gps_dma_late_poll_count++;
+            g_gps_line_active = 0U;
+            g_gps_line_len = 0U;
+        }
+    }
+    g_gps_poll_tick = now;
 	uint32_t ndtr = __HAL_DMA_GET_COUNTER(&hdma_usart3_rx);
 	if(ndtr > GPS_DMA_BUF_SIZE) {
 		return;
@@ -826,52 +867,72 @@ static void GPS_SendCmd(const char * cmd)
 {
 	char buf[128];
 	int32_t len = 0;
-	while(cmd[len] != '\0') len++;
-	if(len >= 125) len = 124;
+	while(len < 124 && cmd[len] != '\0') len++;
 	for(int32_t i = 0; i < len; i++) buf[i] = cmd[i];
 	buf[len] = '\r';
 	buf[len + 1] = '\n';
 	HAL_UART_Transmit(&huart3, (uint8_t *)buf, (uint16_t)(len + 2), 1000);
 }
 
+/* Receiver configuration must not leave the 512-byte DMA ring undrained. */
+static void GPS_WaitAndDrain(uint32_t duration_ms)
+{
+    uint32_t start = HAL_GetTick();
+    do {
+        GPS_SentenceProcess();
+        vTaskDelay(pdMS_TO_TICKS(10U));
+    } while((HAL_GetTick() - start) < duration_ms);
+}
+
 static void GPS_TaskFunc(void * argument)
 {
 	TickType_t last_wake_tick;
-	uint32_t boot_timeout;
+	uint32_t boot_start;
 
 	(void)argument;
+
+    while(Dashboard_UI_IsStartupComplete() == 0U) vTaskDelay(pdMS_TO_TICKS(10U));
+    /* Only the SD task performs startup I/O. Continue draining DMA while a
+     * slow/missing card is being checked; GPS never waits on the SD mutex. */
+    uint32_t initial_odometer;
+    while(SD_Odometer_GetInitial(&initial_odometer) == 0U) {
+        GPS_SentenceProcess();
+        gps_can_speed_tick(HAL_GetTick());
+        vTaskDelay(pdMS_TO_TICKS(10U));
+    }
+    gps_odometer_init();
 
 	/* Wait for the first valid NMEA sentence: proves the UM982 has finished
 	 * booting and the 115200 link is alive.  Config commands sent during the
 	 * module's own boot are silently dropped. */
-	boot_timeout = HAL_GetTick() + 5000U;
-	while((g_gps_sentence_count == 0U) && (HAL_GetTick() < boot_timeout)) {
+	boot_start = HAL_GetTick();
+	while((g_gps_sentence_count == 0U) && ((HAL_GetTick() - boot_start) < 5000U)) {
 		GPS_SentenceProcess();
 		vTaskDelay(pdMS_TO_TICKS(20));
 	}
 
 	GPS_SendCmd("UNLOG COM2");
-	vTaskDelay(pdMS_TO_TICKS(200));
+	GPS_WaitAndDrain(200U);
 	/* Vehicle dynamics profile: up to 100 m/s horizontal speed and lower
 	 * vertical dynamics than the UM982 default UAV profile. */
 	GPS_SendCmd("MODE ROVER AUTOMOTIVE");
-	vTaskDelay(pdMS_TO_TICKS(500));
+	GPS_WaitAndDrain(500U);
 	GPS_SendCmd("CONFIG HEADING FIXLENGTH");
 	/* Fixed baseline: 111 cm with +/-10 cm tolerance (both parameters are in
 	 * centimetres per the NebulasIV interface protocol; parameter 2 is the
 	 * acceptable error range, not a variance in m^2). */
 	GPS_SendCmd("CONFIG HEADING LENGTH 111 10");
-	vTaskDelay(pdMS_TO_TICKS(100));
+	GPS_WaitAndDrain(100U);
 	GPS_SendCmd("GPGGA 1");
-	vTaskDelay(pdMS_TO_TICKS(100));
+	GPS_WaitAndDrain(100U);
 	GPS_SendCmd("GPRMC 0.05");
-	vTaskDelay(pdMS_TO_TICKS(100));
+	GPS_WaitAndDrain(100U);
 	GPS_SendCmd("GPHPR 0.2");
-	vTaskDelay(pdMS_TO_TICKS(100));
+	GPS_WaitAndDrain(100U);
 	GPS_SendCmd("GPGSV 5");
-	vTaskDelay(pdMS_TO_TICKS(200));
+	GPS_WaitAndDrain(200U);
 	GPS_SendCmd("SAVECONFIG");
-	vTaskDelay(pdMS_TO_TICKS(500));
+	GPS_WaitAndDrain(500U);
 	last_wake_tick = xTaskGetTickCount();
 
 	for(;;) {
@@ -916,15 +977,12 @@ void GPS_Init(void)
 	g_gps_speed_ui_alive_tick = 0U;
 	/* Preserve the dashboard's startup placeholder until the first valid RMC is
 	 * received. The CAN publisher still uses the internal zero speed. */
-	gps_odometer_init();
-
-	BaseType_t ret = xTaskCreate(GPS_TaskFunc, "GPS_Task",
-	                             3072U, NULL,
-	                             tskIDLE_PRIORITY + 2,
-	                             &g_gps_task_handle);
-	if(ret == pdPASS) {
-		SD_Odometer_StartTask();
-	}
+    GPS_Lap_InitLock();
+    g_gps_task_handle = xTaskCreateStatic(GPS_TaskFunc, "GPS_Task", 3072U, NULL,
+                                         (UBaseType_t)osPriorityNormal + 1U,
+                                         g_gps_task_stack, &g_gps_task_control);
+    Firmware_Diag_RegisterTask(FW_TASK_GPS, g_gps_task_handle, "GPS", sizeof(g_gps_task_stack));
+    SD_Odometer_StartTask();
 }
 
 void GPS_ISR_Notify(void)
@@ -947,3 +1005,5 @@ void GPS_GetData(GPS_Data_t * out)
 	}
 	taskEXIT_CRITICAL();
 }
+
+/* USER CODE END gps */

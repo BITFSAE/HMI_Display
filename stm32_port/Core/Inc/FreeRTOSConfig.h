@@ -170,7 +170,13 @@ standard names. */
 #define USE_CUSTOM_SYSTICK_HANDLER_IMPLEMENTATION 0
 
 /* USER CODE BEGIN Defines */
-/* Section where parameter definitions can be added (for instance, to override default ones in FreeRTOS.h) */
+/* Application stacks are static; retain a 16 KiB heap for CMSIS/FatFs objects
+ * and the generated bootstrap task. Idle also reclaims newlib state. */
+#undef configTOTAL_HEAP_SIZE
+#define configTOTAL_HEAP_SIZE ((size_t)(16U * 1024U))
+#undef configMINIMAL_STACK_SIZE
+#define configMINIMAL_STACK_SIZE ((uint16_t)256U)
+#define INCLUDE_xTaskGetIdleTaskHandle 1
 /* USER CODE END Defines */
 
 #endif /* FREERTOS_CONFIG_H */

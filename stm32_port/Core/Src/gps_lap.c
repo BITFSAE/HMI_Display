@@ -1,3 +1,4 @@
+/* USER CODE BEGIN gps_lap */
 #include "gps_lap.h"
 #include "main.h"
 #include "gps.h"
@@ -5,7 +6,36 @@
 #include <math.h>
 #include <string.h>
 
-#if defined(__GNUC__)
+#include "FreeRTOS.h"
+#include "semphr.h"
+static StaticSemaphore_t g_lap_mutex_control;
+static SemaphoreHandle_t g_lap_mutex;
+
+/* Geometry and timer state are shared by GPS and the dashboard. Lock at API
+ * boundaries; the mutex preserves IRQ latency and supports priority inheritance. */
+void GPS_Lap_InitLock(void)
+{
+    if(g_lap_mutex == NULL) g_lap_mutex = xSemaphoreCreateRecursiveMutexStatic(&g_lap_mutex_control);
+    configASSERT(g_lap_mutex != NULL);
+}
+
+static void GPS_Lap_SetStartLine_Impl(float lat, float lon, float track);
+static void GPS_Lap_SetFinishLine_Impl(float lat, float lon, float track);
+static uint8_t GPS_Lap_StartAtCurrent_Impl(const GPS_Data_t *data);
+static void GPS_Lap_Reset_Impl(void);
+static void GPS_Lap_SetAnalysisActive_Impl(uint8_t active);
+static uint8_t GPS_Lap_IsAnalysisActive_Impl(void);
+static void GPS_Lap_Tick_Impl(void);
+static void GPS_Sprint_Reset_Impl(void);
+static uint8_t GPS_Sprint_StartAtCurrent_Impl(const GPS_Data_t *data, float heading_deg);
+static void GPS_Sprint_Cancel_Impl(void);
+static uint8_t GPS_Sprint_IsActive_Impl(void);
+static void GPS_Sprint_Tick_Impl(void);
+static void GPS_SprintProcess_Impl(const GPS_Data_t *data);
+static void GPS_Lap_GetDiagnostic_Impl(GPS_LapDiagnostic_t *out);
+static void GPS_LapProcess_Impl(const GPS_Data_t *data);
+
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC push_options
 #pragma GCC optimize ("Os")
 #endif
@@ -413,7 +443,7 @@ static void update_live_delta(const GPS_LapLinePos_t * pos, int32_t current_ms)
 }
 #endif
 
-void GPS_Lap_SetStartLine(float lat, float lon, float track)
+static void GPS_Lap_SetStartLine_Impl(float lat, float lon, float track)
 {
 	if(coord_valid(lat, lon) == 0U) {
 		g_start_set = 0U;
@@ -426,7 +456,7 @@ void GPS_Lap_SetStartLine(float lat, float lon, float track)
 	g_start_set = 1U;
 }
 
-void GPS_Lap_SetFinishLine(float lat, float lon, float track)
+static void GPS_Lap_SetFinishLine_Impl(float lat, float lon, float track)
 {
 	if(coord_valid(lat, lon) == 0U) {
 		g_finish_set = 0U;
@@ -439,7 +469,7 @@ void GPS_Lap_SetFinishLine(float lat, float lon, float track)
 	g_finish_set = 1U;
 }
 
-uint8_t GPS_Lap_StartAtCurrent(const GPS_Data_t * data)
+static uint8_t GPS_Lap_StartAtCurrent_Impl(const GPS_Data_t * data)
 {
 	if((data == NULL) || (data->valid == 0U) || !g_finish_set) return 0U;
 	if(coord_valid(data->latitude, data->longitude) == 0U) return 0U;
@@ -463,7 +493,7 @@ uint8_t GPS_Lap_StartAtCurrent(const GPS_Data_t * data)
 	return 1U;
 }
 
-void GPS_Lap_Reset(void)
+static void GPS_Lap_Reset_Impl(void)
 {
 	g_lap_current_ms = 0;
 	g_lap_last_ms = 0;
@@ -499,7 +529,7 @@ void GPS_Lap_Reset(void)
 	Dashboard_UI_SetSprintReady(0U);
 }
 
-void GPS_Lap_SetAnalysisActive(uint8_t active)
+static void GPS_Lap_SetAnalysisActive_Impl(uint8_t active)
 {
 	g_lap_analysis_enabled = active != 0U ? 1U : 0U;
 	if(g_lap_analysis_enabled != 0U) {
@@ -523,12 +553,12 @@ void GPS_Lap_SetAnalysisActive(uint8_t active)
 	}
 }
 
-uint8_t GPS_Lap_IsAnalysisActive(void)
+static uint8_t GPS_Lap_IsAnalysisActive_Impl(void)
 {
 	return g_lap_analysis_enabled;
 }
 
-void GPS_Lap_Tick(void)
+static void GPS_Lap_Tick_Impl(void)
 {
 	uint32_t now;
 
@@ -539,13 +569,13 @@ void GPS_Lap_Tick(void)
 	submit_lap_times_limited(now, 0U);
 }
 
-void GPS_Sprint_Reset(void)
+static void GPS_Sprint_Reset_Impl(void)
 {
-	GPS_Lap_Reset();
+	GPS_Lap_Reset_Impl();
 	Dashboard_UI_SubmitSprintRemaining((int32_t)GPS_SPRINT_DISTANCE_M);
 }
 
-uint8_t GPS_Sprint_StartAtCurrent(const GPS_Data_t * data, float heading_deg)
+static uint8_t GPS_Sprint_StartAtCurrent_Impl(const GPS_Data_t * data, float heading_deg)
 {
 	GPS_LapLinePos_t start_pos;
 	uint32_t now;
@@ -595,7 +625,7 @@ uint8_t GPS_Sprint_StartAtCurrent(const GPS_Data_t * data, float heading_deg)
 	return 1U;
 }
 
-void GPS_Sprint_Cancel(void)
+static void GPS_Sprint_Cancel_Impl(void)
 {
 	if(g_sprint_active == 0U) return;
 	g_sprint_active = 0U;
@@ -616,12 +646,12 @@ void GPS_Sprint_Cancel(void)
 	Dashboard_UI_SetSprintReady(0U);
 }
 
-uint8_t GPS_Sprint_IsActive(void)
+static uint8_t GPS_Sprint_IsActive_Impl(void)
 {
 	return g_sprint_active;
 }
 
-void GPS_Sprint_Tick(void)
+static void GPS_Sprint_Tick_Impl(void)
 {
 	uint32_t now;
 	if((g_sprint_active == 0U) || (g_sprint_started == 0U)) return;
@@ -630,7 +660,7 @@ void GPS_Sprint_Tick(void)
 	submit_lap_times_limited(now, 0U);
 }
 
-void GPS_SprintProcess(const GPS_Data_t * data)
+static void GPS_SprintProcess_Impl(const GPS_Data_t * data)
 {
 	GPS_LapLinePos_t curr_pos;
 	GPS_LapLinePos_t finish_pos;
@@ -778,7 +808,7 @@ void GPS_SprintProcess(const GPS_Data_t * data)
 	g_sprint_prev_tick = now;
 }
 
-void GPS_Lap_GetDiagnostic(GPS_LapDiagnostic_t * out)
+static void GPS_Lap_GetDiagnostic_Impl(GPS_LapDiagnostic_t * out)
 {
 	uint32_t primask;
 	if(out == NULL) return;
@@ -788,7 +818,7 @@ void GPS_Lap_GetDiagnostic(GPS_LapDiagnostic_t * out)
 	if(primask == 0U) __enable_irq();
 }
 
-void GPS_LapProcess(const GPS_Data_t * data)
+static void GPS_LapProcess_Impl(const GPS_Data_t * data)
 {
 #if GPS_LAP_ENABLE_GEOMETRY
 	GPS_LapLinePos_t curr_pos;
@@ -949,13 +979,155 @@ int32_t GPS_Lap_GetCurrentLapNum(void)         { return g_lap_count; }
 
 #else
 
-void GPS_LapProcess(const GPS_Data_t * data)
+static void GPS_LapProcess_Impl(const GPS_Data_t * data)
 {
 	(void)data;
 }
 
 #endif
 
-#if defined(__GNUC__)
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC pop_options
 #endif
+
+
+void GPS_Lap_SetStartLine(float lat, float lon, float track)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    GPS_Lap_SetStartLine_Impl(lat, lon, track);
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+}
+
+void GPS_Lap_SetFinishLine(float lat, float lon, float track)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    GPS_Lap_SetFinishLine_Impl(lat, lon, track);
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+}
+
+uint8_t GPS_Lap_StartAtCurrent(const GPS_Data_t *data)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    uint8_t result = GPS_Lap_StartAtCurrent_Impl(data);
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+    return result;
+}
+
+void GPS_Lap_Reset(void)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    GPS_Lap_Reset_Impl();
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+}
+
+void GPS_Lap_SetAnalysisActive(uint8_t active)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    GPS_Lap_SetAnalysisActive_Impl(active);
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+}
+
+uint8_t GPS_Lap_IsAnalysisActive(void)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    uint8_t result = GPS_Lap_IsAnalysisActive_Impl();
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+    return result;
+}
+
+void GPS_Lap_Tick(void)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    GPS_Lap_Tick_Impl();
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+}
+
+void GPS_Sprint_Reset(void)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    GPS_Sprint_Reset_Impl();
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+}
+
+uint8_t GPS_Sprint_StartAtCurrent(const GPS_Data_t *data, float heading_deg)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    uint8_t result = GPS_Sprint_StartAtCurrent_Impl(data, heading_deg);
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+    return result;
+}
+
+void GPS_Sprint_Cancel(void)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    GPS_Sprint_Cancel_Impl();
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+}
+
+uint8_t GPS_Sprint_IsActive(void)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    uint8_t result = GPS_Sprint_IsActive_Impl();
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+    return result;
+}
+
+void GPS_Sprint_Tick(void)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    GPS_Sprint_Tick_Impl();
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+}
+
+void GPS_SprintProcess(const GPS_Data_t *data)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    GPS_SprintProcess_Impl(data);
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+}
+
+void GPS_Lap_GetDiagnostic(GPS_LapDiagnostic_t *out)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    GPS_Lap_GetDiagnostic_Impl(out);
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+}
+
+void GPS_LapProcess(const GPS_Data_t *data)
+{
+    configASSERT(g_lap_mutex != NULL);
+    BaseType_t locked = xSemaphoreTakeRecursive(g_lap_mutex, portMAX_DELAY);
+    configASSERT(locked == pdTRUE);
+    GPS_LapProcess_Impl(data);
+    (void)xSemaphoreGiveRecursive(g_lap_mutex);
+}
+
+/* USER CODE END gps_lap */
