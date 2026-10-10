@@ -1,8 +1,37 @@
-	# VSCode Simulator project for LVGL
+	# HMI_Display — BITFSAE 车手屏
 
-[LVGL](https://github.com/lvgl/lvgl) is written mainly for microcontrollers and embedded systems, however you can run the library **on your PC** as well without any embedded hardware. The code written on PC can be simply copied when your are using an embedded system.
+车手屏固件（STM32F407ZET6，经 FSMC 驱动 SSD1963 800×480 IPS 屏，LVGL 9.5）和 PC/macOS 模拟器。固件接收 CANB、方向盘 CAN2 与 UM982 GNSS 数据并显示，同时向 CANB 发送 GPS、里程、圈速和方向盘合并指令。仪表盘界面 `stm32_port/Core/Src/dashboard_view.c` 由固件和模拟器共用。
 
-This project is pre-configured for VSCode and should work work on Windows, Linux and MacOs as well. FreeRTOS is also included and can be optionally enabled to better simulate embedded system's behavior. 
+## 仓库结构
+
+| 路径 | 内容 |
+| --- | --- |
+| `stm32_port/` | **车手屏固件**，CubeIDE 工程名仍沿用旧名 `DATA_COLLECTION_INTEGRAL`。外设配置源是 `DATA_COLLECTION_INTEGRAL.ioc`（本仓库的车手屏 `.ioc` 只有这一个），应用代码在 `Core/Src`，`Core/lvgl` 是固件用的 LVGL 副本 |
+| `src/`、`CMakeLists.txt`、`config/`、`lv_conf.h`、`run_sim_mac.sh` | PC/macOS 模拟器（SDL2 + FreeRTOS） |
+| `build_fw.sh`、`build_fw.mk` | 固件命令行构建 |
+| `tools/` | 字体和 Logo 生成、固件内存报告、固件回归测试、GPS 测试数据生成（`gen_nmea.py`，输出 UM982 NMEA 测试语句） |
+| `docs/` | 设计与参考文档，`docs/reference/` 放 Unicore（UM982）命令手册 |
+| `legacy/` | 不参与构建的遗留与参考资料，含旧版 F103 板（另一个 `.ioc`），见 [legacy/README.md](legacy/README.md) |
+| `lvgl/`、`FreeRTOS/`、`SDL2-2.32.10/` | 第三方源码，见下节 |
+| `simulator.code-workspace`、`lv_conf.defaults`、`licence.txt` | 上游 `lv_port_pc_vscode` 遗留：前者是 Windows 旧流程的工作区文件，含作者本机路径（`cmake.cmakePath`、构建任务），需自行修改才能用；`lv_conf.defaults` 未被构建引用；`licence.txt` 是上游 MIT 许可证 |
+
+### 第三方源码
+
+| 目录 | 版本 | 使用方 |
+| --- | --- | --- |
+| `lvgl/` | 9.5.0，完整源码树 | 模拟器（CMake） |
+| `stm32_port/Core/lvgl/` | 9.5.0，固件所需的裁剪子集；`src/` 与 `lvgl/src` 一致，仅 `lv_obj_style_gen.h` 一处缩进不同 | 固件（CubeIDE 与 `build_fw.sh`） |
+| `FreeRTOS/` | V11.1.0 | 仅模拟器（Windows 用 MinGW 端口，其余用 POSIX 端口） |
+| `stm32_port/Middlewares/Third_Party/FreeRTOS/` | V10.3.1 | 固件，由 CubeMX 管理 |
+| `SDL2-2.32.10/` | 2.32.10 | 仅 Windows（MinGW）模拟器；macOS/Linux 使用系统安装的 SDL2 |
+
+升级 LVGL 时两份一起替换，并对照模拟器的根目录 `lv_conf.h` 与固件的 `stm32_port/Core/lv_conf.h`（后者是真机内存和功能预算，二者不要互相覆盖）。
+
+### 构建产物与本机配置不入库
+
+`stm32_port/Debug/`、`stm32_port/build_vscode/`、`cmake-build-mac/`、`bin/` 和 Keil 的 `MDK-ARM/DATA_COLLECTION_INTEGRAL/` 都被 `.gitignore` 忽略；2026-10-10 前误入库的产物已改为不跟踪，旧版本仍可从 git 历史取回。固件请用 `./build_fw.sh` 或 CubeIDE 重新构建。`.vscode/` 和根目录 `.settings/` 是本机 IDE 配置，同样不入库。
+
+`stm32_port/MDK-ARM/` 的 Keil 工程只含 CubeMX 生成的文件（还包括已移除的 FatFs/SD），没有 LVGL 和 `gps.c`、`dashboard_*.c`、`odometer_flash.c` 等应用模块，**不能**构建当前固件，以 CubeIDE 工程和 `build_fw.sh` 为准。
 
 ## Get started
 
@@ -52,8 +81,8 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 ```
 
 - 规则在 `build_fw.mk`：编译参数与 `stm32_port/.cproject` 的 Debug 配置一致（`-Os -g3`，Cortex-M4F 硬浮点，链接 `STM32F407ZETX_FLASH.ld`），源码目录与 LVGL 排除清单直接读 `.cproject`，新增 `.c/.s` 无需改动。
-- 产物位于 `stm32_port/build_vscode/`，包括 ELF、BIN、HEX、MAP 和内存报告（已被 `.gitignore` 忽略）。构建会打印 Flash、主 SRAM、CCM 占用和最大单函数栈帧。参数或工具链变化时自动重编。不复用 `stm32_port/Debug/` 的 makefile：其中 `Core/lvgl/**` 的 `subdir.mk` 未入库，且 `makefile` 写死了 Windows 下的链接脚本绝对路径。
-- 固件优化、任务栈、运行诊断和回归验证见 [固件资源与性能优化](docs/firmware_optimization.md)。CubeIDE 用户需重新构建，历史 Debug 产物不代表本次修改。
+- 产物位于 `stm32_port/build_vscode/`，包括 ELF、BIN、HEX、MAP 和内存报告（已被 `.gitignore` 忽略）。构建会打印 Flash、主 SRAM、CCM 占用和最大单函数栈帧。参数或工具链变化时自动重编。不复用 CubeIDE 在 `stm32_port/Debug/` 生成的 makefile：旧版入库的那份缺 `Core/lvgl/**` 的 `subdir.mk`，且写死了 Windows 下的链接脚本绝对路径。
+- 固件优化、任务栈、运行诊断和回归验证见 [固件资源与性能优化](docs/firmware_optimization.md)。CubeIDE 的 `Debug/` 不入库，克隆后需在 CubeIDE 里完整构建一次。
 - 工具链优先取 STM32 VS Code 扩展 bundles 里的 GNU Tools for STM32，否则用 PATH 中的 `arm-none-eabi-gcc`（已验证 ARM 官方 15.2.rel1 同样可构建）。
 - VS Code 任务：`Build Firmware`、`Rebuild Firmware (clean)`（`Tasks: Run Task`），编译报错可点击跳转。
 - 模拟器与固件共用 `stm32_port/Core/Src/dashboard_view.c` 界面，只是数据换成动画演示，设计与约束见 [仪表盘界面](docs/dashboard_ui.md)。
@@ -93,23 +122,9 @@ to build using the latest version of clang from homebrew, do the following:
 
 5. build using [step 4 above](#visual-studio-code)
 
-### FreeRTOS configuration
-To correctly configure the project, the RTOS (Real-Time Operating System) requires a significant amount of heap memory, especially when debugging an SDL (Simple DirectMedia Layer) window application. In this project, the heap memory has been experimentally set to **512 MB**.
+### 模拟器的 FreeRTOS 配置
 
-```c
-#define configTOTAL_HEAP_SIZE ( ( size_t ) ( 512 * 1024 * 1024 ) )  // 512 MB Heap
-```
-This configuration ensures that the SDL window is displayed in a timely manner. If this value is reduced, it may cause significant delays in the SDL window's appearance. If the allocated heap memory is too small, the window may fail to appear altogether.
-Therefore, it is crucial to allocate sufficient heap memory to ensure smooth execution and debugging experience.
-
-### Enable FreeRTOS 
-To enable the rtos part of this project select in lv_conf.h `#define LV_USE_OS   LV_OS_NONE` to `#define LV_USE_OS  LV_OS_FREERTOS`
-Additionaly you have to enable the compilation of all FreeRTOS Files by turning on the `option(USE_FREERTOS "Enable FreeRTOS" OFF)` in the CMakeLists.txt file or
-by enabling the same flag from the command line when bootstrapping `cmake`:
-
-```bash
-cmake -B build -DUSE_FREERTOS=ON
-```
+模拟器默认启用 FreeRTOS（`CMakeLists.txt` 中 `USE_FREERTOS` 为 `ON`，入口 `src/freertos_main.c`；设为 `OFF` 则回到上游的 `src/main.c` 演示入口）。`lv_conf.h` 里 macOS 的 `LV_USE_OS` 为 `LV_OS_NONE`，其余平台为 `LV_OS_FREERTOS`。FreeRTOS 堆在 `config/FreeRTOSConfig.h`，当前 96 KB。该配置与真机（`stm32_port/Core/Inc/FreeRTOSConfig.h`，由 CubeMX 管理）相互独立，改一边不影响另一边。
 
 ### CMake
 
@@ -124,7 +139,7 @@ make -j
 
 ## Run demos and examples
 
-By default, the widgets demo (`lv_demo_widgets()`) will run. If you want to run a different demo or example from the LVGL library,
+本节仅适用于 `USE_FREERTOS=OFF` 时的上游入口 `src/main.c`（默认的 `src/freertos_main.c` 显示仪表盘）。By default, the widgets demo (`lv_demo_widgets()`) will run. If you want to run a different demo or example from the LVGL library,
 simply replace the demo function call in the code with another one—such as `lv_demo_benchmark()` or `lv_example_label_1()`.
 
 ```c
@@ -222,7 +237,7 @@ int main(void) {
 
 ## 仪表盘显示项与 CAN 数据来源
 
-PC 模拟器（`src/freertos_main.c`）与 STM32F407 真机固件（`stm32_port/`）保持同一套 UI。
+PC 模拟器（`src/freertos_main.c`，只负责演示数据和窗口）与 STM32F407 真机固件（`stm32_port/`）共用 `dashboard_view.c` 这一套界面。
 CAN 接口以 [vehicle-interfaces](https://github.com/BITFSAE/vehicle-interfaces) 仓库 `can/Vehicle_CanB.dbc` 和 `docs/CANB接口.md` 为准，与本仓库同级存放时路径为 `../vehicle-interfaces/can/Vehicle_CanB.dbc`；本仓库不再保留 DBC 副本。Display 发送的 GPS 帧（`0x301/0x067/0x068` 每 50 ms，`0x7A0` 每 500 ms，`0x7A1` 每 200 ms）已在该仓库登记为 Display 已确认，对应分支 `can/display-gps-telemetry`，合并后以 `main` 提交号为准。
 
 | 显示项 | 报文 | 说明 |
