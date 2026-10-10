@@ -7,21 +7,21 @@ cmake-build-*/
 tmp/
 
 # STM32CubeIDE / generated build outputs
-# 注: stm32_port/Debug 与 stm32_port/MDK-ARM 的构建产物在历史提交中已被跟踪,
-# 规则只阻止新增文件进入版本库; 如需彻底移除请单独 git rm --cached 处理
+# 注: 构建产物已不入库(历史提交里仍有旧版本); 固件请用 ./build_fw.sh 或 CubeIDE 重新构建
 stm32_port/Debug/
 stm32_port/Release/
 stm32_port/build_vscode/
-stm32_display/Debug/
-stm32_display/Release/
+legacy/stm32_display/Debug/
+legacy/stm32_display/Release/
 
 # Keil MDK build outputs and per-user GUI state
 stm32_port/MDK-ARM/DATA_COLLECTION_INTEGRAL/
 *.uvguix.*
 *.bak
 
-# Keep hidden project files needed by the repository, ignore local IDE metadata only
+# 本机 IDE 配置: VS Code 任务/设置与 STM32 VS Code 扩展的 bundles 状态(含本机路径), 不入库
 .vscode/
+.settings/
 
 # ZCode workflow drafts (machine-owned)
 .zcode/

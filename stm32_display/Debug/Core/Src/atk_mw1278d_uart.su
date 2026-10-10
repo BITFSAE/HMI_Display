@@ -1,7 +1,0 @@
-../Core/Src/atk_mw1278d_uart.c:46:6:atk_mw1278d_uart_printf	16	static
-../Core/Src/atk_mw1278d_uart.c:64:6:atk_mw1278d_uart_rx_restart	4	static
-../Core/Src/atk_mw1278d_uart.c:76:10:atk_mw1278d_uart_rx_get_frame	4	static
-../Core/Src/atk_mw1278d_uart.c:95:10:atk_mw1278d_uart_rx_get_frame_len	4	static
-../Core/Src/atk_mw1278d_uart.c:112:6:atk_mw1278d_uart_init	16	static
-../Core/Src/atk_mw1278d_uart.c:170:6:ATK_MW1278D_UART_IRQHandler_callback	16	static
-../Core/Src/atk_mw1278d_uart.c:205:6:HAL_TIM_PeriodElapsedCallback	16	static

@@ -1,7 +1,0 @@
-../Core/Src/can.c:51:6:MX_CAN_Init	2
-../Core/Src/can.c:83:6:HAL_CAN_MspInit	2
-../Core/Src/can.c:121:6:HAL_CAN_MspDeInit	2
-../Core/Src/can.c:156:6:CAN_Filter_Config	1
-../Core/Src/can.c:176:6:User_CAN_Send	1
-../Core/Src/can.c:191:6:User_CAN_Send_sq	1
-../Core/Src/can.c:204:6:HAL_CAN_RxFifo0MsgPendingCallback	7
