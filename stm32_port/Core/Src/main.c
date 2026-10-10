@@ -266,6 +266,9 @@ void LVGL_Port_Init(void)
                NULL,
                sizeof(g_lvgl_draw_buf),
                LV_DISPLAY_RENDER_MODE_PARTIAL);
+  /* A new GNSS speed waits at most one refresh period before it is drawn;
+   * LV_DEF_REFR_PERIOD (33 ms) is shared with the simulator, so set it here. */
+  lv_timer_set_period(lv_display_get_refr_timer(g_lvgl_display), 16U);
 
   Dashboard_UI_Init();
   lv_refr_now(g_lvgl_display);

@@ -446,6 +446,11 @@ static void test_ui(void)
     }
     /* Inverter temperature, diagnostics, LV bus and fans reach the display copy. */
     assert(Dashboard_UI_GetCurrentData()->lv_bus_current_cA==-3990);
+    /* Speed is not throttled: each GNSS value shows on the very next pass. */
+    for(int32_t kmh=40;kmh<46;kmh++) {
+        Dashboard_UI_SubmitSpeed(kmh);test_tick+=10;Dashboard_UI_Process();
+        assert(g_speed==kmh&&Dashboard_UI_GetCurrentData()->speed==kmh);
+    }
     lv_mem_monitor_t m;lv_mem_monitor(&m);assert(m.free_size>1024);
     printf("UI: 400 telemetry/mode/alert cycles, identical-value skip and 120 KiB host pool passed (peak %zu, free %zu)\n",m.max_used,m.free_size);
 }

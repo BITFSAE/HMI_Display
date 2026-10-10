@@ -55,7 +55,6 @@ static volatile int32_t g_pending_lap_count = 0;
 static volatile uint8_t g_lap_times_dirty = 0U;
 static volatile int32_t g_pending_sprint_remaining_m = 75;
 static volatile uint8_t g_sprint_remaining_dirty = 0U;
-static uint32_t g_speed_ui_last_tick = 0U;
 static uint32_t g_dashboard_fast_ui_last_tick = 0U;
 static uint32_t g_dashboard_slow_ui_last_tick = 0U;
 static volatile uint8_t g_lap_analysis_active = 0U;
@@ -1229,24 +1228,23 @@ void Dashboard_UI_Process(void)
         dashboard_apply_data(dashboard_mask);
     }
 
+    /* Speed is applied on every pass, not throttled: the GNSS delivers 20 Hz and
+     * Dash_View_SetSpeed() redraws only when the integer km/h actually changes. */
     if(g_speed_dirty != 0U) {
-        if((g_speed_ui_last_tick == 0U) || ((now - g_speed_ui_last_tick) >= 100U)) {
-            primask = __get_PRIMASK();
-            __disable_irq();
-            pending_speed = g_pending_speed;
-            g_speed_dirty = 0U;
-            if(primask == 0U) {
-                __enable_irq();
-            }
+        primask = __get_PRIMASK();
+        __disable_irq();
+        pending_speed = g_pending_speed;
+        g_speed_dirty = 0U;
+        if(primask == 0U) {
+            __enable_irq();
+        }
 
-            if(pending_speed < 0) pending_speed = 0;
-            if(pending_speed > SPEED_DISPLAY_MAX_KMH) pending_speed = SPEED_DISPLAY_MAX_KMH;
-            g_dashboard_data.speed = pending_speed;
-            if(pending_speed != g_speed) {
-                g_speed = pending_speed;
-                Dash_View_SetSpeed(pending_speed);
-            }
-            g_speed_ui_last_tick = now;
+        if(pending_speed < 0) pending_speed = 0;
+        if(pending_speed > SPEED_DISPLAY_MAX_KMH) pending_speed = SPEED_DISPLAY_MAX_KMH;
+        g_dashboard_data.speed = pending_speed;
+        if(pending_speed != g_speed) {
+            g_speed = pending_speed;
+            Dash_View_SetSpeed(pending_speed);
         }
     }
 
