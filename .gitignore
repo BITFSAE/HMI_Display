@@ -11,6 +11,7 @@ tmp/
 # 规则只阻止新增文件进入版本库; 如需彻底移除请单独 git rm --cached 处理
 stm32_port/Debug/
 stm32_port/Release/
+stm32_port/build_vscode/
 stm32_display/Debug/
 stm32_display/Release/
 
