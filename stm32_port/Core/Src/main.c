@@ -117,7 +117,7 @@ static void BoardBringup_MinimalLoop(void)
 #define LCD_HOR_RES 800
 #define LCD_VER_RES 480
 
-// 1. 基础读写宏 (保持 A17 逻辑)
+// 1. 基础读写宏: 16 位总线下 FSMC_A16(PD11) 对应字节地址位 17, 作为 SSD1963 的命令/数据选择
 #define LCD_REG  *(__IO uint16_t *)(0x60000000)
 #define LCD_DATA *(__IO uint16_t *)(0x60020000)
 
@@ -451,7 +451,8 @@ int main(void)
   SSD1963_Init();
   LED_Diag_SetBootStage(1);
   Firmware_Diag_Init();
-  /* The Dashboard task initializes LVGL and enables backlight after its first frame. */
+  /* Dashboard 任务初始化 LVGL。背光实际由 Dashboard_UI_Init 末尾的 TIM14 PWM 点亮,
+   * 早于随后 lv_refr_now 的首帧; LVGL_Port_Init 里的 LCD_Backlight_On 对已复用的 PF9 无效。 */
 #endif
   /* USER CODE END 2 */
 
