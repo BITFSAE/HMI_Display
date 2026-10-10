@@ -27,17 +27,25 @@ typedef struct {
     uint32_t checksum;
 } sd_odometer_record_t;
 
+typedef enum {
+    SD_ODO_EMPTY = 0U,
+    SD_ODO_VALID,
+    SD_ODO_IO_ERROR
+} sd_odometer_result_t;
+
 static TaskHandle_t g_sd_odometer_task_handle;
 static StaticTask_t g_sd_odometer_task_control;
 static StackType_t g_sd_odometer_task_stack[768U];
 static volatile uint32_t g_sd_odometer_pending_m;
 static volatile uint8_t g_sd_odometer_save_pending;
 static uint32_t g_sd_odometer_sequence;
+static uint8_t g_sd_odometer_next_file;
 static StaticSemaphore_t g_sd_mutex_control;
 static SemaphoreHandle_t g_sd_mutex;
 static uint32_t g_sd_initial_odometer_m;
 static volatile uint8_t g_sd_initial_odometer_ready;
 volatile uint32_t g_sd_odometer_save_fail_count;
+volatile uint32_t g_sd_odometer_load_fail_count;
 
 static uint8_t sd_lock(void)
 {
@@ -52,61 +60,77 @@ static uint32_t sd_odometer_checksum(uint32_t sequence, uint32_t total_m)
            SD_ODOMETER_CHECK_SALT;
 }
 
-static uint8_t sd_odometer_read_file(const char * path,
-                                     sd_odometer_record_t * record)
+static sd_odometer_result_t sd_odometer_read_file(const char * path,
+                                                 sd_odometer_record_t * record)
 {
     FIL fil;
     UINT bytes_read = 0U;
     FRESULT fr;
+    FRESULT close_fr;
 
     fr = f_open(&fil, path, FA_READ);
-    if(fr != FR_OK) return 0U;
+    if(fr == FR_NO_FILE) return SD_ODO_EMPTY;
+    if(fr != FR_OK) return SD_ODO_IO_ERROR;
     fr = f_read(&fil, record, sizeof(*record), &bytes_read);
-    f_close(&fil);
-    if((fr != FR_OK) || (bytes_read != sizeof(*record)) ||
+    close_fr = f_close(&fil);
+    if((fr != FR_OK) || (close_fr != FR_OK)) return SD_ODO_IO_ERROR;
+    if((bytes_read != sizeof(*record)) ||
        (record->magic != SD_ODOMETER_MAGIC) ||
        (record->checksum !=
         sd_odometer_checksum(record->sequence, record->total_m))) {
-        return 0U;
+        return SD_ODO_EMPTY;
     }
-    return 1U;
+    return SD_ODO_VALID;
 }
 
-static uint8_t sd_odometer_load_locked(uint32_t * total_m)
+static sd_odometer_result_t sd_odometer_load_locked(uint32_t * total_m)
 {
     sd_odometer_record_t record_a;
     sd_odometer_record_t record_b;
-    uint8_t valid_a;
-    uint8_t valid_b;
+    sd_odometer_result_t result_a;
+    sd_odometer_result_t result_b;
+    FRESULT unmount_fr;
 
-    if((total_m == NULL) || (g_sd_ready == 0U)) return 0U;
-    if(f_mount(&SDFatFS, SDPath, 1) != FR_OK) return 0U;
-    valid_a = sd_odometer_read_file(SD_ODOMETER_FILE_A, &record_a);
-    valid_b = sd_odometer_read_file(SD_ODOMETER_FILE_B, &record_b);
-    f_mount(NULL, SDPath, 0);
+    if((total_m == NULL) || (g_sd_ready == 0U)) return SD_ODO_IO_ERROR;
+    if(f_mount(&SDFatFS, SDPath, 1) != FR_OK) {
+        /* FatFs registers the volume before trying the physical mount. */
+        (void)f_mount(NULL, SDPath, 0);
+        return SD_ODO_IO_ERROR;
+    }
+    result_a = sd_odometer_read_file(SD_ODOMETER_FILE_A, &record_a);
+    result_b = sd_odometer_read_file(SD_ODOMETER_FILE_B, &record_b);
+    unmount_fr = f_mount(NULL, SDPath, 0);
+    /* An unreadable file may contain a newer valid record. Do not turn an
+     * I/O failure into an empty odometer and overwrite that record later. */
+    if((result_a == SD_ODO_IO_ERROR) || (result_b == SD_ODO_IO_ERROR) ||
+       (unmount_fr != FR_OK)) return SD_ODO_IO_ERROR;
 
-    if((valid_a != 0U) &&
-       ((valid_b == 0U) ||
+    if((result_a == SD_ODO_VALID) &&
+       ((result_b != SD_ODO_VALID) ||
         ((int32_t)(record_a.sequence - record_b.sequence) > 0))) {
         g_sd_odometer_sequence = record_a.sequence;
+        g_sd_odometer_next_file = 1U;
         *total_m = record_a.total_m;
-        return 1U;
+        return SD_ODO_VALID;
     }
-    if(valid_b != 0U) {
+    if(result_b == SD_ODO_VALID) {
         g_sd_odometer_sequence = record_b.sequence;
+        g_sd_odometer_next_file = 0U;
         *total_m = record_b.total_m;
-        return 1U;
+        return SD_ODO_VALID;
     }
     g_sd_odometer_sequence = 0U;
-    return 0U;
+    g_sd_odometer_next_file = 0U;
+    *total_m = 0U;
+    return SD_ODO_EMPTY;
 }
 
 uint8_t SD_Odometer_Load(uint32_t *total_m)
 {
     if(sd_lock() == 0U) return 0U;
-    uint8_t loaded = sd_odometer_load_locked(total_m);
+    sd_odometer_result_t loaded = sd_odometer_load_locked(total_m);
     (void)xSemaphoreGive(g_sd_mutex);
-    return loaded;
+    return loaded == SD_ODO_VALID;
 }
 
 static uint8_t sd_odometer_save_locked(uint32_t total_m)
@@ -118,15 +142,19 @@ static uint8_t sd_odometer_save_locked(uint32_t total_m)
     FRESULT fr;
     FRESULT close_fr;
 
-    if(g_sd_ready == 0U) return 0U;
+    if((g_sd_ready == 0U) || (g_sd_initial_odometer_ready == 0U)) return 0U;
     record.magic = SD_ODOMETER_MAGIC;
     record.sequence = g_sd_odometer_sequence + 1U;
     record.total_m = total_m;
     record.checksum = sd_odometer_checksum(record.sequence, record.total_m);
-    path = ((record.sequence & 1U) != 0U) ?
+    /* Preserve the file actually loaded, independently of sequence parity. */
+    path = (g_sd_odometer_next_file != 0U) ?
            SD_ODOMETER_FILE_B : SD_ODOMETER_FILE_A;
 
-    if(f_mount(&SDFatFS, SDPath, 1) != FR_OK) return 0U;
+    if(f_mount(&SDFatFS, SDPath, 1) != FR_OK) {
+        (void)f_mount(NULL, SDPath, 0);
+        return 0U;
+    }
     fr = f_open(&fil, path, FA_CREATE_ALWAYS | FA_WRITE);
     if(fr == FR_OK) {
         fr = f_write(&fil, &record, sizeof(record), &bytes_written);
@@ -141,6 +169,7 @@ static uint8_t sd_odometer_save_locked(uint32_t total_m)
     f_mount(NULL, SDPath, 0);
     if((fr != FR_OK) || (bytes_written != sizeof(record))) return 0U;
     g_sd_odometer_sequence = record.sequence;
+    g_sd_odometer_next_file ^= 1U;
     return 1U;
 }
 
@@ -152,14 +181,21 @@ static uint8_t sd_odometer_save(uint32_t total_m)
     return saved;
 }
 
-static void sd_odometer_initialize(void)
+static uint8_t sd_odometer_initialize(void)
 {
     uint32_t total_m = 0U;
-    (void)SD_Odometer_Load(&total_m);
+    if(sd_lock() == 0U) return 0U;
+    sd_odometer_result_t loaded = sd_odometer_load_locked(&total_m);
+    (void)xSemaphoreGive(g_sd_mutex);
+    if(loaded == SD_ODO_IO_ERROR) {
+        g_sd_odometer_load_fail_count++;
+        return 0U;
+    }
     taskENTER_CRITICAL();
     g_sd_initial_odometer_m = total_m;
     g_sd_initial_odometer_ready = 1U;
     taskEXIT_CRITICAL();
+    return 1U;
 }
 
 uint8_t SD_Odometer_GetInitial(uint32_t *total_m)
@@ -174,10 +210,16 @@ uint8_t SD_Odometer_GetInitial(uint32_t *total_m)
 static void SD_Odometer_Task(void * argument)
 {
     uint32_t pending_m;
+    uint8_t initialized;
 
     (void)argument;
-    sd_odometer_initialize();
+    initialized = sd_odometer_initialize();
     SD_Log_InitAndWrite(NULL);
+    while(initialized == 0U) {
+        /* GPS configuration and telemetry continue while only storage waits. */
+        vTaskDelay(pdMS_TO_TICKS(10000U));
+        initialized = sd_odometer_initialize();
+    }
     for(;;) {
         vTaskDelay(pdMS_TO_TICKS(1000U));
         if(g_sd_odometer_save_pending == 0U) continue;
@@ -249,6 +291,7 @@ static void sd_log_init_and_write_locked(const dashboard_data_t * data)
         g_sd_diag_fresult = fr;
         g_sd_diag_hal_error = hsd.ErrorCode;
         led_red_on();
+        (void)f_mount(NULL, SDPath, 0);
         return;
     }
 

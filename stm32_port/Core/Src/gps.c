@@ -81,8 +81,10 @@ static uint8_t     g_odometer_initialized;
 
 static void gps_odometer_init(void)
 {
-	g_odometer_total_m = 0U;
-	(void)SD_Odometer_GetInitial(&g_odometer_total_m);
+	uint32_t initial_m;
+	if(g_odometer_initialized != 0U) return;
+	if(SD_Odometer_GetInitial(&initial_m) == 0U) return;
+	g_odometer_total_m = initial_m;
 	g_odometer_checkpoint_m = g_odometer_total_m;
 	g_odometer_fraction_m = 0.0f;
 	g_odometer_anchor_valid = 0U;
@@ -831,6 +833,9 @@ static void GPS_ProcessByte(uint8_t byte)
 
 static void GPS_SentenceProcess(void)
 {
+    /* The SD task publishes the starting total only after a trustworthy read.
+     * Keep configuring/parsing GPS even when storage is absent or failing. */
+    gps_odometer_init();
     uint32_t now = HAL_GetTick();
     if(g_gps_poll_tick != 0U) {
         uint32_t gap = now - g_gps_poll_tick;
@@ -880,6 +885,7 @@ static void GPS_WaitAndDrain(uint32_t duration_ms)
     uint32_t start = HAL_GetTick();
     do {
         GPS_SentenceProcess();
+        gps_can_speed_tick(HAL_GetTick());
         vTaskDelay(pdMS_TO_TICKS(10U));
     } while((HAL_GetTick() - start) < duration_ms);
 }
@@ -892,15 +898,6 @@ static void GPS_TaskFunc(void * argument)
 	(void)argument;
 
     while(Dashboard_UI_IsStartupComplete() == 0U) vTaskDelay(pdMS_TO_TICKS(10U));
-    /* Only the SD task performs startup I/O. Continue draining DMA while a
-     * slow/missing card is being checked; GPS never waits on the SD mutex. */
-    uint32_t initial_odometer;
-    while(SD_Odometer_GetInitial(&initial_odometer) == 0U) {
-        GPS_SentenceProcess();
-        gps_can_speed_tick(HAL_GetTick());
-        vTaskDelay(pdMS_TO_TICKS(10U));
-    }
-    gps_odometer_init();
 
 	/* Wait for the first valid NMEA sentence: proves the UM982 has finished
 	 * booting and the 115200 link is alive.  Config commands sent during the
@@ -908,6 +905,7 @@ static void GPS_TaskFunc(void * argument)
 	boot_start = HAL_GetTick();
 	while((g_gps_sentence_count == 0U) && ((HAL_GetTick() - boot_start) < 5000U)) {
 		GPS_SentenceProcess();
+		gps_can_speed_tick(HAL_GetTick());
 		vTaskDelay(pdMS_TO_TICKS(20));
 	}
 
@@ -975,6 +973,7 @@ void GPS_Init(void)
 	g_gps_can_last_tick = 0U;
 	g_gps_rmc_valid = 0U;
 	g_gps_speed_ui_alive_tick = 0U;
+	g_odometer_initialized = 0U;
 	/* Preserve the dashboard's startup placeholder until the first valid RMC is
 	 * received. The CAN publisher still uses the internal zero speed. */
     GPS_Lap_InitLock();

@@ -32,12 +32,14 @@ int HAL_CAN_AddTxMessage(CAN_HandleTypeDef *h,CAN_TxHeaderTypeDef *tx,uint8_t *d
 
 static struct {uint8_t bytes[128];unsigned size;} files[3];
 static int test_io_error,test_short_write,test_mounted;
-FRESULT f_mount(FATFS *fs,const char *path,int opt) {(void)path;(void)opt;assert(test_mutex_depth);test_mounted=fs!=NULL;return test_io_error?FR_DISK_ERR:FR_OK;}
-FRESULT f_open(FIL *fil,const char *path,unsigned mode) {assert(test_mounted&&test_mutex_depth);fil->file=strstr(path,"ODO_A")?0:strstr(path,"ODO_B")?1:2;if(mode&FA_CREATE_ALWAYS)files[fil->file].size=0;return files[fil->file].size||(mode&FA_CREATE_ALWAYS)?FR_OK:FR_NO_FILE;}
-FRESULT f_read(FIL *fil,void *data,unsigned size,UINT *bytes) {assert(test_mutex_depth);*bytes=files[fil->file].size<size?files[fil->file].size:size;memcpy(data,files[fil->file].bytes,*bytes);return FR_OK;}
+static int test_open_error_file=-1,test_read_error_file=-1,test_close_error_file=-1;
+static int test_sync_error;
+FRESULT f_mount(FATFS *fs,const char *path,int opt) {(void)path;(void)opt;assert(test_mutex_depth);test_mounted=fs!=NULL;return fs&&test_io_error?FR_DISK_ERR:FR_OK;}
+FRESULT f_open(FIL *fil,const char *path,unsigned mode) {assert(test_mounted&&test_mutex_depth);fil->file=strstr(path,"ODO_A")?0:strstr(path,"ODO_B")?1:2;if((int)fil->file==test_open_error_file)return FR_DISK_ERR;if(mode&FA_CREATE_ALWAYS)files[fil->file].size=0;return files[fil->file].size||(mode&FA_CREATE_ALWAYS)?FR_OK:FR_NO_FILE;}
+FRESULT f_read(FIL *fil,void *data,unsigned size,UINT *bytes) {assert(test_mutex_depth);if((int)fil->file==test_read_error_file)return FR_DISK_ERR;*bytes=files[fil->file].size<size?files[fil->file].size:size;memcpy(data,files[fil->file].bytes,*bytes);return FR_OK;}
 FRESULT f_write(FIL *fil,const void *data,unsigned size,UINT *bytes) {assert(test_mutex_depth&&size<=128);*bytes=test_short_write?size-1:size;memcpy(files[fil->file].bytes,data,*bytes);files[fil->file].size=*bytes;return FR_OK;}
-FRESULT f_close(FIL *fil) {(void)fil;assert(test_mutex_depth);return FR_OK;}
-FRESULT f_sync(FIL *fil) {(void)fil;assert(test_mutex_depth);return FR_OK;}
+FRESULT f_close(FIL *fil) {assert(test_mutex_depth);return (int)fil->file==test_close_error_file?FR_DISK_ERR:FR_OK;}
+FRESULT f_sync(FIL *fil) {(void)fil;assert(test_mutex_depth);return test_sync_error?FR_DISK_ERR:FR_OK;}
 
 /* Compile actual application code; only the Cube-generated CAN init/MSP
  * sections are omitted by run_firmware_tests.py. Hardware/RTOS are mocks. */
@@ -117,17 +119,59 @@ static void test_sd(void)
 {
     uint32_t distance;
     SD_Odometer_StartTask();store_record(0,10,1234,0);store_record(1,11,1500,0);
+    /* Storage faults must leave initialization pending and preserve both
+     * records. GPS polling/configuration and CAN telemetry keep running. */
+    for(unsigned failure=0;failure<6;failure++) {
+        uint8_t records[2][128];
+        memcpy(records[0],files[0].bytes,128);memcpy(records[1],files[1].bytes,128);
+        g_sd_initial_odometer_ready=0;g_odometer_initialized=0;
+        if(failure==0)g_sd_ready=0;
+        if(failure==1)test_io_error=1;
+        if(failure==2)test_open_error_file=1;
+        if(failure==3)test_read_error_file=1;
+        if(failure==4)test_close_error_file=1;
+        if(failure==5)test_read_error_file=0;
+        unsigned failures=g_sd_odometer_load_fail_count;
+        assert(!sd_odometer_initialize()&&g_sd_odometer_load_fail_count==failures+1);
+        distance=999;assert(!SD_Odometer_GetInitial(&distance)&&distance==999);
+        assert(!sd_odometer_save(1));
+        unsigned sent=test_tx_count;g_gps_can_last_tick=0;
+        GPS_WaitAndDrain(100);assert(!g_odometer_initialized&&test_tx_count>sent);
+        assert(!memcmp(records[0],files[0].bytes,128)&&!memcmp(records[1],files[1].bytes,128));
+        assert(test_mutex_depth==0&&!test_mounted);
+        if(failure==1) {
+            SD_Log_InitAndWrite(NULL);assert(g_sd_diag_stage==SD_DIAG_MOUNT_FAILED&&!test_mounted&&test_mutex_depth==0);
+        }
+        g_sd_ready=1;test_io_error=0;test_open_error_file=-1;test_read_error_file=-1;test_close_error_file=-1;
+        assert(sd_odometer_initialize());gps_odometer_init();assert(g_odometer_total_m==1500);
+        g_odometer_total_m=1540;gps_odometer_init();assert(g_odometer_total_m==1540);
+    }
     assert(SD_Odometer_Load(&distance)&&distance==1500&&test_mutex_depth==0);
     store_record(1,11,1500,1);assert(SD_Odometer_Load(&distance)&&distance==1234);
     store_record(0,UINT32_MAX,2000,0);store_record(1,0,2100,0);
     assert(SD_Odometer_Load(&distance)&&distance==2100);
     assert(sd_odometer_save(2200));assert(SD_Odometer_Load(&distance)&&distance==2200);
     uint32_t seq=g_sd_odometer_sequence;test_short_write=1;
-    assert(!sd_odometer_save(2300)&&g_sd_odometer_sequence==seq&&test_mutex_depth==0);test_short_write=0;
-    test_io_error=1;assert(!SD_Odometer_Load(&distance)&&test_mutex_depth==0);test_io_error=0;
+    assert(!sd_odometer_save(2300)&&g_sd_odometer_sequence==seq&&test_mutex_depth==0&&!test_mounted);test_short_write=0;
+    assert(SD_Odometer_Load(&distance)&&distance==2200);
+    /* Sequence parity need not match the file containing the latest record. */
+    store_record(0,UINT32_MAX,3000,0);files[1].size=0;
+    assert(SD_Odometer_Load(&distance)&&distance==3000);
+    test_short_write=1;assert(!sd_odometer_save(3100));test_short_write=0;
+    assert(SD_Odometer_Load(&distance)&&distance==3000);
+    assert(sd_odometer_save(3100)&&SD_Odometer_Load(&distance)&&distance==3100&&g_sd_odometer_sequence==0);
+    seq=g_sd_odometer_sequence;unsigned next=g_sd_odometer_next_file;
+    uint8_t preserved[128];memcpy(preserved,files[next^1].bytes,128);
+    test_sync_error=1;assert(!sd_odometer_save(3200)&&g_sd_odometer_sequence==seq&&g_sd_odometer_next_file==next);test_sync_error=0;
+    test_close_error_file=next;assert(!sd_odometer_save(3300)&&g_sd_odometer_sequence==seq&&g_sd_odometer_next_file==next);test_close_error_file=-1;
+    assert(!memcmp(preserved,files[next^1].bytes,128)&&test_mutex_depth==0&&!test_mounted);
+    test_io_error=1;assert(!SD_Odometer_Load(&distance)&&!sd_odometer_save(3400)&&test_mutex_depth==0&&!test_mounted);test_io_error=0;
+    files[0].size=files[1].size=0;g_sd_initial_odometer_ready=0;
+    assert(sd_odometer_initialize()&&SD_Odometer_GetInitial(&distance)&&distance==0);
+    assert(sd_odometer_save(2200));
     SD_Log_InitAndWrite(NULL);assert(g_sd_diag_stage==SD_DIAG_OK&&test_mutex_depth==0);
-    sd_odometer_initialize();gps_odometer_init();assert(g_odometer_total_m==2200);
-    puts("SD: persistent load, corrupt-record fallback, sequence wrap, short write and mutex cleanup passed");
+    assert(sd_odometer_initialize());g_odometer_initialized=0;gps_odometer_init();assert(g_odometer_total_m==2200);
+    puts("SD: startup I/O failures/recovery, empty card, preserved alternate record, sequence wrap and mutex cleanup passed");
 }
 static void nmea(const char *payload)
 {
