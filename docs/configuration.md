@@ -50,7 +50,6 @@ UM982 启动时依次发送（每条后等待并继续读取 DMA）：`UNLOG COM
 | 接收队列 / 发送队列 | 64 / 32 | `USER_CAN_RX_QUEUE_CAPACITY`、`USER_CAN_TX_QUEUE_CAPACITY` | 帧 | 满时丢新帧 |
 | 接收白名单 | 见 [CAN 接口](can_interface.md) | `CAN1_RX_MSG_ID_BANK*`、`CAN2_RX_MSG_ID_BANK0` | CAN ID | 新增接收 ID 必须同步修改，并更新 [CAN 接口](can_interface.md) |
 | GPS 帧 ID | `0x067/0x068/0x7A0/0x7A1`（另有 `0x301`） | `CAN_ID_GPS_*` | CAN ID | 对外帧，改动先走中央库评审 |
-| 心跳 ID / 周期 | `0x102` / 500 ms | `CAN1_ID`、`freertos.c` | — | 未在中央库登记 |
 
 ## 显示与实时（`main.c`、`lv_conf.h`、`dashboard_ui.c`、`freertos.c`）
 

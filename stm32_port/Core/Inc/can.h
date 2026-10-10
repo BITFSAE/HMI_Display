@@ -75,9 +75,7 @@ void MX_CAN2_Init(void);
 /* USER CODE BEGIN Prototypes */
 void CAN1_Filter_Config(void);
 void CAN2_Filter_Config(void);
-void User_CAN_Send(void);
 void User_CAN_Send_sq(uint32_t CAN_ID_NEW,uint8_t* CAN_TxData_NEW);
-void CAN1_SendHeartbeat(void);
 void CAN_ServiceTask(void *argument);
 void CAN_StartServiceTask(void);
 void CAN_SendGPSSpeed(int32_t speed_kmh_tenths);

@@ -6,13 +6,21 @@
 
 均已对照 2026-10-10 的代码核对，尚未处理。
 
-- **`0x102` 心跳**：中央库未登记，工作区内所有固件也没有接收方（来自旧版 F103 板）。确认是否保留；不用则从固件去掉，要用则先在 `vehicle-interfaces` 登记。明细见 [`docs/can_interface.md`](docs/can_interface.md#与中央库尚未对齐的部分)。
 - **GPS 接收机持久设置**：`gps.c` 每次上电都发 `SAVECONFIG`，每次开机写一次 UM982 非易失存储，需评估写入寿命，或只在配置变化时保存。
 - **模拟器与真机配置不一致**：模拟器根目录 `lv_conf.h` 为 32 位色、LVGL 池 1 MB；真机为 RGB565、60 KiB（CCM）。界面已共用 `dashboard_view.c`，但内存预算仍无法在模拟器上验证。
 - **背光点亮时机**：代码上背光在 `Dashboard_UI_Init` 末尾由 TIM14 PWM 以 100% 点亮，早于随后 `lv_refr_now` 的首帧，而 `main.c` 原注释称「首帧后开背光」。上板确认开机是否闪现未刷新的 GRAM 内容，必要时把 PWM 启动移到首帧之后。
 - **未使用或用途不明的外设**：USART1、USART6 已初始化但应用层未使用；PC2（输入）、PC3（输出）`.ioc` 无标签、代码未引用。确认后可从 `.ioc` 移除或补充标签。
 - **缺少自动化用例**：圈速过线、冲刺计时的几何判断没有回归用例。
 - **体积较大的源文件**：`dashboard_ui.c`、`can.c`（CubeMX 生成文件的 USER 区内承载了解码、转发和 GPS 遥测）建议拆成独立模块。
+
+## 2026-10-10 删除 0x102 心跳
+
+`0x102` 心跳没有接收方，中央库也未登记，按项目负责人决定整体删除。
+
+- `can.c`：删除 `CAN1_ID`、心跳计数和 `CAN1_SendHeartbeat`，以及同样发 `0x102` 且无调用方的 `User_CAN_Send` 和未被引用的 `CAN_TxData`、`CAN1_TxMail`；`freertos.c` 去掉每 500 ms 的发送，`can.h` 同步去掉声明。
+- `docs/can_interface.md`、`docs/configuration.md` 删除对应条目；「与中央库尚未对齐」只剩胎温和方向盘帧。
+- 绿色 LED（PD）250 ms 翻转不变，它是独立的运行指示，与 CAN 无关。
+- 已验证：`./build_fw.sh` 无警告，Flash 243,136 B（61.8%）、主 SRAM 92,024 B（70.2%）、CCM 61,440 B（93.8%）；`python3 tools/run_firmware_tests.py` 通过。未验证：CubeIDE 完整构建；上板后在 CANB 上确认 `0x102` 不再出现。
 
 ## 2026-10-10 停用 IMU 接收与转发
 

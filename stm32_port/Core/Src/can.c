@@ -31,10 +31,6 @@
 
 /* USER CODE BEGIN 0 */
 CAN_TxHeaderTypeDef TxHeader;
-uint8_t CAN_TxData[] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 };
-uint32_t CAN1_TxMail;
-uint32_t CAN1_ID = 0x102;
-static uint8_t g_can_heartbeat_counter;
 /* Only the CAN service task owns the decode workspace. IRQs enqueue compact
  * frames, never scan dashboard state or run protocol/UI logic. */
 static CAN_RxHeaderTypeDef RxHeader;
@@ -660,13 +656,6 @@ static uint8_t User_CAN_TxQueuePush(uint32_t can_id, const uint8_t * data, uint3
   return 1U;
 }
 
-static void User_CAN_SendDlc(uint32_t can_id, const uint8_t * data, uint32_t dlc);
-
-void User_CAN_Send()
-{
-	User_CAN_SendDlc(CAN1_ID, CAN_TxData, 8U);
-}
-
 /*
  * @func: CAN paper send[standard form、data]
  */
@@ -680,22 +669,6 @@ static void User_CAN_SendDlc(uint32_t can_id, const uint8_t * data, uint32_t dlc
 void User_CAN_Send_sq(uint32_t CAN_ID_NEW,uint8_t* CAN_TxData_NEW)
 {
 	User_CAN_SendDlc(CAN_ID_NEW, CAN_TxData_NEW, 8U);
-}
-
-void CAN1_SendHeartbeat(void)
-{
-  uint8_t heartbeat_data[8];
-
-  heartbeat_data[0] = 0xA5;
-  heartbeat_data[1] = 0x5A;
-  heartbeat_data[2] = g_can_heartbeat_counter++;
-  heartbeat_data[3] = 0xF4;
-  heartbeat_data[4] = 0x07;
-  heartbeat_data[5] = 0x40;
-  heartbeat_data[6] = 0x00;
-  heartbeat_data[7] = 0x01;
-
-  User_CAN_Send_sq(CAN1_ID, heartbeat_data);
 }
 
 void CAN_ServiceTask(void *argument)
