@@ -21,7 +21,7 @@ stm32_port/MDK-ARM/DATA_COLLECTION_INTEGRAL/
 
 # 本机 IDE 配置: VS Code 任务/设置与 STM32 VS Code 扩展的 bundles 状态(含本机路径), 不入库
 .vscode/
-.settings/
+/.settings/
 
 # ZCode workflow drafts (machine-owned)
 .zcode/
