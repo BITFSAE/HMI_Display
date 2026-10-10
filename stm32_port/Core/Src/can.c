@@ -1029,8 +1029,11 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
       User_CAN_SetValid(DASH_VALID_AMK_EN, 1U);
 
       /* SG_ ModeFlag: 4|4@1- (1,0) [-8,7], signed 4-bit in byte0 high nibble.
-       * The DBC has no value table; 0=S 1=Q 2=C 3=E is assumed (same as the
-       * 0x310 request code - 48) and values outside 0..3 are ignored. */
+       * Values (vehicle-interfaces archive/CANRS485_G473_REFERENCE/cana_canb_protocol.md,
+       * not in the formal DBC): -1 default mode (12.3 kW per motor; the ECU
+       * returns to it after every LV power-up), 0 S/straight, 1 Q/avoidance,
+       * 2 C/figure-8, 3 E/endurance - the same numbering as 0x310 code - 48.
+       * -1 and other values are ignored here, so the UI keeps its last mode. */
       {
         int32_t mode_val = (int32_t)((CAN_RxData[0] >> 4) & 0x0FU);
         if(mode_val & 8) mode_val -= 16;
