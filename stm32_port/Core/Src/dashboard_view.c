@@ -2,7 +2,7 @@
 /* Dashboard view for the 800x480 SSD1963 panel (RGB565, partial FSMC flush).
  *
  * Layout (px):
- *   0..52    top bar: logo | BEST | LAST | delta | LAP | LEFT | ODO | GPS
+ *   0..52    top bar: logo image | BEST | LAST | delta | LAP | LEFT | ODO | GPS
  *   52..376  left 0..200: mode tile, slip, tyre map, night button
  *            centre 200..600: lap time, alert banner, speed, pedal bars
  *            right 600..800: SOC, HV, power, max temp, LV bus, fans
@@ -28,6 +28,7 @@ LV_FONT_DECLARE(dash_font_l)      /* SemiBold 36, digits : . + - */
 LV_FONT_DECLARE(dash_font_m)      /* SemiBold 22, ASCII */
 LV_FONT_DECLARE(dash_font_s)      /* Medium 18, ASCII + eye/bolt/warning */
 LV_FONT_DECLARE(dash_font_xs)     /* SemiBold 14, ASCII */
+extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 
 #define DEG "\xC2\xB0"
 
@@ -409,6 +410,20 @@ static void tire_draw_cb(lv_event_t * e)
     }
 }
 
+/* Team logo: A8 coverage map from flash, painted white as a mask. */
+static void logo_draw_cb(lv_event_t * e)
+{
+    lv_draw_image_dsc_t dsc;
+    lv_area_t a;
+
+    lv_obj_get_coords(lv_event_get_current_target_obj(e), &a);
+    lv_draw_image_dsc_init(&dsc);
+    dsc.src = &dash_logo;
+    dsc.recolor = lv_color_hex(C_TEXT);
+    dsc.recolor_opa = LV_OPA_COVER;
+    lv_draw_image(lv_event_get_layer(e), &dsc, &a);
+}
+
 /* ------------------------------------------------------------- creation */
 
 static lv_obj_t * top_block(lv_obj_t * scr, int32_t x, int32_t w, const char * caption,
@@ -421,25 +436,21 @@ static lv_obj_t * top_block(lv_obj_t * scr, int32_t x, int32_t w, const char * c
 
 static void create_top(lv_obj_t * scr)
 {
-    lv_obj_t * logo_fsae;
+    lv_obj_t * logo = make_box(scr, 12, (TOP_H - (int32_t)dash_logo.header.h) / 2,
+                               dash_logo.header.w, dash_logo.header.h);
+    lv_obj_add_event_cb(logo, logo_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
+    make_line(scr, 164, 10, 1, TOP_H - 20);
 
-    lv_obj_t * logo = make_label(scr, &st_value_m, 14, 15, 0, NULL, "BIT");
-    logo_fsae = make_label(scr, &st_value_m, 0, 15, 0, NULL, "FSAE");
-    lv_obj_set_style_text_color(logo_fsae, lv_color_hex(C_RED), 0);
-    lv_obj_update_layout(logo);
-    lv_obj_set_x(logo_fsae, 14 + lv_obj_get_width(logo));
-    make_line(scr, 108, 10, 1, TOP_H - 20);
+    ui.best = top_block(scr, 176, 86, "BEST", NULL);
+    ui.last = top_block(scr, 266, 86, "LAST", NULL);
 
-    ui.best = top_block(scr, 122, 92, "BEST", NULL);
-    ui.last = top_block(scr, 220, 92, "LAST", NULL);
-
-    ui.delta = make_label(scr, &st_value_m, 318, 4, 164, &st_center, "");
-    ui.delta_bar = make_box(scr, 326, 33, 148, 9);
+    ui.delta = make_label(scr, &st_value_m, 356, 4, 148, &st_center, "");
+    ui.delta_bar = make_box(scr, 364, 33, 132, 9);
     lv_obj_add_event_cb(ui.delta_bar, delta_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
 
-    ui.lap_count = top_block(scr, 496, 50, "LAP", &ui.lap_caption);
-    ui.left_value = top_block(scr, 554, 60, "LEFT", &ui.left_caption);
-    ui.odometer = top_block(scr, 622, 80, "ODO KM", NULL);
+    ui.lap_count = top_block(scr, 516, 46, "LAP", &ui.lap_caption);
+    ui.left_value = top_block(scr, 566, 56, "LEFT", &ui.left_caption);
+    ui.odometer = top_block(scr, 630, 84, "ODO KM", NULL);
 
     make_label(scr, &st_caption, 730, 7, 0, NULL, "GPS");
     ui.signal = make_box(scr, 730, 24, 44, 20);
@@ -587,16 +598,16 @@ static void create_bottom(lv_obj_t * scr)
         lv_obj_set_style_bg_color(m->diag, lv_color_hex(C_ALERT), 0);
 
         /* Multi-line captions share the 24 px row pitch of the value labels. */
-        lv_obj_t * cap = make_label(scr, &st_caption, x + 12, y + 4, 0, NULL, "TQ\nPWR\nMOT");
+        lv_obj_t * cap = make_label(scr, &st_caption, x + 10, y + 4, 0, NULL, "TQ\nkW\nMOT");
         lv_obj_set_style_text_line_space(cap, 10, 0);
-        cap = make_label(scr, &st_caption, x + 104, y + 4, 0, NULL, "RPM\nPEAK\nINV");
+        cap = make_label(scr, &st_caption, x + 106, y + 4, 0, NULL, "RPM\nPEAK\nINV");
         lv_obj_set_style_text_line_space(cap, 10, 0);
-        m->torque = make_label(scr, &st_value, x + 42, y, 52, &st_right, "");
-        m->power = make_label(scr, &st_value, x + 42, y + 24, 52, &st_right, "");
-        m->motor_temp = make_label(scr, &st_value, x + 42, y + 48, 52, &st_right, "");
-        m->rpm = make_label(scr, &st_value, x + 136, y, 52, &st_right, "");
-        m->peak = make_label(scr, &st_value, x + 136, y + 24, 52, &st_right, "");
-        m->inverter_temp = make_label(scr, &st_value, x + 136, y + 48, 52, &st_right, "");
+        m->torque = make_label(scr, &st_value, x + 36, y, 62, &st_right, "");
+        m->power = make_label(scr, &st_value, x + 36, y + 24, 62, &st_right, "");
+        m->motor_temp = make_label(scr, &st_value, x + 36, y + 48, 62, &st_right, "");
+        m->rpm = make_label(scr, &st_value, x + 140, y, 50, &st_right, "");
+        m->peak = make_label(scr, &st_value, x + 140, y + 24, 50, &st_right, "");
+        m->inverter_temp = make_label(scr, &st_value, x + 140, y + 48, 50, &st_right, "");
     }
 }
 
@@ -799,13 +810,13 @@ void Dash_View_SetMotor(uint32_t wheel, const dash_motor_t * motor)
     if((wheel >= 4U) || (motor == NULL)) return;
     m = &ui.motors[wheel];
 
-    lv_snprintf(buf, sizeof(buf), "%ld", (long)motor->torque);
+    lv_snprintf(buf, sizeof(buf), "%ld Nm", (long)motor->torque);
     set_text(m->torque, buf);
     lv_snprintf(buf, sizeof(buf), "%ld", (long)motor->rpm);
     set_text(m->rpm, buf);
-    lv_snprintf(buf, sizeof(buf), "%ld", (long)motor->power);
+    format_deci(buf, sizeof(buf), motor->power_dkw, "");
     set_text(m->power, buf);
-    lv_snprintf(buf, sizeof(buf), "%ld", (long)motor->power_peak);
+    format_deci(buf, sizeof(buf), motor->power_peak_dkw, "");
     set_text(m->peak, buf);
     lv_snprintf(buf, sizeof(buf), "%ld" DEG, (long)motor->motor_temp);
     set_text(m->motor_temp, buf);

@@ -823,7 +823,7 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
 	    break;
 	  }
 
-	  /* DBC BO_1282 Debug2 0x502: FR/FL/RR/RL_ActualTorque (1,0) 0.1%Mn, 16-bit signed each */
+	  /* DBC BO_1282 Debug2 0x502: FR/FL/RR/RL_ActualTorque (1,0) Nm (DBC 单位文字误写为 0.1%Mn), 16-bit signed each */
 	  case 0x502:
 	  {
 	    /* DBC order: RL(0), RR(1), FL(2), FR(3) -> Dashboard: LF(0), LR(1), RF(2), RR(3) */

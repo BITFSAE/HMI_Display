@@ -492,8 +492,9 @@ static void dashboard_handle_timing_mode_change(drive_mode_t previous_mode)
 static void apply_motor_ui(uint32_t index)
 {
     dash_motor_t motor;
-    /* Power estimate kept from the original dashboard formula. */
-    int32_t power = (g_dashboard_data.torque[index] * g_dashboard_data.rpm[index]) / 12000;
+    /* P[0.1 kW] = T[Nm] x n[rpm] x 10 / 9549; /955 keeps int32 within the
+     * DBC ranges (|T| <= 32767, |n| <= 32767) at 0.01 % error. */
+    int32_t power = (g_dashboard_data.torque[index] * g_dashboard_data.rpm[index]) / 955;
 
     if(power <= 0) {
         /* Power dropped to zero (or regen): reset the peak so it tracks the
@@ -505,8 +506,8 @@ static void apply_motor_ui(uint32_t index)
     }
     motor.torque = g_dashboard_data.torque[index];          /* DBC BO_1282 Debug2 */
     motor.rpm = g_dashboard_data.rpm[index];                /* DBC BO_1285 Debug5 */
-    motor.power = power;
-    motor.power_peak = g_motor_power_peak[index];
+    motor.power_dkw = power;
+    motor.power_peak_dkw = g_motor_power_peak[index];
     motor.motor_temp = g_dashboard_data.motor_temp[index];  /* DBC BO_1286 Debug6 */
     motor.inverter_temp = g_dashboard_data.inverter_temp[index]; /* DBC BO_1287 Debug7 */
     motor.diag = g_dashboard_data.diag_num[index];          /* DBC BO_1283/1284 */

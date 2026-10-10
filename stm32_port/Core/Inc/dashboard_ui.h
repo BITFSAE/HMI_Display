@@ -14,7 +14,7 @@ typedef struct {
 	int32_t soc;
 	/* DBC BO_1289 Debug9: ModeFlag, bit4|4@1- [-8,7] */
 	int32_t mode_index;
-	/* DBC BO_1282 Debug2: FR/FL/RR/RL_ActualTorque (1,0) 0.1%Mn */
+	/* DBC BO_1282 Debug2: FR/FL/RR/RL_ActualTorque (1,0) Nm (DBC unit text "0.1%Mn" is wrong) */
 	/* Wheel order: 0=LF(DBC FL), 1=LR(DBC RL), 2=RF(DBC FR), 3=RR(DBC RR) */
 	int32_t torque[4];
 	/* DBC BO_1289 Debug9: FR/FL/RR/RL_AMK_bEnable, bit20~23 each 1bit */

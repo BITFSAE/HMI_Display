@@ -90,7 +90,7 @@ def main():
             directory.mkdir(exist_ok=True)
             cmake = work / ('cmake-' + label)
             cmake.mkdir(exist_ok=True)
-            sources = [ROOT / 'tools/tests/firmware_regression.c', core / 'Src/dashboard_view.c',
+            sources = [ROOT / 'tools/tests/firmware_regression.c', core / 'Src/dashboard_view.c', core / 'Src/dash_logo.c',
                        *sorted((core / 'Src/fonts').glob('*.c')), *lvgl_sources]
             content = 'cmake_minimum_required(VERSION 3.16)\nproject(hmi_regression C)\n'
             content += 'add_executable(regression\n' + '\n'.join('"' + str(p) + '"' for p in sources) + '\n)\n'

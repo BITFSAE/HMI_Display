@@ -139,7 +139,7 @@ static void demo_timer_cb(lv_timer_t * timer)
 
     for(uint32_t wheel = 0U; wheel < 4U; wheel++) {
         dash_motor_t motor = {
-            .torque = throttle * 10 - brake * 4,
+            .torque = throttle * 21 / 100 - brake / 8,
             .rpm = speed * 100,
             .motor_temp = 48 + (int32_t)wheel + triangle(g_tick, 600U, 45),
             .inverter_temp = 44 + (int32_t)wheel * 2 + triangle(g_tick, 400U, 20),
@@ -147,8 +147,8 @@ static void demo_timer_cb(lv_timer_t * timer)
             .enabled = 1U,
         };
         int32_t tread[4];
-        motor.power = (motor.torque * motor.rpm) / 12000;
-        motor.power_peak = motor.power > 0 ? motor.power : 0;
+        motor.power_dkw = (motor.torque * motor.rpm) / 955;
+        motor.power_peak_dkw = motor.power_dkw > 0 ? motor.power_dkw : 0;
         Dash_View_SetMotor(wheel, &motor);
         for(uint32_t seg = 0U; seg < 4U; seg++) {
             tread[seg] = (30 + triangle(g_tick, 360U, 70) + tread_offset[wheel][seg]) * 100;

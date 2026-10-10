@@ -33,10 +33,10 @@ typedef enum {
 
 /* Per-wheel motor readout. Values keep the raw dashboard units. */
 typedef struct {
-    int32_t torque;        /* DBC ActualTorque raw (0.1 %Mn) */
+    int32_t torque;        /* Nm (DBC ActualTorque, raw 1 Nm; DBC unit text is wrong) */
     int32_t rpm;
-    int32_t power;         /* dashboard_ui.c motor power estimate */
-    int32_t power_peak;
+    int32_t power_dkw;     /* 0.1 kW, torque x rpm / 9549 */
+    int32_t power_peak_dkw;
     int32_t motor_temp;    /* degC */
     int32_t inverter_temp; /* degC */
     uint32_t diag;         /* AMK diagnostic number, 0 = OK */

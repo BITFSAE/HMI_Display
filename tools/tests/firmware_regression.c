@@ -246,7 +246,7 @@ static void render_modes(const char *directory)
     data.lv_bus_voltage_mV=13820;data.lv_bus_current_cA=-1240;data.lv_bus_power_dW=1712;
     data.fan_rpm[0]=2376;data.fan_rpm[1]=2316;data.fan_rpm[2]=2196;data.fan_pwm_duty[0]=49;data.fan_pwm_duty[1]=49;
     for(unsigned w=0;w<4;w++) {
-        data.torque[w]=420+(int32_t)w*15;data.rpm[w]=11800-(int32_t)w*120;data.motor_enable[w]=w!=3;
+        data.torque[w]=18+(int32_t)w;data.rpm[w]=11800-(int32_t)w*120;data.motor_enable[w]=w!=3;
         data.motor_temp[w]=58+(int32_t)w*3;data.inverter_temp[w]=44+(int32_t)w*4;
         Dashboard_UI_SubmitTireTemperaturesCenti(w,tires[w]);
     }
