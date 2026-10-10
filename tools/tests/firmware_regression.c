@@ -47,6 +47,7 @@ FRESULT f_sync(FIL *fil) {(void)fil;assert(test_mutex_depth);return test_sync_er
 #include "../../stm32_port/Core/Src/sd_log.c"
 #include "../../stm32_port/Core/Src/gps_lap.c"
 #include "../../stm32_port/Core/Src/gps.c"
+#include "../../stm32_port/Core/lvgl/lvgl.h"
 #ifndef DASHBOARD_UI_SOURCE
 #define DASHBOARD_UI_SOURCE "../../stm32_port/Core/Src/dashboard_ui.c"
 #endif
@@ -207,30 +208,60 @@ static void test_gps(void)
 static void test_ui(void)
 {
     Dashboard_UI_RequestAlertClear();test_tick+=200;Dashboard_UI_Process();lv_refr_now(NULL);
-    flushes=0;dashboard_set_label_text(g_dashboard.soc_value,lv_label_get_text(g_dashboard.soc_value));
-    lv_refr_now(NULL);assert(flushes==0);
-    for(unsigned wheel=0;wheel<4;wheel++)apply_vehicle_motor_ui(wheel);
+    /* Re-submitting unchanged values must not invalidate anything. */
+    const dashboard_data_t *d=Dashboard_UI_GetCurrentData();
+    flushes=0;Dash_View_SetBattery(d->soc,d->sum_voltage,d->sum_current);
+    for(unsigned wheel=0;wheel<4;wheel++)Dash_View_SetTire(wheel,g_tire_temp[wheel]);
     lv_refr_now(NULL);assert(flushes==0);
     for(unsigned i=0;i<400;i++) {
         dashboard_data_t data=*Dashboard_UI_GetCurrentData();
         data.soc=i%101;data.sum_voltage=400;data.sum_current=i%100;
         data.aps_open_pct=i%101;data.brake_pct=(i+10)%101;
-        Dashboard_UI_SubmitData(&data);Dashboard_UI_SubmitSpeed(i%100);
+        data.diag_num[i%4]=(i%5==0)?0x231:0;data.inverter_temp[i%4]=(int32_t)(i%120);
+        data.lv_bus_current_cA=-(int32_t)i*10;data.fan_rpm[i%3]=(int32_t)i*10;
+        Dashboard_UI_SubmitData(&data);Dashboard_UI_SubmitSpeed(i%300);
         Dashboard_UI_SubmitDriveMode(i%4);Dashboard_UI_SubmitSlipLevel(i%8);
         Dashboard_UI_PushAlert("TEST ALERT");if(i%3==0)Dashboard_UI_RequestAlertClear();
         test_tick+=100;Dashboard_UI_Process();lv_refr_now(NULL);
         assert(test_primask==0&&test_mutex_depth==0);
     }
+    /* Inverter temperature, diagnostics, LV bus and fans reach the display copy. */
+    assert(Dashboard_UI_GetCurrentData()->lv_bus_current_cA==-3990);
     lv_mem_monitor_t m;lv_mem_monitor(&m);assert(m.free_size>1024);
-    printf("UI: 400 telemetry/mode/alert cycles, identical-label skip and 120 KiB host pool passed (peak %zu, free %zu)\n",m.max_used,m.free_size);
+    printf("UI: 400 telemetry/mode/alert cycles, identical-value skip and 120 KiB host pool passed (peak %zu, free %zu)\n",m.max_used,m.free_size);
+}
+/* Representative telemetry for screenshots: one frame per drive mode plus an
+ * alert frame (mode-4) and the S-mode READY banner (mode-5). */
+static void save_frame(const char *directory,unsigned index)
+{
+    char path[1024];snprintf(path,sizeof(path),"%s/mode-%u.rgb565",directory,index);
+    FILE *file=fopen(path,"wb");assert(file);assert(fwrite(frame_pixels,2,800*480,file)==800*480);fclose(file);
 }
 static void render_modes(const char *directory)
 {
-    for(unsigned mode=0;mode<4;mode++) {
-        Dashboard_UI_SubmitDriveMode(mode);test_tick+=100;Dashboard_UI_Process();lv_refr_now(NULL);
-        char path[1024];snprintf(path,sizeof(path),"%s/mode-%u.rgb565",directory,mode);
-        FILE *file=fopen(path,"wb");assert(file);assert(fwrite(frame_pixels,2,800*480,file)==800*480);fclose(file);
+    static const int32_t tires[4][4]={{7200,7600,8100,8400},{6900,7300,7700,8000},{7400,7900,8600,9300},{6600,7000,7300,7500}};
+    dashboard_data_t data=*Dashboard_UI_GetCurrentData();
+    data.soc=76;data.sum_voltage=386;data.sum_current=118;data.max_temperature=74;
+    data.aps_open_pct=62;data.brake_pct=0;
+    data.lv_bus_voltage_mV=13820;data.lv_bus_current_cA=-1240;data.lv_bus_power_dW=1712;
+    data.fan_rpm[0]=2376;data.fan_rpm[1]=2316;data.fan_rpm[2]=2196;data.fan_pwm_duty[0]=49;data.fan_pwm_duty[1]=49;
+    for(unsigned w=0;w<4;w++) {
+        data.torque[w]=420+(int32_t)w*15;data.rpm[w]=11800-(int32_t)w*120;data.motor_enable[w]=w!=3;
+        data.motor_temp[w]=58+(int32_t)w*3;data.inverter_temp[w]=44+(int32_t)w*4;
+        Dashboard_UI_SubmitTireTemperaturesCenti(w,tires[w]);
     }
+    data.motor_temp[2]=88;data.diag_num[1]=0x0231;
+    Dashboard_UI_SubmitData(&data);Dashboard_UI_SubmitSpeed(87);Dashboard_UI_SubmitSlipLevel(3);
+    Dashboard_UI_SubmitSignalLevel(4);Dashboard_UI_SubmitOdometer(412);
+    for(unsigned mode=0;mode<4;mode++) {
+        Dashboard_UI_SubmitDriveMode(mode);test_tick+=300;Dashboard_UI_Process();
+        Dashboard_UI_SubmitLapTimes(6233,8410,8345,3);Dashboard_UI_SubmitLapDelta(-32);
+        test_tick+=300;Dashboard_UI_Process();lv_refr_now(NULL);save_frame(directory,mode);
+    }
+    Dashboard_UI_PushAlert("inverter overtemp");Dashboard_UI_PushAlert("gps not fixed");
+    test_tick+=300;Dashboard_UI_Process();lv_refr_now(NULL);save_frame(directory,4);
+    Dashboard_UI_RequestAlertClear();Dashboard_UI_SubmitDriveMode(0);Dashboard_UI_SetSprintReady(1);
+    Dashboard_UI_SubmitSpeed(0);test_tick+=300;Dashboard_UI_Process();lv_refr_now(NULL);save_frame(directory,5);
 }
 int main(int argc,char **argv)
 {
