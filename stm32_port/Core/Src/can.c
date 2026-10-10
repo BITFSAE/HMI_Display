@@ -1048,8 +1048,9 @@ static void can_pack_u24_le(uint8_t * data, uint32_t value)
  * GPS telemetry snapshot, all standard IDs and all new payloads use DLC=8.
  * 0x067: latitude/longitude; 0x068: motion/heading; 0x069: status/odometer;
  * 0x06A: lap timing. Tire inputs use 0x071..0x074 and are not used for GPS TX.
+ * `frames` is a mask of CAN_GPS_TX_* groups; each group has its own period.
  */
-void CAN_SendGPSTelemetry(const CAN_GPSTelemetry_t * telemetry)
+void CAN_SendGPSTelemetry(const CAN_GPSTelemetry_t * telemetry, uint32_t frames)
 {
   uint8_t position_data[8];
   uint8_t motion_data[8];
@@ -1087,10 +1088,10 @@ void CAN_SendGPSTelemetry(const CAN_GPSTelemetry_t * telemetry)
   can_pack_u16_le(&lap_data[4], telemetry->lap_best_cs);
   can_pack_u16_le(&lap_data[6], (uint16_t)telemetry->lap_delta_cs);
 
-  User_CAN_SendDlc(CAN_ID_GPS_POSITION, position_data, 8U);
-  User_CAN_SendDlc(CAN_ID_GPS_MOTION, motion_data, 8U);
-  User_CAN_SendDlc(CAN_ID_GPS_STATUS, status_data, 8U);
-  User_CAN_SendDlc(CAN_ID_GPS_LAP, lap_data, 8U);
+  if((frames & CAN_GPS_TX_POSITION) != 0U) User_CAN_SendDlc(CAN_ID_GPS_POSITION, position_data, 8U);
+  if((frames & CAN_GPS_TX_MOTION) != 0U) User_CAN_SendDlc(CAN_ID_GPS_MOTION, motion_data, 8U);
+  if((frames & CAN_GPS_TX_STATUS) != 0U) User_CAN_SendDlc(CAN_ID_GPS_STATUS, status_data, 8U);
+  if((frames & CAN_GPS_TX_LAP) != 0U) User_CAN_SendDlc(CAN_ID_GPS_LAP, lap_data, 8U);
 }
 
 /*

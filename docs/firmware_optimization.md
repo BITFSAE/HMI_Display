@@ -16,7 +16,7 @@
 
 Flash 节省 197,556 B，剩余 296,584 B。
 
-此后界面改版使 Flash 增至 254,144 B、主 SRAM 增至 96,512 B；移除 SD、FatFs 并改用内部 Flash 存里程后，当前为 Flash 242,432 B（程序区 384 KiB 的 61.7%，剩余 150,784 B），主 SRAM 92,208 B（70.3%），CCM 不变。
+此后界面改版使 Flash 增至 254,144 B、主 SRAM 增至 96,512 B；移除 SD、FatFs 并改用内部 Flash 存里程后，当前为 Flash 242,544 B（程序区 384 KiB 的 61.7%，剩余 150,672 B），主 SRAM 92,208 B（70.3%），CCM 不变。
 
 主 SRAM 预算包含静态变量、FreeRTOS 堆和链接器预留。任务栈已经计入静态变量或 FreeRTOS 堆，不应重复相加。CCM 内存池通过 `LV_MEM_ADR` 指定地址，普通 `size` 输出不会列出它；CCM 的剩余 4 KiB 尚未分配。链接器禁止其他 `.ccmram` 数据覆盖内存池，并检查主 SRAM 能否容纳堆和 MSP 预留。
 

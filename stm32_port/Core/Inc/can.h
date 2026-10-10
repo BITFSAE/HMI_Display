@@ -61,6 +61,12 @@ typedef struct {
   int16_t lap_delta_cs;
 } CAN_GPSTelemetry_t;
 
+/* Frame groups sent by CAN_SendGPSTelemetry(); the caller picks the due ones. */
+#define CAN_GPS_TX_POSITION (1U << 0)  /* 0x067 */
+#define CAN_GPS_TX_MOTION   (1U << 1)  /* 0x068 */
+#define CAN_GPS_TX_STATUS   (1U << 2)  /* 0x069: odometer, GPS quality, lap count */
+#define CAN_GPS_TX_LAP      (1U << 3)  /* 0x06A: lap timing */
+
 /* USER CODE END Private defines */
 
 void MX_CAN1_Init(void);
@@ -75,7 +81,7 @@ void CAN1_SendHeartbeat(void);
 void CAN_ServiceTask(void *argument);
 void CAN_StartServiceTask(void);
 void CAN_SendGPSSpeed(int32_t speed_kmh_tenths);
-void CAN_SendGPSTelemetry(const CAN_GPSTelemetry_t * telemetry);
+void CAN_SendGPSTelemetry(const CAN_GPSTelemetry_t * telemetry, uint32_t frames);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

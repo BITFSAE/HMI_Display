@@ -18,13 +18,15 @@ int HAL_UART_Transmit(UART_HandleTypeDef *h,uint8_t *b,uint16_t n,uint32_t timeo
 static CAN_RxHeaderTypeDef test_rx_header;
 static uint8_t test_rx_data[8];
 static unsigned test_rx_pending,test_tx_count,test_can_speed_tenths;
+static unsigned test_tx_id_count[0x800];
+static uint8_t test_tx_id_data[0x800][8];
 static CAN_TxHeaderTypeDef test_tx_header;
 static uint8_t test_tx_data[8];
 int HAL_CAN_ConfigFilter(CAN_HandleTypeDef *h,CAN_FilterTypeDef *f) {(void)h;(void)f;return HAL_OK;}
 uint32_t HAL_CAN_GetRxFifoFillLevel(CAN_HandleTypeDef *h,uint32_t fifo) {(void)h;(void)fifo;return test_rx_pending;}
 int HAL_CAN_GetRxMessage(CAN_HandleTypeDef *h,uint32_t fifo,CAN_RxHeaderTypeDef *rx,uint8_t *data) {(void)h;(void)fifo;assert(test_rx_pending);test_rx_pending--;*rx=test_rx_header;memcpy(data,test_rx_data,8);return HAL_OK;}
 uint32_t HAL_CAN_GetTxMailboxesFreeLevel(CAN_HandleTypeDef *h) {(void)h;return 1;}
-int HAL_CAN_AddTxMessage(CAN_HandleTypeDef *h,CAN_TxHeaderTypeDef *tx,uint8_t *data,uint32_t *mail) {(void)h;*mail=0;test_tx_count++;test_tx_header=*tx;memcpy(test_tx_data,data,8);if(tx->StdId==0x301)test_can_speed_tenths=data[0]|((unsigned)data[1]<<8);return HAL_OK;}
+int HAL_CAN_AddTxMessage(CAN_HandleTypeDef *h,CAN_TxHeaderTypeDef *tx,uint8_t *data,uint32_t *mail) {(void)h;*mail=0;test_tx_count++;test_tx_header=*tx;memcpy(test_tx_data,data,8);if(tx->StdId<0x800){test_tx_id_count[tx->StdId]++;memcpy(test_tx_id_data[tx->StdId],data,8);}if(tx->StdId==0x301)test_can_speed_tenths=data[0]|((unsigned)data[1]<<8);return HAL_OK;}
 
 /* Internal flash sector 7 with NOR semantics: programming only clears bits and
  * erase sets every bit. Faults are injected per call. */
@@ -260,12 +262,34 @@ static void test_gps(void)
     assert(g_gps_poll_gap_max_ms==50&&g_gps_dma_late_poll_count==1);
     test_tick=10000;g_gps_rmc_last_tick=test_tick;g_gps_rmc_valid=1;
     g_gps_speed_kmh_centi=7200;g_gps_speed_kmh_int=72;g_gps_speed_ui_alive_tick=test_tick;
-    g_gps_can_last_tick=0;gps_can_speed_tick(test_tick);assert(test_can_speed_tenths==720);
-    unsigned sent=test_tx_count;gps_can_speed_tick(test_tick+49);assert(test_tx_count==sent);
-    gps_can_speed_tick(test_tick+50);assert(test_tx_count==sent+5);
+    /* Speed, position and motion go out every 50 ms; odometer/status every
+     * 500 ms and lap timing every 200 ms (20-tick cycle = 20/20/2/5 frames). */
+    unsigned sent=test_tx_count;
+    memset(test_tx_id_count,0,sizeof(test_tx_id_count));
+    g_gps_can_last_tick=0;g_gps_can_slow_phase=0;g_gps_can_lap_count=0;g_odometer_total_m=12345; /* 123 x 0.1 km */
+    gps_can_speed_tick(test_tick);assert(test_can_speed_tenths==720);
+    assert(test_tx_count==sent+5&&test_tx_id_count[0x069]==1&&test_tx_id_count[0x06A]==1);
+    assert(test_tx_id_data[0x069][0]==123&&test_tx_id_data[0x069][1]==0&&test_tx_id_data[0x069][2]==0);
+    sent=test_tx_count;gps_can_speed_tick(test_tick+49);assert(test_tx_count==sent);
+    for(unsigned tick=1;tick<20;tick++) {
+        g_gps_rmc_last_tick=test_tick+tick*50U;g_gps_rmc_valid=1;
+        gps_can_speed_tick(test_tick+tick*50U);
+    }
+    assert(test_tx_id_count[0x301]==20&&test_tx_id_count[0x067]==20&&test_tx_id_count[0x068]==20);
+    assert(test_tx_id_count[0x069]==2&&test_tx_id_count[0x06A]==5);
+    /* A lap-count change sends status and lap timing at once, off the slow slots. */
+    unsigned status=test_tx_id_count[0x069],lap=test_tx_id_count[0x06A];
+    assert(g_gps_can_slow_phase==0);gps_can_speed_tick(test_tick+20U*50U);   /* slot 0: both due */
+    assert(test_tx_id_count[0x069]==status+1&&test_tx_id_count[0x06A]==lap+1);
+    g_gps_can_lap_count=7;gps_can_speed_tick(test_tick+21U*50U);            /* slot 1: nothing due, lap changed */
+    assert(test_tx_id_count[0x069]==status+2&&test_tx_id_count[0x06A]==lap+2&&g_gps_can_lap_count==0);
+    gps_can_speed_tick(test_tick+22U*50U);                                  /* slot 2: only the fast frames */
+    assert(test_tx_id_count[0x069]==status+2&&test_tx_id_count[0x06A]==lap+2);
+    g_gps_rmc_last_tick=test_tick;g_gps_rmc_valid=1;g_gps_speed_kmh_centi=7200;g_gps_speed_kmh_int=72;
+    g_gps_can_last_tick=test_tick+50;
     gps_can_speed_tick(test_tick+501);assert(test_can_speed_tenths==0&&g_gps_speed_ui_alive_tick==test_tick);
     gps_can_speed_tick(test_tick+3001);assert(g_gps_speed_ui_alive_tick==0&&g_pending_speed==0);
-    puts("GPS: fragmented NMEA, pathological heading, tick wrap and configuration DMA polling passed");
+    puts("GPS: fragmented NMEA, pathological heading, tick wrap, DMA polling and per-frame CAN periods passed");
 }
 static void test_ui(void)
 {

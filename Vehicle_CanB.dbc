@@ -599,8 +599,8 @@ CM_ BO_ 104 "GPS motion, validity and compact quality snapshot, standard CAN ID 
 CM_ SG_ 104 GPS_LapDiagState "The same diagnostic state that drives the display lap indicator: 0=Inactive, 1=WaitArm, 2=Armed, 3=Approaching, 4=GateMiss, 5=ReversePass, 6=Crossed.";
 CM_ SG_ 104 GPS_RMCValid "1 means a valid-status RMC sentence has been received within the 500 ms freshness window; when 0, position/track fields may contain the last received values and GroundSpeed is transmitted as zero.";
 CM_ SG_ 104 GPS_HeadingValid "1 means the dual-antenna HPR quality is accepted and the most recent HPR sentence is not older than 1.5 s.";
-CM_ BO_ 105 "GPS reception status and persistent odometer snapshot, standard CAN ID 0x069, DLC=8, Display->WirelessGateway, periodic 50 ms. Odometer resolution is 0.1 km. Max/average SNR and tracked-satellite count come from the latest completed GSV window.";
-CM_ BO_ 106 "GPS-derived lap timing snapshot, standard CAN ID 0x06A, DLC=8, Display->WirelessGateway, periodic 50 ms. Times use centiseconds. Unsigned lap times saturate at 655.35 s and signed delta saturates at -327.68..327.67 s.";
+CM_ BO_ 105 "GPS reception status and persistent odometer snapshot, standard CAN ID 0x069, DLC=8, Display->WirelessGateway, periodic 500 ms, and immediately when GPS_LapCount changes. Odometer resolution is 0.1 km. Max/average SNR and tracked-satellite count come from the latest completed GSV window.";
+CM_ BO_ 106 "GPS-derived lap timing snapshot, standard CAN ID 0x06A, DLC=8, Display->WirelessGateway, periodic 200 ms, and immediately when GPS_LapCount changes. Times use centiseconds. Unsigned lap times saturate at 655.35 s and signed delta saturates at -327.68..327.67 s.";
 CM_ BO_ 1792 "Steering wheel slip-level packet, standard CAN ID 0x700, DLC=1. Byte0 = SlipLevel 0..7; Display re-packs it into 0x703 for the ECU.";
 CM_ SG_ 1792 SlipLevel "PA1 ADC potentiometer quantized to eight levels: 0..7.";
 CM_ BO_ 1793 "Steering wheel recorder-toggle packet, standard CAN ID 0x701, DLC=1. Bit0 = one-shot recorder toggle; Display merges it into 0x703.";

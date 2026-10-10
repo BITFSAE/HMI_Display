@@ -46,6 +46,8 @@ static uint8_t     g_gga_signal_level;
 static uint32_t    g_hpr_last_tick;
 static uint32_t    g_gps_rmc_last_tick;
 static uint32_t    g_gps_can_last_tick;
+static uint8_t     g_gps_can_slow_phase;
+static uint8_t     g_gps_can_lap_count;
 static uint8_t     g_gps_rmc_valid;
 static uint32_t    g_gps_speed_ui_alive_tick;
 
@@ -63,6 +65,13 @@ static uint8_t     g_odometer_initialized;
 #define GPS_HPR_EXPIRE_MS               1500U
 #define GPS_CAN_SPEED_PERIOD_MS            50U
 #define GPS_CAN_SPEED_STALE_MS             500U
+/* 0x301/0x067/0x068 go out every GPS_CAN_SPEED_PERIOD_MS tick. Odometer, GPS
+ * quality (0x069) and lap timing (0x06A) change slowly and the ground station
+ * records them, so they use a multiple of the tick. A change of the lap count
+ * sends both at once so a finished lap is reported without delay. */
+#define GPS_CAN_STATUS_TICKS               10U   /* 0x069: 500 ms */
+#define GPS_CAN_LAP_TICKS                   4U   /* 0x06A: 200 ms */
+#define GPS_CAN_SLOW_CYCLE_TICKS           20U   /* common multiple of both */
 /* How long the dashboard keeps showing the last valid speed after RMC stops
  * arriving (or arrives with V status). Bridges brief receiver dropouts without
  * freezing a stale value for long. CAN telemetry still reports zero/invalid
@@ -213,6 +222,7 @@ static void gps_can_speed_tick(uint32_t now)
 {
 	int32_t speed_kmh_centi;
 	uint8_t rmc_valid;
+	uint32_t frames;
 	GPS_Data_t gps_snapshot;
 	GPS_LapDiagnostic_t lap_diagnostic;
 	CAN_GPSTelemetry_t telemetry;
@@ -286,8 +296,17 @@ static void gps_can_speed_tick(uint32_t now)
 	telemetry.lap_best_cs = gps_clamp_u16(GPS_Lap_GetBestLapHundredths());
 	telemetry.lap_delta_cs = gps_clamp_i16(GPS_Lap_GetDeltaHundredths());
 
+	frames = CAN_GPS_TX_POSITION | CAN_GPS_TX_MOTION;
+	if((g_gps_can_slow_phase % GPS_CAN_STATUS_TICKS) == 0U) frames |= CAN_GPS_TX_STATUS;
+	if((g_gps_can_slow_phase % GPS_CAN_LAP_TICKS) == 0U) frames |= CAN_GPS_TX_LAP;
+	if(telemetry.lap_count != g_gps_can_lap_count) {
+		g_gps_can_lap_count = telemetry.lap_count;
+		frames |= CAN_GPS_TX_STATUS | CAN_GPS_TX_LAP;
+	}
+	g_gps_can_slow_phase = (uint8_t)((g_gps_can_slow_phase + 1U) % GPS_CAN_SLOW_CYCLE_TICKS);
+
 	CAN_SendGPSSpeed((speed_kmh_centi + 5) / 10);
-	CAN_SendGPSTelemetry(&telemetry);
+	CAN_SendGPSTelemetry(&telemetry, frames);
 }
 
 static uint8_t nmea_checksum(const char * sentence)
@@ -971,6 +990,8 @@ void GPS_Init(void)
 	g_hpr_last_tick = 0U;
 	g_gps_rmc_last_tick = 0U;
 	g_gps_can_last_tick = 0U;
+	g_gps_can_slow_phase = 0U;
+	g_gps_can_lap_count = 0U;
 	g_gps_rmc_valid = 0U;
 	g_gps_speed_ui_alive_tick = 0U;
 	g_odometer_initialized = 0U;
