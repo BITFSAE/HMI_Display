@@ -47,6 +47,10 @@
 				"args": [
 					"--build", "${command:cmake.buildDirectory}"
 				],
+				"osx": {
+					"command": "bash",
+					"args": ["${workspaceFolder}/run_sim_mac.sh", "--build-only"]
+				},
 				"group": {
 					"kind": "build",
 					"isDefault": true
@@ -68,6 +72,9 @@
 				"label": "Build and Run",
 				"type": "process",
 				"command": "${workspaceFolder}\\bin\\main.exe",
+				"osx": {
+					"command": "${workspaceFolder}/bin/main"
+				},
 				"options": {
 					"env": {
 						"PATH": "E:\\lvgl\\mingw64\\bin;${env:PATH}"

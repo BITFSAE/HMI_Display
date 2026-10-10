@@ -44,7 +44,8 @@ if(USE_FREERTOS)
     if(MINGW)
         list(APPEND FREERTOS_SOURCES "${PROJECT_SOURCE_DIR}/FreeRTOS/portable/MSVC-MingW/port.c")
     elseif(UNIX)
-        list(APPEND FREERTOS_SOURCES "${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix/*.c")
+        # utils/wait_for_event.c 由 src/freertos/freertos_posix_port.c 取代, 故只取 port.c
+        list(APPEND FREERTOS_SOURCES "${PROJECT_SOURCE_DIR}/FreeRTOS/portable/ThirdParty/GCC/Posix/port.c")
     endif()
 else()
     message(STATUS "FreeRTOS is disabled")
@@ -71,7 +72,10 @@ set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 set(WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 
 # Find and include SDL2 library
-set(SDL2_DIR ${PROJECT_SOURCE_DIR}/SDL2-2.32.10/cmake)
+if(MINGW)
+    # 仓库自带的 SDL2 开发包仅适用于 MinGW; macOS/Linux 使用系统安装的 SDL2 (brew/apt)
+    set(SDL2_DIR ${PROJECT_SOURCE_DIR}/SDL2-2.32.10/cmake)
+endif()
 find_package(SDL2 REQUIRED)
 
 # Add compile definitions based on the selected options

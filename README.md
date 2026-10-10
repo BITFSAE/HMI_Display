@@ -19,13 +19,27 @@ This project is pre-configured for VSCode and should work work on Windows, Linux
 
 ### Get the PC project
 
-Clone the PC project and the related sub modules:
-
 ```bash
-git clone --recursive https://github.com/lvgl/lv_port_pc_vscode
+git clone https://github.com/BITFSAE/HMI_Display.git
 ```
 
+LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），无需 `--recursive`。
+
 ## Usage
+
+### macOS 命令行（推荐）
+
+依赖：`brew install cmake ninja sdl2`。在仓库根目录执行：
+
+```bash
+./run_sim_mac.sh              # 构建并运行 800x480 模拟器窗口
+./run_sim_mac.sh --night      # 以夜间模式启动（额外参数原样传给 bin/main）
+./run_sim_mac.sh --build-only # 仅构建
+```
+
+- 构建目录固定为 `cmake-build-mac/`，产物 `bin/main`。不要使用 `build/`：VS Code 的 STM32Cube 扩展会用 ARM 工具链自动配置该目录，与模拟器无关。
+- macOS 要求窗口与事件循环在主线程，故 macOS 下 `main()` 直接在主线程运行 LVGL 循环，不启动 FreeRTOS 调度器，且 `lv_conf.h` 中 `LV_USE_OS` 为 `LV_OS_NONE`；其他平台仍走 FreeRTOS 任务。
+- 窗口内按键：空格循环模式，`S/Q/E/C` 选模式，`0`–`7` 滑移等级，`R` 圈速记录，`N` 夜间模式，`F` 切换告警，`[` `]`/`G` 信号强度，`Esc`/`X` 退出。
 
 ### Visual Studio Code
 

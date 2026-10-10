@@ -106,7 +106,12 @@
  * - LV_OS_MQX
  * - LV_OS_SDL2
  * - LV_OS_CUSTOM */
-#define LV_USE_OS   LV_OS_FREERTOS
+#if defined(__APPLE__)
+    /* macOS 模拟器: UI 在主线程运行且不启动 FreeRTOS 调度器, LVGL 不能依赖 FreeRTOS 同步原语 */
+    #define LV_USE_OS   LV_OS_NONE
+#else
+    #define LV_USE_OS   LV_OS_FREERTOS
+#endif
 
 #if LV_USE_OS == LV_OS_CUSTOM
     #define LV_OS_CUSTOM_INCLUDE <stdint.h>

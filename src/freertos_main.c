@@ -11,12 +11,21 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-#if LV_USE_OS == LV_OS_FREERTOS
+#if LV_USE_OS == LV_OS_FREERTOS || defined(__APPLE__)
 
 #include "hal/hal.h"
 #include <stdio.h>
 #include <string.h>
 #include <SDL.h>
+
+#if defined(__APPLE__)
+#include <unistd.h>
+/* macOS: Cocoa 要求窗口创建与事件循环必须在主线程, 而 FreeRTOS POSIX 端口的任务跑在子线程。
+ * 故 main() 直接在主线程运行 LVGL 循环而不启动调度器, 延时改用 usleep。 */
+#define SIM_LVGL_LOOP_DELAY()   usleep(30 * 1000)
+#else
+#define SIM_LVGL_LOOP_DELAY()   vTaskDelay(pdMS_TO_TICKS(30)) /* Short delay for the RTOS scheduler */
+#endif
 
 typedef struct {
     lv_obj_t * speed_digit_container;
@@ -2173,7 +2182,7 @@ void lvgl_task(void *pvParameters)
         }
 
         lv_timer_handler(); /* Handle LVGL tasks */
-        vTaskDelay(pdMS_TO_TICKS(30)); /* Short delay for the RTOS scheduler */
+        SIM_LVGL_LOOP_DELAY();
     }
 
     printf("Simulator exiting by request\n");
@@ -2223,6 +2232,10 @@ int main(int argc, char **argv)
         }
     }
 
+#if defined(__APPLE__)
+    lvgl_task(NULL); /* 主线程直接运行, 退出时由 lvgl_task 内 exit() 结束进程 */
+    return 0;
+#else
     /* Create the LVGL task */
     if (xTaskCreate(lvgl_task, "LVGL Task", 4096, NULL, 1, NULL) != pdPASS) {
         printf("Error creating LVGL task\n");
@@ -2237,6 +2250,7 @@ int main(int argc, char **argv)
 
     /* Start the scheduler */
     vTaskStartScheduler();
+#endif
 }
 
 #endif
