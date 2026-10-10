@@ -4,9 +4,9 @@
 
 #include <stdint.h>
 
-#define FW_DIAG_TASK_COUNT 7U
+#define FW_DIAG_TASK_COUNT 6U
 typedef enum {
-    FW_TASK_DASHBOARD, FW_TASK_TOUCH, FW_TASK_GPS, FW_TASK_SD, FW_TASK_CAN,
+    FW_TASK_DASHBOARD, FW_TASK_TOUCH, FW_TASK_GPS, FW_TASK_CAN,
     FW_TASK_IDLE, FW_TASK_TIMER
 } firmware_task_id_t;
 

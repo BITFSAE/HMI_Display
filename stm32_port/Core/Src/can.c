@@ -162,7 +162,7 @@ static dashboard_data_t g_can_dashboard_data = {
   .imu_mag = {0, 0, 0},     /* DBC BO_102 IMU_Magnetic: raw int16, scale=1 */
   .signal_level = 0,        /* 非DBC */
   .alert_active = 1,        /* 非DBC */
-  .odometer_tenths = 0,     /* GPS/SD-owned odometer, not populated from CAN */
+  .odometer_tenths = 0,     /* GPS-owned odometer, not populated from CAN */
   .brake_pct = 10,          /* 非DBC: 制动 0~100% */
 };
 

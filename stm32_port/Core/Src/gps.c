@@ -4,7 +4,7 @@
 #include "gps_lap.h"
 #include "can.h"
 #include "dashboard_ui.h"
-#include "sd_log.h"
+#include "odometer_flash.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "firmware_diag.h"
@@ -83,7 +83,7 @@ static void gps_odometer_init(void)
 {
 	uint32_t initial_m;
 	if(g_odometer_initialized != 0U) return;
-	if(SD_Odometer_GetInitial(&initial_m) == 0U) return;
+	if(Odometer_Flash_GetInitial(&initial_m) == 0U) return;
 	g_odometer_total_m = initial_m;
 	g_odometer_checkpoint_m = g_odometer_total_m;
 	g_odometer_fraction_m = 0.0f;
@@ -155,7 +155,7 @@ static void gps_odometer_process(float latitude, float longitude,
 	if((g_odometer_total_m - g_odometer_checkpoint_m) >=
 	   GPS_ODOMETER_SAVE_INTERVAL_M) {
 		g_odometer_checkpoint_m = g_odometer_total_m;
-		SD_Odometer_RequestSave(g_odometer_total_m);
+		(void)Odometer_Flash_Save(g_odometer_total_m);
 	}
 
 	ui_tenths = (int32_t)(g_odometer_total_m / 100U);
@@ -833,8 +833,8 @@ static void GPS_ProcessByte(uint8_t byte)
 
 static void GPS_SentenceProcess(void)
 {
-    /* The SD task publishes the starting total only after a trustworthy read.
-     * Keep configuring/parsing GPS even when storage is absent or failing. */
+    /* Odometer_Flash_Init() ran before the scheduler; the starting total is
+     * published to the UI from here, once the dashboard is up. */
     gps_odometer_init();
     uint32_t now = HAL_GetTick();
     if(g_gps_poll_tick != 0U) {
@@ -981,7 +981,6 @@ void GPS_Init(void)
                                          (UBaseType_t)osPriorityNormal + 1U,
                                          g_gps_task_stack, &g_gps_task_control);
     Firmware_Diag_RegisterTask(FW_TASK_GPS, g_gps_task_handle, "GPS", sizeof(g_gps_task_stack));
-    SD_Odometer_StartTask();
 }
 
 void GPS_ISR_Notify(void)

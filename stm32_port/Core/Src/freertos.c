@@ -31,7 +31,6 @@
 #include "../lvgl/lvgl.h"
 #include "touch.h"
 #include "gps.h"
-#include "sd_log.h"
 #include "firmware_diag.h"
 
 extern void LVGL_Port_Init(void);

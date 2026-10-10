@@ -219,4 +219,8 @@ ASSERT(_ebss + _Min_Heap_Size + _Min_Stack_Size <= _estack,
        "Main SRAM cannot accommodate heap and 8 KiB MSP reservation")
 /* LVGL owns [0x10000000, 0x1000f000) through LV_MEM_ADR, outside sections. */
 ASSERT(SIZEOF(.ccmram) == 0, "CCMRAM is reserved for the LVGL memory pool")
+/* Flash sector 7 (0x08060000..0x0807FFFF) stores the odometer (odometer_flash.c).
+ * .data's load image is the last thing placed in FLASH. */
+ASSERT(_sidata + SIZEOF(.data) <= ORIGIN(FLASH) + 384K,
+       "Program image reaches flash sector 7, which is reserved for the odometer")
 /* USER CODE END Memory_Budget */

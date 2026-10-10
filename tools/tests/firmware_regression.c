@@ -5,10 +5,6 @@
 
 uint32_t test_tick=1000, test_primask, test_dma_ndtr=512;
 unsigned test_mutex_depth;
-SD_HandleTypeDef hsd;
-uint8_t g_sd_ready=1;
-FATFS SDFatFS;
-char SDPath[]="0:";
 UART_HandleTypeDef huart3;
 DMA_HandleTypeDef hdma_usart3_rx;
 CAN_HandleTypeDef hcan1={CAN1},hcan2={CAN2};
@@ -30,21 +26,47 @@ int HAL_CAN_GetRxMessage(CAN_HandleTypeDef *h,uint32_t fifo,CAN_RxHeaderTypeDef 
 uint32_t HAL_CAN_GetTxMailboxesFreeLevel(CAN_HandleTypeDef *h) {(void)h;return 1;}
 int HAL_CAN_AddTxMessage(CAN_HandleTypeDef *h,CAN_TxHeaderTypeDef *tx,uint8_t *data,uint32_t *mail) {(void)h;*mail=0;test_tx_count++;test_tx_header=*tx;memcpy(test_tx_data,data,8);if(tx->StdId==0x301)test_can_speed_tenths=data[0]|((unsigned)data[1]<<8);return HAL_OK;}
 
-static struct {uint8_t bytes[128];unsigned size;} files[3];
-static int test_io_error,test_short_write,test_mounted;
-static int test_open_error_file=-1,test_read_error_file=-1,test_close_error_file=-1;
-static int test_sync_error;
-FRESULT f_mount(FATFS *fs,const char *path,int opt) {(void)path;(void)opt;assert(test_mutex_depth);test_mounted=fs!=NULL;return fs&&test_io_error?FR_DISK_ERR:FR_OK;}
-FRESULT f_open(FIL *fil,const char *path,unsigned mode) {assert(test_mounted&&test_mutex_depth);fil->file=strstr(path,"ODO_A")?0:strstr(path,"ODO_B")?1:2;if((int)fil->file==test_open_error_file)return FR_DISK_ERR;if(mode&FA_CREATE_ALWAYS)files[fil->file].size=0;return files[fil->file].size||(mode&FA_CREATE_ALWAYS)?FR_OK:FR_NO_FILE;}
-FRESULT f_read(FIL *fil,void *data,unsigned size,UINT *bytes) {assert(test_mutex_depth);if((int)fil->file==test_read_error_file)return FR_DISK_ERR;*bytes=files[fil->file].size<size?files[fil->file].size:size;memcpy(data,files[fil->file].bytes,*bytes);return FR_OK;}
-FRESULT f_write(FIL *fil,const void *data,unsigned size,UINT *bytes) {assert(test_mutex_depth&&size<=128);*bytes=test_short_write?size-1:size;memcpy(files[fil->file].bytes,data,*bytes);files[fil->file].size=*bytes;return FR_OK;}
-FRESULT f_close(FIL *fil) {assert(test_mutex_depth);return (int)fil->file==test_close_error_file?FR_DISK_ERR:FR_OK;}
-FRESULT f_sync(FIL *fil) {(void)fil;assert(test_mutex_depth);return test_sync_error?FR_DISK_ERR:FR_OK;}
+/* Internal flash sector 7 with NOR semantics: programming only clears bits and
+ * erase sets every bit. Faults are injected per call. */
+#define ODO_TEST_BASE 0x08060000UL
+#define ODO_TEST_WORDS (0x20000U/4U)
+static uint32_t flash_words[ODO_TEST_WORDS];
+static unsigned flash_unlocked,flash_erase_calls,flash_program_calls;
+static int flash_tear_call=-1,flash_fail_programs,flash_ignore_programs,flash_fail_erase;
+static uint32_t flash_read(uint32_t address)
+{
+    assert(address>=ODO_TEST_BASE&&address<ODO_TEST_BASE+ODO_TEST_WORDS*4U&&(address&3U)==0U);
+    return flash_words[(address-ODO_TEST_BASE)/4U];
+}
+#define ODO_FLASH_READ32(address) flash_read(address)
+#define ODO_FLUSH_DATA_CACHE() ((void)0)
+HAL_StatusTypeDef HAL_FLASH_Unlock(void) {assert(!flash_unlocked);flash_unlocked=1;return HAL_OK;}
+HAL_StatusTypeDef HAL_FLASH_Lock(void) {assert(flash_unlocked);flash_unlocked=0;return HAL_OK;}
+HAL_StatusTypeDef HAL_FLASH_Program(uint32_t type,uint32_t address,uint64_t data)
+{
+    assert(flash_unlocked&&type==FLASH_TYPEPROGRAM_WORD&&data<=UINT32_MAX);
+    unsigned call=flash_program_calls++;
+    (void)flash_read(address);                                  /* range and alignment check */
+    if(flash_fail_programs)return HAL_ERROR;
+    if(flash_ignore_programs)return HAL_OK;
+    uint32_t *word=&flash_words[(address-ODO_TEST_BASE)/4U];
+    if((int)call==flash_tear_call) {*word&=(uint32_t)data|0xFFFF0000U;return HAL_ERROR;} /* power lost mid-word */
+    *word&=(uint32_t)data;
+    return HAL_OK;
+}
+HAL_StatusTypeDef HAL_FLASHEx_Erase(FLASH_EraseInitTypeDef *init,uint32_t *error)
+{
+    assert(flash_unlocked&&init->TypeErase==FLASH_TYPEERASE_SECTORS&&init->Sector==FLASH_SECTOR_7);
+    assert(init->NbSectors==1&&init->VoltageRange==FLASH_VOLTAGE_RANGE_3);
+    flash_erase_calls++;
+    if(flash_fail_erase) {*error=7;return HAL_ERROR;}
+    memset(flash_words,0xFF,sizeof(flash_words));*error=0xFFFFFFFFU;return HAL_OK;
+}
 
 /* Compile actual application code; only the Cube-generated CAN init/MSP
  * sections are omitted by run_firmware_tests.py. Hardware/RTOS are mocks. */
 #include "can_app.inc"
-#include "../../stm32_port/Core/Src/sd_log.c"
+#include "../../stm32_port/Core/Src/odometer_flash.c"
 #include "../../stm32_port/Core/Src/gps_lap.c"
 #include "../../stm32_port/Core/Src/gps.c"
 #include "../../stm32_port/Core/lvgl/lvgl.h"
@@ -110,69 +132,109 @@ static void test_can(void)
     HAL_CAN_RxFifo1MsgPendingCallback(&hcan1);service_can();assert(g_can_rx_invalid_count==invalid+1);
     puts("CAN: bounded FIFO, queue saturation, short/remote frames, valid DLCs and steering relay passed");
 }
-static void store_record(unsigned file,uint32_t seq,uint32_t distance,int corrupt)
+static void flash_blank(void) {memset(flash_words,0xFF,sizeof(flash_words));}
+static uint32_t odo_boot(void)
 {
-    sd_odometer_record_t r={SD_ODOMETER_MAGIC,seq,distance,sd_odometer_checksum(seq,distance)};
-    if(corrupt)r.checksum^=1;
-    memcpy(files[file].bytes,&r,sizeof(r));files[file].size=sizeof(r);
+    uint32_t total=0xDEADBEEFU;
+    Odometer_Flash_Init();assert(Odometer_Flash_GetInitial(&total)&&!flash_unlocked);
+    return total;
 }
-static void test_sd(void)
+/* Slot index of the newest valid record; ODO_SLOT_COUNT when there is none. */
+static uint32_t odo_last_valid_slot(void)
 {
-    uint32_t distance;
-    SD_Odometer_StartTask();store_record(0,10,1234,0);store_record(1,11,1500,0);
-    /* Storage faults must leave initialization pending and preserve both
-     * records. GPS polling/configuration and CAN telemetry keep running. */
-    for(unsigned failure=0;failure<6;failure++) {
-        uint8_t records[2][128];
-        memcpy(records[0],files[0].bytes,128);memcpy(records[1],files[1].bytes,128);
-        g_sd_initial_odometer_ready=0;g_odometer_initialized=0;
-        if(failure==0)g_sd_ready=0;
-        if(failure==1)test_io_error=1;
-        if(failure==2)test_open_error_file=1;
-        if(failure==3)test_read_error_file=1;
-        if(failure==4)test_close_error_file=1;
-        if(failure==5)test_read_error_file=0;
-        unsigned failures=g_sd_odometer_load_fail_count;
-        assert(!sd_odometer_initialize()&&g_sd_odometer_load_fail_count==failures+1);
-        distance=999;assert(!SD_Odometer_GetInitial(&distance)&&distance==999);
-        assert(!sd_odometer_save(1));
-        unsigned sent=test_tx_count;g_gps_can_last_tick=0;
-        GPS_WaitAndDrain(100);assert(!g_odometer_initialized&&test_tx_count>sent);
-        assert(!memcmp(records[0],files[0].bytes,128)&&!memcmp(records[1],files[1].bytes,128));
-        assert(test_mutex_depth==0&&!test_mounted);
-        if(failure==1) {
-            SD_Log_InitAndWrite(NULL);assert(g_sd_diag_stage==SD_DIAG_MOUNT_FAILED&&!test_mounted&&test_mutex_depth==0);
-        }
-        g_sd_ready=1;test_io_error=0;test_open_error_file=-1;test_read_error_file=-1;test_close_error_file=-1;
-        assert(sd_odometer_initialize());gps_odometer_init();assert(g_odometer_total_m==1500);
-        g_odometer_total_m=1540;gps_odometer_init();assert(g_odometer_total_m==1540);
+    uint32_t last=ODO_SLOT_COUNT,total;
+    for(uint32_t slot=0;slot<ODO_SLOT_COUNT;slot++)if(odo_read_slot(slot,&total)==ODO_SLOT_VALID)last=slot;
+    return last;
+}
+static void test_odometer(void)
+{
+    uint32_t total=777;
+    /* Nothing is read or written before Odometer_Flash_Init(). */
+    flash_blank();
+    assert(!Odometer_Flash_GetInitial(&total)&&total==777&&!Odometer_Flash_Save(5));
+    assert(g_odometer_flash_save_fail_count==1&&flash_program_calls==0);
+
+    /* Blank sector: starts at 0 without erasing; records survive a reboot. */
+    assert(odo_boot()==0&&flash_erase_calls==0);
+    for(uint32_t m=100;m<=500;m+=100)assert(Odometer_Flash_Save(m));
+    assert(odo_boot()==500&&odo_last_valid_slot()==4&&flash_erase_calls==0);
+    assert(Odometer_Flash_Save(600)&&odo_boot()==600&&odo_last_valid_slot()==5);
+    assert(!flash_unlocked&&g_odometer_flash_save_fail_count==1);
+
+    /* A failed write consumes the slot and the retry lands in the next one. */
+    flash_program_calls=0;
+    assert(Odometer_Flash_Save(700)&&odo_boot()==700);
+    /* Power lost halfway through the check word leaves a damaged slot. */
+    unsigned fails=g_odometer_flash_save_fail_count;
+    flash_tear_call=flash_program_calls+1;
+    uint32_t torn=odo_last_valid_slot()+1;
+    assert(Odometer_Flash_Save(800)&&odo_read_slot(torn,&total)==ODO_SLOT_DAMAGED);
+    flash_tear_call=-1;
+    assert(odo_last_valid_slot()==torn+1&&odo_boot()==800&&g_odometer_flash_save_fail_count==fails);
+    assert(Odometer_Flash_Save(900)&&odo_last_valid_slot()==torn+2&&odo_boot()==900);
+    /* Both attempts fail: report failure, keep the old record, never erase. */
+    flash_fail_programs=1;fails=g_odometer_flash_save_fail_count;
+    assert(!Odometer_Flash_Save(1000)&&g_odometer_flash_save_fail_count==fails+1);
+    flash_fail_programs=0;
+    assert(odo_boot()==900&&!flash_unlocked&&flash_erase_calls==0);
+    /* HAL reporting success without the data reaching flash is also a failure. */
+    flash_ignore_programs=1;
+    assert(!Odometer_Flash_Save(1100)&&g_odometer_flash_save_fail_count==fails+2);
+    flash_ignore_programs=0;
+    assert(odo_boot()==900&&Odometer_Flash_Save(1200)&&odo_boot()==1200);
+
+    /* Leftovers without a valid record (older firmware image, interrupted erase)
+     * are erased once; a damaged-only sector counts as empty. */
+    for(unsigned i=0;i<ODO_TEST_WORDS;i++)flash_words[i]=0x9E3779B1U*(i+1U);
+    unsigned erases=flash_erase_calls;
+    assert(odo_boot()==0&&flash_erase_calls==erases+1);
+    assert(Odometer_Flash_Save(50)&&odo_boot()==50&&flash_erase_calls==erases+1);
+    flash_blank();flash_words[0]=0x12345678U;
+    assert(odo_boot()==0&&flash_erase_calls==erases+2&&odo_last_valid_slot()==ODO_SLOT_COUNT);
+
+    /* Full sector: saving stops (no erase while driving), the next boot erases
+     * and carries the newest total into slot 0. */
+    flash_blank();assert(odo_boot()==0);
+    erases=flash_erase_calls;
+    for(uint32_t slot=0;slot<ODO_SLOT_COUNT;slot++)assert(Odometer_Flash_Save(1000+slot));
+    fails=g_odometer_flash_save_fail_count;
+    assert(!Odometer_Flash_Save(999999)&&g_odometer_flash_save_fail_count==fails+1&&flash_erase_calls==erases);
+    assert(odo_last_valid_slot()==ODO_SLOT_COUNT-1);
+    flash_fail_erase=1;
+    assert(odo_boot()==1000+ODO_SLOT_COUNT-1&&flash_erase_calls==erases+1&&odo_last_valid_slot()==ODO_SLOT_COUNT-1);
+    assert(!Odometer_Flash_Save(5)&&!flash_unlocked);          /* erase failed: read-only, old data intact */
+    flash_fail_erase=0;
+    assert(odo_boot()==1000+ODO_SLOT_COUNT-1&&flash_erase_calls==erases+2);
+    assert(odo_last_valid_slot()==0&&g_odometer_flash_erase_count>=1);
+    assert(Odometer_Flash_Save(20000)&&odo_last_valid_slot()==1&&odo_boot()==20000);
+    /* The carry-over write fails after the erase: the RAM value still reaches
+     * the UI, and the next successful save restores the record. */
+    flash_blank();assert(odo_boot()==0);
+    for(uint32_t slot=0;slot<ODO_SLOT_COUNT;slot++)assert(Odometer_Flash_Save(3000+slot));
+    flash_fail_programs=1;
+    assert(odo_boot()==3000+ODO_SLOT_COUNT-1&&odo_last_valid_slot()==ODO_SLOT_COUNT);
+    flash_fail_programs=0;
+    assert(Odometer_Flash_Save(40000)&&odo_boot()==40000);
+
+    /* GPS integration: the stored total starts the UI counter, every 100 m of
+     * travel is appended, and a read-only sector never stops the counter. */
+    flash_blank();assert(odo_boot()==0&&Odometer_Flash_Save(1000));
+    Odometer_Flash_Init();
+    g_odometer_initialized=0;gps_odometer_init();assert(g_odometer_initialized&&g_odometer_total_m==1000);
+    g_odometer_total_m=1540;gps_odometer_init();assert(g_odometer_total_m==1540);
+    for(unsigned step=0;step<130;step++) {
+        float latitude=(float)(30.0+step*8.993e-6);
+        gps_odometer_process(latitude,120.0f,7200,10000U+step*50U);
     }
-    assert(SD_Odometer_Load(&distance)&&distance==1500&&test_mutex_depth==0);
-    store_record(1,11,1500,1);assert(SD_Odometer_Load(&distance)&&distance==1234);
-    store_record(0,UINT32_MAX,2000,0);store_record(1,0,2100,0);
-    assert(SD_Odometer_Load(&distance)&&distance==2100);
-    assert(sd_odometer_save(2200));assert(SD_Odometer_Load(&distance)&&distance==2200);
-    uint32_t seq=g_sd_odometer_sequence;test_short_write=1;
-    assert(!sd_odometer_save(2300)&&g_sd_odometer_sequence==seq&&test_mutex_depth==0&&!test_mounted);test_short_write=0;
-    assert(SD_Odometer_Load(&distance)&&distance==2200);
-    /* Sequence parity need not match the file containing the latest record. */
-    store_record(0,UINT32_MAX,3000,0);files[1].size=0;
-    assert(SD_Odometer_Load(&distance)&&distance==3000);
-    test_short_write=1;assert(!sd_odometer_save(3100));test_short_write=0;
-    assert(SD_Odometer_Load(&distance)&&distance==3000);
-    assert(sd_odometer_save(3100)&&SD_Odometer_Load(&distance)&&distance==3100&&g_sd_odometer_sequence==0);
-    seq=g_sd_odometer_sequence;unsigned next=g_sd_odometer_next_file;
-    uint8_t preserved[128];memcpy(preserved,files[next^1].bytes,128);
-    test_sync_error=1;assert(!sd_odometer_save(3200)&&g_sd_odometer_sequence==seq&&g_sd_odometer_next_file==next);test_sync_error=0;
-    test_close_error_file=next;assert(!sd_odometer_save(3300)&&g_sd_odometer_sequence==seq&&g_sd_odometer_next_file==next);test_close_error_file=-1;
-    assert(!memcmp(preserved,files[next^1].bytes,128)&&test_mutex_depth==0&&!test_mounted);
-    test_io_error=1;assert(!SD_Odometer_Load(&distance)&&!sd_odometer_save(3400)&&test_mutex_depth==0&&!test_mounted);test_io_error=0;
-    files[0].size=files[1].size=0;g_sd_initial_odometer_ready=0;
-    assert(sd_odometer_initialize()&&SD_Odometer_GetInitial(&distance)&&distance==0);
-    assert(sd_odometer_save(2200));
-    SD_Log_InitAndWrite(NULL);assert(g_sd_diag_stage==SD_DIAG_OK&&test_mutex_depth==0);
-    assert(sd_odometer_initialize());g_odometer_initialized=0;gps_odometer_init();assert(g_odometer_total_m==2200);
-    puts("SD: startup I/O failures/recovery, empty card, preserved alternate record, sequence wrap and mutex cleanup passed");
+    assert(g_odometer_total_m>=1640&&g_odometer_total_m-g_odometer_checkpoint_m<100U);
+    assert(g_odometer_checkpoint_m>=1640&&odo_boot()==g_odometer_checkpoint_m);
+    uint32_t shown=g_odometer_total_m;
+    flash_fail_programs=1;fails=g_odometer_flash_save_fail_count;
+    for(unsigned step=130;step<260;step++)
+        gps_odometer_process((float)(30.0+step*8.993e-6),120.0f,7200,10000U+step*50U);
+    flash_fail_programs=0;
+    assert(g_odometer_total_m>=shown+100U&&g_odometer_flash_save_fail_count>fails&&!flash_unlocked);
+    puts("Odometer: blank/reboot, torn and failed writes, junk sector, full sector, erase failure and GPS saves passed");
 }
 static void nmea(const char *payload)
 {
@@ -269,6 +331,6 @@ int main(int argc,char **argv)
     if(argc==1) {assert(!Dashboard_UI_IsStartupComplete());receive(0x305,6,3);assert(g_can_rx_queue->count==0);}
     init_ui();assert(Dashboard_UI_IsStartupComplete());
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_sd();test_gps();test_ui();return 0;
+    test_can();test_odometer();test_gps();test_ui();return 0;
 }
 /* USER CODE END Firmware_Regression */

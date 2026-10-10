@@ -21,10 +21,8 @@
 #include "cmsis_os.h"
 #include "can.h"
 #include "dma.h"
-#include "fatfs.h"
 #include "i2c.h"
 #include "rtc.h"
-#include "sdio.h"
 #include "spi.h"
 #include "usart.h"
 #include "gpio.h"
@@ -34,7 +32,7 @@
 /* USER CODE BEGIN Includes */
 #include "../lvgl/lvgl.h"
 #include "dashboard_ui.h"
-#include "sd_log.h"
+#include "odometer_flash.h"
 #include "firmware_diag.h"
 
 /* USER CODE END Includes */
@@ -86,10 +84,8 @@ void LED_Diag_SetBootStage(uint8_t stage);
 #define MX_SPI1_Init() ((void)0)
 #define MX_USART1_UART_Init() ((void)0)
 #define MX_USART3_UART_Init() ((void)0)
-#define MX_FATFS_Init() ((void)0)
 #define MX_FSMC_Init() ((void)0)
 #define MX_USART2_UART_Init() ((void)0)
-#define MX_SDIO_SD_Init() ((void)0)
 #define osKernelInitialize() ((void)0)
 #define MX_FREERTOS_Init() ((void)0)
 #define osKernelStart() ((void)0)
@@ -407,8 +403,6 @@ int main(void)
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_USART3_UART_Init();
-  MX_SDIO_SD_Init();
-  MX_FATFS_Init();
   MX_FSMC_Init();
   MX_USART2_UART_Init();
   MX_I2C1_Init();
@@ -417,6 +411,9 @@ int main(void)
 #if BOARD_BRINGUP_MINIMAL
   BoardBringup_MinimalInit();
 #else
+  /* An odometer sector erase stalls the CPU for seconds (about once per 1,600 km),
+   * so it runs before the CAN controllers start. */
+  Odometer_Flash_Init();
   CAN1_Filter_Config();
   if(HAL_CAN_Start(&hcan1) != HAL_OK) {
     Error_Handler();
