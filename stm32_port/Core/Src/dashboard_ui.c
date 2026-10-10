@@ -38,12 +38,9 @@ static int32_t g_motor_power_peak[4];
  * Tire temperatures are stored in 0.01 degC to preserve the CAN precision. */
 static int32_t g_tire_temp[4][4];
 static volatile int32_t g_pending_tire_temp[4][4];
-static dashboard_data_t g_dashboard_data = {
-    .motor_enable = {1, 1, 1, 1},
-};
-static volatile dashboard_data_t g_pending_dashboard_data = {
-    .motor_enable = {1, 1, 1, 1},
-};
+/* valid_mask starts at 0: every CAN-fed field shows "--" until its first frame. */
+static dashboard_data_t g_dashboard_data;
+static volatile dashboard_data_t g_pending_dashboard_data;
 static volatile uint32_t g_dashboard_dirty_mask = 0U;
 static volatile int32_t g_pending_speed = 0;
 static volatile uint8_t g_speed_dirty = 0U;
@@ -99,6 +96,17 @@ static uint32_t g_lap_analysis_blink_tick = 0U;
 #define DASH_DIRTY_SLOW     (DASH_DIRTY_BATTERY | DASH_DIRTY_ODOMETER | \
                              DASH_DIRTY_LOWVOLTAGE)
 #define DASH_DIRTY_ALL      (DASH_DIRTY_FAST | DASH_DIRTY_SLOW)
+/* Which DASH_VALID_* bits feed each dirty group. The three temperature bits
+ * feed both the battery group (MAX T) and the motor columns. */
+#define DASH_VALID_BATTERY_GROUP (DASH_VALID_SOC | DASH_VALID_HV_V | DASH_VALID_HV_I | \
+                                  DASH_VALID_MOTOR_TEMP | DASH_VALID_INV_TEMP | \
+                                  DASH_VALID_IGBT_TEMP)
+#define DASH_VALID_PEDAL_GROUP   (DASH_VALID_APS | DASH_VALID_BRAKE)
+/* Wheel order 0=LF 1=LR 2=RF 3=RR: front wheels take 0x504 diagnostics,
+ * rear wheels 0x503. */
+#define DASH_VALID_MOTOR_GROUP(wheel) \
+    (DASH_VALID_TORQUE | DASH_VALID_RPM | DASH_VALID_MOTOR_TEMP | DASH_VALID_INV_TEMP | \
+     DASH_VALID_AMK_EN | ((((wheel) & 1U) != 0U) ? DASH_VALID_DIAG_RL_RR : DASH_VALID_DIAG_FL_FR))
 static char g_alert_queue[DASHBOARD_ALERT_MAX][DASHBOARD_ALERT_TEXT_MAX];
 static uint8_t g_alert_count = 0U;
 static char g_pending_alert_queue[DASHBOARD_ALERT_MAX][DASHBOARD_ALERT_TEXT_MAX];
@@ -489,20 +497,42 @@ static void dashboard_handle_timing_mode_change(drive_mode_t previous_mode)
     update_lap_analysis_indicator(HAL_GetTick());
 }
 
+/* Publishes the pending validity of one dirty group to the UI-owned copy.
+ * Caller holds the IRQ lock. */
+static void dashboard_copy_valid(uint32_t bits)
+{
+    g_dashboard_data.valid_mask = (g_dashboard_data.valid_mask & ~bits) |
+                                  (g_pending_dashboard_data.valid_mask & bits);
+}
+
 static void apply_motor_ui(uint32_t index)
 {
     dash_motor_t motor;
-    /* P[0.1 kW] = T[Nm] x n[rpm] x 10 / 9549; /955 keeps int32 within the
-     * DBC ranges (|T| <= 32767, |n| <= 32767) at 0.01 % error. */
-    int32_t power = (g_dashboard_data.torque[index] * g_dashboard_data.rpm[index]) / 955;
+    const uint32_t valid = g_dashboard_data.valid_mask;
+    int32_t power = 0;
 
-    if(power <= 0) {
-        /* Power dropped to zero (or regen): reset the peak so it tracks the
-         * current drive cycle, not a stale historical max. */
-        g_motor_power_peak[index] = 0;
+    motor.invalid = 0U;
+    if((valid & DASH_VALID_TORQUE) == 0U) motor.invalid |= DASH_MOTOR_NO_TORQUE;
+    if((valid & DASH_VALID_RPM) == 0U) motor.invalid |= DASH_MOTOR_NO_RPM;
+    if((valid & DASH_VALID_MOTOR_TEMP) == 0U) motor.invalid |= DASH_MOTOR_NO_MOTOR_TEMP;
+    if((valid & DASH_VALID_INV_TEMP) == 0U) motor.invalid |= DASH_MOTOR_NO_INV_TEMP;
+    if((valid & DASH_VALID_AMK_EN) == 0U) motor.invalid |= DASH_MOTOR_NO_ENABLED;
+    if((valid & (((index & 1U) != 0U) ? DASH_VALID_DIAG_RL_RR : DASH_VALID_DIAG_FL_FR)) == 0U) {
+        motor.invalid |= DASH_MOTOR_NO_DIAG;
     }
-    else if(power > g_motor_power_peak[index]) {
-        g_motor_power_peak[index] = power;
+
+    if((motor.invalid & (DASH_MOTOR_NO_TORQUE | DASH_MOTOR_NO_RPM)) == 0U) {
+        /* P[0.1 kW] = T[Nm] x n[rpm] x 10 / 9549; /955 keeps int32 within the
+         * DBC ranges (|T| <= 32767, |n| <= 32767) at 0.01 % error. */
+        power = (g_dashboard_data.torque[index] * g_dashboard_data.rpm[index]) / 955;
+        if(power <= 0) {
+            /* Power dropped to zero (or regen): reset the peak so it tracks the
+             * current drive cycle, not a stale historical max. */
+            g_motor_power_peak[index] = 0;
+        }
+        else if(power > g_motor_power_peak[index]) {
+            g_motor_power_peak[index] = power;
+        }
     }
     motor.torque = g_dashboard_data.torque[index];          /* DBC BO_1282 Debug2 */
     motor.rpm = g_dashboard_data.rpm[index];                /* DBC BO_1285 Debug5 */
@@ -517,15 +547,27 @@ static void apply_motor_ui(uint32_t index)
 
 static void dashboard_apply_data(uint32_t dirty_mask)
 {
+    const uint32_t valid = g_dashboard_data.valid_mask;
+
     if((dirty_mask & DASH_DIRTY_BATTERY) != 0U) {
-        /* DBC BO_1200: SOC, BatteryVoltage (V), BatteryCurrent (A) */
-        int32_t power_live = (g_dashboard_data.sum_voltage * g_dashboard_data.sum_current) / 1000;
-        if(power_live < 0) power_live = 0;
-        if(power_live > g_power_peak) g_power_peak = power_live;
-        Dash_View_SetBattery(g_dashboard_data.soc, g_dashboard_data.sum_voltage,
-                             g_dashboard_data.sum_current);
+        /* DBC BO_1200: SOC, BatteryVoltage (V), BatteryCurrent (A).
+         * BMS current is charge +, discharge -, so P NOW (discharge power)
+         * is -V x I; charging and regen show 0. Units: dV x dA = 0.01 W. */
+        int32_t power_live = DASH_VIEW_INVALID;
+        if((valid & (DASH_VALID_HV_V | DASH_VALID_HV_I)) == (DASH_VALID_HV_V | DASH_VALID_HV_I)) {
+            int64_t centiwatt = -((int64_t)g_dashboard_data.sum_voltage_dv *
+                                  (int64_t)g_dashboard_data.sum_current_da);
+            power_live = (centiwatt > 0) ? (int32_t)((centiwatt + 50000) / 100000) : 0;
+            if(power_live > g_power_peak) g_power_peak = power_live;
+        }
+        Dash_View_SetBattery(((valid & DASH_VALID_SOC) != 0U) ? g_dashboard_data.soc : DASH_VIEW_INVALID,
+                             ((valid & DASH_VALID_HV_V) != 0U) ? g_dashboard_data.sum_voltage : DASH_VIEW_INVALID,
+                             ((valid & DASH_VALID_HV_I) != 0U) ? g_dashboard_data.sum_current : DASH_VIEW_INVALID);
         Dash_View_SetPower(power_live, g_power_peak);
-        Dash_View_SetMaxTemp(g_dashboard_data.max_temperature); /* can.c: motor/inverter/IGBT */
+        /* can.c: max over the fresh motor/inverter/IGBT temperatures. */
+        Dash_View_SetMaxTemp(((valid & (DASH_VALID_MOTOR_TEMP | DASH_VALID_INV_TEMP |
+                                        DASH_VALID_IGBT_TEMP)) != 0U) ?
+                             g_dashboard_data.max_temperature : DASH_VIEW_INVALID);
     }
 
     if((dirty_mask & DASH_DIRTY_MODE) != 0U) {
@@ -546,17 +588,30 @@ static void dashboard_apply_data(uint32_t dirty_mask)
         Dash_View_SetSpeed(g_speed);
     }
     if((dirty_mask & DASH_DIRTY_PEDALS) != 0U) {
-        Dash_View_SetPedals(g_dashboard_data.aps_open_pct, g_dashboard_data.brake_pct);
+        Dash_View_SetPedals(((valid & DASH_VALID_APS) != 0U) ? g_dashboard_data.aps_open_pct : DASH_VIEW_INVALID,
+                            ((valid & DASH_VALID_BRAKE) != 0U) ? g_dashboard_data.brake_pct : DASH_VIEW_INVALID);
     }
     if((dirty_mask & DASH_DIRTY_LOWVOLTAGE) != 0U) {
         /* DBC BO_1440 PDM_LowVoltageBus: mV/cA/dW raw engineering units */
-        Dash_View_SetLowVoltage(g_dashboard_data.lv_bus_voltage_mV,
-                                g_dashboard_data.lv_bus_current_cA,
-                                g_dashboard_data.lv_bus_power_dW);
+        if((valid & DASH_VALID_LV_BUS) != 0U) {
+            Dash_View_SetLowVoltage(g_dashboard_data.lv_bus_voltage_mV,
+                                    g_dashboard_data.lv_bus_current_cA,
+                                    g_dashboard_data.lv_bus_power_dW);
+        }
+        else {
+            Dash_View_SetLowVoltage(DASH_VIEW_INVALID, 0, 0);
+        }
     }
     if((dirty_mask & DASH_DIRTY_FANS) != 0U) {
         /* DBC BO_1442: three RPM values, two measured duty cycles. */
-        Dash_View_SetFans(g_dashboard_data.fan_rpm, g_dashboard_data.fan_pwm_duty);
+        if((valid & DASH_VALID_FAN) != 0U) {
+            Dash_View_SetFans(g_dashboard_data.fan_rpm, g_dashboard_data.fan_pwm_duty);
+        }
+        else {
+            static const int32_t no_rpm[3] = {DASH_VIEW_INVALID, DASH_VIEW_INVALID, DASH_VIEW_INVALID};
+            static const int32_t no_duty[2] = {DASH_VIEW_INVALID, DASH_VIEW_INVALID};
+            Dash_View_SetFans(no_rpm, no_duty);
+        }
     }
     for(uint32_t i = 0U; i < 4U; i++) {
         if((dirty_mask & (DASH_DIRTY_MOTOR_0 << i)) != 0U) apply_motor_ui(i);
@@ -572,6 +627,7 @@ void Dashboard_UI_SubmitData(const dashboard_data_t * data)
     uint32_t index;
     uint32_t fan;
     uint32_t dirty_mask = 0U;
+    uint32_t valid_changed;
     uint32_t primask;
 
     if(data == NULL) {
@@ -581,20 +637,27 @@ void Dashboard_UI_SubmitData(const dashboard_data_t * data)
     primask = __get_PRIMASK();
     __disable_irq();
 
+    valid_changed = g_pending_dashboard_data.valid_mask ^ data->valid_mask;
     if((g_pending_dashboard_data.soc != data->soc) ||
-       (g_pending_dashboard_data.sum_voltage != data->sum_voltage) ||
-       (g_pending_dashboard_data.sum_current != data->sum_current) ||
-       (g_pending_dashboard_data.max_temperature != data->max_temperature)) {
+       (g_pending_dashboard_data.sum_voltage_dv != data->sum_voltage_dv) ||
+       (g_pending_dashboard_data.sum_current_da != data->sum_current_da) ||
+       (g_pending_dashboard_data.max_temperature != data->max_temperature) ||
+       ((valid_changed & DASH_VALID_BATTERY_GROUP) != 0U)) {
         dirty_mask |= DASH_DIRTY_BATTERY;
     }
     if((g_pending_dashboard_data.aps_open_pct != data->aps_open_pct) ||
-       (g_pending_dashboard_data.brake_pct != data->brake_pct)) {
+       (g_pending_dashboard_data.brake_pct != data->brake_pct) ||
+       ((valid_changed & DASH_VALID_PEDAL_GROUP) != 0U)) {
         dirty_mask |= DASH_DIRTY_PEDALS;
     }
     if((g_pending_dashboard_data.lv_bus_voltage_mV != data->lv_bus_voltage_mV) ||
        (g_pending_dashboard_data.lv_bus_current_cA != data->lv_bus_current_cA) ||
-       (g_pending_dashboard_data.lv_bus_power_dW != data->lv_bus_power_dW)) {
+       (g_pending_dashboard_data.lv_bus_power_dW != data->lv_bus_power_dW) ||
+       ((valid_changed & DASH_VALID_LV_BUS) != 0U)) {
         dirty_mask |= DASH_DIRTY_LOWVOLTAGE;
+    }
+    if((valid_changed & DASH_VALID_FAN) != 0U) {
+        dirty_mask |= DASH_DIRTY_FANS;
     }
     for(fan = 0U; fan < 3U; fan++) {
         if((g_pending_dashboard_data.fan_rpm[fan] != data->fan_rpm[fan]) ||
@@ -608,7 +671,8 @@ void Dashboard_UI_SubmitData(const dashboard_data_t * data)
            (g_pending_dashboard_data.rpm[index] != data->rpm[index]) ||
            (g_pending_dashboard_data.motor_temp[index] != data->motor_temp[index]) ||
            (g_pending_dashboard_data.inverter_temp[index] != data->inverter_temp[index]) ||
-           (g_pending_dashboard_data.diag_num[index] != data->diag_num[index])) {
+           (g_pending_dashboard_data.diag_num[index] != data->diag_num[index]) ||
+           ((valid_changed & DASH_VALID_MOTOR_GROUP(index)) != 0U)) {
             dirty_mask |= (DASH_DIRTY_MOTOR_0 << index);
         }
     }
@@ -618,9 +682,12 @@ void Dashboard_UI_SubmitData(const dashboard_data_t * data)
         return;
     }
 
+    g_pending_dashboard_data.valid_mask = data->valid_mask;
     g_pending_dashboard_data.soc = data->soc;
     g_pending_dashboard_data.sum_voltage = data->sum_voltage;
     g_pending_dashboard_data.sum_current = data->sum_current;
+    g_pending_dashboard_data.sum_voltage_dv = data->sum_voltage_dv;
+    g_pending_dashboard_data.sum_current_da = data->sum_current_da;
     g_pending_dashboard_data.max_temperature = data->max_temperature;
     g_pending_dashboard_data.aps_open_pct = data->aps_open_pct;
     g_pending_dashboard_data.lv_bus_voltage_mV = data->lv_bus_voltage_mV;
@@ -1104,7 +1171,10 @@ void Dashboard_UI_Process(void)
             g_dashboard_data.soc = g_pending_dashboard_data.soc;
             g_dashboard_data.sum_voltage = g_pending_dashboard_data.sum_voltage;
             g_dashboard_data.sum_current = g_pending_dashboard_data.sum_current;
+            g_dashboard_data.sum_voltage_dv = g_pending_dashboard_data.sum_voltage_dv;
+            g_dashboard_data.sum_current_da = g_pending_dashboard_data.sum_current_da;
             g_dashboard_data.max_temperature = g_pending_dashboard_data.max_temperature;
+            dashboard_copy_valid(DASH_VALID_BATTERY_GROUP);
         }
         if((dashboard_mask & DASH_DIRTY_MODE) != 0U) {
             g_dashboard_data.mode_index = g_pending_dashboard_data.mode_index;
@@ -1115,11 +1185,13 @@ void Dashboard_UI_Process(void)
         if((dashboard_mask & DASH_DIRTY_PEDALS) != 0U) {
             g_dashboard_data.aps_open_pct = g_pending_dashboard_data.aps_open_pct;
             g_dashboard_data.brake_pct = g_pending_dashboard_data.brake_pct;
+            dashboard_copy_valid(DASH_VALID_PEDAL_GROUP);
         }
         if((dashboard_mask & DASH_DIRTY_LOWVOLTAGE) != 0U) {
             g_dashboard_data.lv_bus_voltage_mV = g_pending_dashboard_data.lv_bus_voltage_mV;
             g_dashboard_data.lv_bus_current_cA = g_pending_dashboard_data.lv_bus_current_cA;
             g_dashboard_data.lv_bus_power_dW = g_pending_dashboard_data.lv_bus_power_dW;
+            dashboard_copy_valid(DASH_VALID_LV_BUS);
         }
         if((dashboard_mask & DASH_DIRTY_FANS) != 0U) {
             for(uint32_t fan = 0U; fan < 3U; fan++) {
@@ -1128,6 +1200,7 @@ void Dashboard_UI_Process(void)
             for(uint32_t fan = 0U; fan < 2U; fan++) {
                 g_dashboard_data.fan_pwm_duty[fan] = g_pending_dashboard_data.fan_pwm_duty[fan];
             }
+            dashboard_copy_valid(DASH_VALID_FAN);
         }
         for(index = 0; index < 4U; index++) {
             if((dashboard_mask & (DASH_DIRTY_MOTOR_0 << index)) != 0U) {
@@ -1137,6 +1210,7 @@ void Dashboard_UI_Process(void)
                 g_dashboard_data.motor_temp[index] = g_pending_dashboard_data.motor_temp[index];
                 g_dashboard_data.inverter_temp[index] = g_pending_dashboard_data.inverter_temp[index];
                 g_dashboard_data.diag_num[index] = g_pending_dashboard_data.diag_num[index];
+                dashboard_copy_valid(DASH_VALID_MOTOR_GROUP(index));
             }
             if((dashboard_mask & (DASH_DIRTY_TIRE_0 << index)) != 0U) {
                 for(uint32_t segment = 0U; segment < 4U; segment++) {

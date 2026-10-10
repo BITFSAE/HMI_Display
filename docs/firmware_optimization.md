@@ -47,7 +47,7 @@ UI 跳过内容相同的标签和颜色更新，界面结构与绘制约束见 [
 
 CubeMX 生成的 defaultTask 只负责创建 Dashboard，随后删除自身。其 4 KiB 栈和控制块暂时使用 FreeRTOS 堆。应用任务创建失败会触发断言，禁止无声缺失。
 
-CAN 接收中断每次最多读取硬件 FIFO 中的 3 帧，将帧送入 64 项静态队列。CAN 任务解析数据、转发方向盘命令并提交 UI 更新。短帧、远程帧和扩展帧不会进入标准数据帧解析路径。队列满时丢弃新帧并计数。CAN 标识符、字节序和发送周期保持原定义。
+CAN 接收中断每次最多读取硬件 FIFO 中的 3 帧，将帧送入 64 项静态队列。CAN 任务解析数据、转发方向盘命令并提交 UI 更新；等待队列最多 100 ms，超时后检查各报文族的新鲜度并使失效字段回到 `--`。短帧、远程帧和扩展帧不会进入标准数据帧解析路径。队列满时丢弃新帧并计数。CAN 标识符、字节序和发送周期保持原定义。
 
 GPS 每 10 ms 读取循环 DMA，优先级高于绘制任务。配置接收机期间，每 10 ms 继续读取 DMA。512 B 缓冲区在 115200 baud、8N1 下约 44 ms 可绕回，因此长时间不读取会记录风险。异常航向和超范围数字直接拒绝，避免归一化死循环和有符号整数溢出。圈速、冲刺状态由互斥量保护；UI 的计时值和更新标志按一个事务交换。
 
@@ -71,7 +71,7 @@ GPS 每 10 ms 读取循环 DMA，优先级高于绘制任务。配置接收机�
 
 周期数除以 `SystemCoreClock` 即为秒。故障码：1 为 FreeRTOS 断言，2 为任务栈溢出，3 为 FreeRTOS 分配失败，4 为 Dashboard 创建失败，5 为 LVGL 断言；10、11、12、13 分别为 HardFault、MemManage、BusFault 和 UsageFault。原有 `g_freertos_fault_task_name` 继续保存出错任务名。
 
-其他计数器：`g_can_rx_drop_count`、`g_can_rx_invalid_count`、`g_can_rx_queue_peak`、`g_user_can_tx_drop_count`、`g_gps_poll_gap_max_ms`、`g_gps_dma_late_poll_count`、`g_odometer_flash_save_fail_count` 和 `g_odometer_flash_erase_count`。GPS 的迟读计数表示可能覆盖数据，不能当作精确丢字节数。
+其他计数器：`g_can_bus_off_count`、`g_can_rx_drop_count`、`g_can_rx_invalid_count`、`g_can_rx_queue_peak`、`g_user_can_tx_drop_count`、`g_gps_poll_gap_max_ms`、`g_gps_dma_late_poll_count`、`g_odometer_flash_save_fail_count` 和 `g_odometer_flash_erase_count`。GPS 的迟读计数表示可能覆盖数据，不能当作精确丢字节数。
 
 上板时同时运行 CAN、20 Hz GPS、触摸、告警切换和里程保存。检查各任务栈余量、LVGL 最大空闲块、队列丢帧计数及 GPS 最长读取间隔；里程写入造成的短暂停转应不使 `g_gps_poll_gap_max_ms` 接近 44 ms。实际帧率、栈最低余量和电气时序需要真机数据确认。
 
@@ -82,6 +82,6 @@ python3 tools/run_firmware_tests.py --png /tmp/dash   # 另存六帧界面截图
 ./run_sim_mac.sh --build-only
 ```
 
-固件全量构建、增量构建和模拟器构建通过。切换 `-O0` 后对象会重编，恢复 `-Os` 的 BIN 与此前逐字节一致。主机回归直接编译固件应用代码与固件 LVGL，外设和 RTOS 使用模拟实现，并启用 AddressSanitizer、UndefinedBehaviorSanitizer。验证范围包括 CAN 队列饱和与异常帧；里程 Flash 的空扇区、重启恢复、写入中断、编程失败、残留数据、写满后启动擦除和擦除失败；GPS 异常数值和时钟回绕；400 轮遥测、模式和告警更新。并渲染四种模式、告警和 READY 共六帧 800×480 RGB565 图像。
+固件全量构建、增量构建和模拟器构建通过。切换 `-O0` 后对象会重编，恢复 `-Os` 的 BIN 与此前逐字节一致。主机回归直接编译固件应用代码与固件 LVGL，外设和 RTOS 使用模拟实现，并启用 AddressSanitizer、UndefinedBehaviorSanitizer。验证范围包括 CAN 队列饱和与异常帧、帧解码与轮位映射、0x4B0 有效位与功率符号、PDM 离线占位、接收超时与恢复、方向盘帧上升沿和非法参数；里程 Flash 的空扇区、重启恢复、写入中断、编程失败、残留数据、写满后启动擦除和擦除失败；GPS 异常数值和时钟回绕；400 轮遥测、模式和告警更新。并渲染四种模式、告警和 READY 共六帧 800×480 RGB565 图像。
 
 主机指针为 64 位，测试池使用 120 KiB；测试不代表 STM32 的 60 KiB 池余量，也不验证真实中断时序或 RTOS 竞争。目标内存余量由上板诊断确认。`.su` 报告只列单函数栈帧，不等于完整调用链所需栈。

@@ -720,11 +720,17 @@ static void set_pedal(lv_obj_t * bar_obj, dash_bar_t * bar, lv_obj_t * label, in
 {
     char buf[8];
 
-    if(pct < 0) pct = 0;
-    if(pct > 100) pct = 100;
+    /* -1 marks "no data": empty bar and "--". */
+    if(pct == DASH_VIEW_INVALID) pct = -1;
+    else if(pct < 0) pct = 0;
+    else if(pct > 100) pct = 100;
     if(pct == bar->value) return;
     bar->value = pct;
     lv_obj_invalidate(bar_obj);
+    if(pct < 0) {
+        set_text(label, "--");
+        return;
+    }
     lv_snprintf(buf, sizeof(buf), "%ld%%", (long)pct);
     set_text(label, buf);
 }
@@ -740,29 +746,54 @@ void Dash_View_SetBattery(int32_t soc_pct, int32_t voltage_v, int32_t current_a)
     char buf[16];
     uint32_t color;
 
-    if(soc_pct < 0) soc_pct = 0;
-    if(soc_pct > 100) soc_pct = 100;
-    color = soc_pct < SOC_LOW_PCT ? C_RED : (soc_pct < SOC_MID_PCT ? C_AMBER : C_GREEN);
-    if((soc_pct != s_soc_bar.value) || (color != s_soc_bar.color)) {
-        s_soc_bar.value = soc_pct;
-        s_soc_bar.color = color;
-        lv_obj_invalidate(ui.soc_bar);
+    if(soc_pct == DASH_VIEW_INVALID) {
+        if(s_soc_bar.value != 0) {
+            s_soc_bar.value = 0;
+            lv_obj_invalidate(ui.soc_bar);
+        }
+        set_text(ui.soc, "--%");
+        set_text_color(ui.soc, C_DIM);
     }
-    lv_snprintf(buf, sizeof(buf), "%ld%%", (long)soc_pct);
-    set_text(ui.soc, buf);
-    set_text_color(ui.soc, soc_pct < SOC_LOW_PCT ? C_RED : C_TEXT);
-    lv_snprintf(buf, sizeof(buf), "%ld V", (long)voltage_v);
-    set_text(ui.hv_voltage, buf);
-    lv_snprintf(buf, sizeof(buf), "%ld A", (long)current_a);
-    set_text(ui.hv_current, buf);
+    else {
+        if(soc_pct < 0) soc_pct = 0;
+        if(soc_pct > 100) soc_pct = 100;
+        color = soc_pct < SOC_LOW_PCT ? C_RED : (soc_pct < SOC_MID_PCT ? C_AMBER : C_GREEN);
+        if((soc_pct != s_soc_bar.value) || (color != s_soc_bar.color)) {
+            s_soc_bar.value = soc_pct;
+            s_soc_bar.color = color;
+            lv_obj_invalidate(ui.soc_bar);
+        }
+        lv_snprintf(buf, sizeof(buf), "%ld%%", (long)soc_pct);
+        set_text(ui.soc, buf);
+        set_text_color(ui.soc, soc_pct < SOC_LOW_PCT ? C_RED : C_TEXT);
+    }
+    if(voltage_v == DASH_VIEW_INVALID) {
+        set_text(ui.hv_voltage, "-- V");
+    }
+    else {
+        lv_snprintf(buf, sizeof(buf), "%ld V", (long)voltage_v);
+        set_text(ui.hv_voltage, buf);
+    }
+    if(current_a == DASH_VIEW_INVALID) {
+        set_text(ui.hv_current, "-- A");
+    }
+    else {
+        lv_snprintf(buf, sizeof(buf), "%ld A", (long)current_a);
+        set_text(ui.hv_current, buf);
+    }
 }
 
 void Dash_View_SetPower(int32_t live_kw, int32_t peak_kw)
 {
     char buf[16];
 
-    lv_snprintf(buf, sizeof(buf), "%ld kW", (long)live_kw);
-    set_text(ui.power_live, buf);
+    if(live_kw == DASH_VIEW_INVALID) {
+        set_text(ui.power_live, "-- kW");
+    }
+    else {
+        lv_snprintf(buf, sizeof(buf), "%ld kW", (long)live_kw);
+        set_text(ui.power_live, buf);
+    }
     lv_snprintf(buf, sizeof(buf), "PK %ld", (long)peak_kw);
     set_text(ui.power_peak, buf);
 }
@@ -771,6 +802,11 @@ void Dash_View_SetMaxTemp(int32_t temp_c)
 {
     char buf[12];
 
+    if(temp_c == DASH_VIEW_INVALID) {
+        set_text(ui.max_temp, "--");
+        set_text_color(ui.max_temp, C_DIM);
+        return;
+    }
     lv_snprintf(buf, sizeof(buf), "%ld" DEG "C", (long)temp_c);
     set_text(ui.max_temp, buf);
     set_text_color(ui.max_temp, temp_text_color(temp_c));
@@ -780,6 +816,12 @@ void Dash_View_SetLowVoltage(int32_t voltage_mv, int32_t current_ca, int32_t pow
 {
     char buf[16];
 
+    if(voltage_mv == DASH_VIEW_INVALID) {
+        set_text(ui.lv_voltage, "-- V");
+        set_text(ui.lv_current, "-- A");
+        set_text(ui.lv_power, "-- W");
+        return;
+    }
     format_deci(buf, sizeof(buf), voltage_mv / 100, " V");
     set_text(ui.lv_voltage, buf);
     format_deci(buf, sizeof(buf), current_ca / 10, " A");
@@ -794,11 +836,21 @@ void Dash_View_SetFans(const int32_t rpm[3], const int32_t duty_pct[2])
 
     for(uint32_t fan = 0U; fan < 3U; fan++) {
         if(fan < 2U) {
-            lv_snprintf(buf, sizeof(buf), "%ld%%", (long)duty_pct[fan]);
-            set_text(ui.fan_duty[fan], buf);
+            if(duty_pct[fan] == DASH_VIEW_INVALID) {
+                set_text(ui.fan_duty[fan], "--%");
+            }
+            else {
+                lv_snprintf(buf, sizeof(buf), "%ld%%", (long)duty_pct[fan]);
+                set_text(ui.fan_duty[fan], buf);
+            }
         }
-        lv_snprintf(buf, sizeof(buf), "%ld rpm", (long)rpm[fan]);
-        set_text(ui.fan_rpm[fan], buf);
+        if(rpm[fan] == DASH_VIEW_INVALID) {
+            set_text(ui.fan_rpm[fan], "-- rpm");
+        }
+        else {
+            lv_snprintf(buf, sizeof(buf), "%ld rpm", (long)rpm[fan]);
+            set_text(ui.fan_rpm[fan], buf);
+        }
     }
 }
 
@@ -810,23 +862,59 @@ void Dash_View_SetMotor(uint32_t wheel, const dash_motor_t * motor)
     if((wheel >= 4U) || (motor == NULL)) return;
     m = &ui.motors[wheel];
 
-    lv_snprintf(buf, sizeof(buf), "%ld Nm", (long)motor->torque);
-    set_text(m->torque, buf);
-    lv_snprintf(buf, sizeof(buf), "%ld", (long)motor->rpm);
-    set_text(m->rpm, buf);
-    format_deci(buf, sizeof(buf), motor->power_dkw, "");
-    set_text(m->power, buf);
+    if((motor->invalid & DASH_MOTOR_NO_TORQUE) != 0U) {
+        set_text(m->torque, "-- Nm");
+    }
+    else {
+        lv_snprintf(buf, sizeof(buf), "%ld Nm", (long)motor->torque);
+        set_text(m->torque, buf);
+    }
+    if((motor->invalid & DASH_MOTOR_NO_RPM) != 0U) {
+        set_text(m->rpm, "--");
+    }
+    else {
+        lv_snprintf(buf, sizeof(buf), "%ld", (long)motor->rpm);
+        set_text(m->rpm, buf);
+    }
+    /* Power needs both torque and speed. */
+    if((motor->invalid & (DASH_MOTOR_NO_TORQUE | DASH_MOTOR_NO_RPM)) != 0U) {
+        set_text(m->power, "--");
+    }
+    else {
+        format_deci(buf, sizeof(buf), motor->power_dkw, "");
+        set_text(m->power, buf);
+    }
     format_deci(buf, sizeof(buf), motor->power_peak_dkw, "");
     set_text(m->peak, buf);
-    lv_snprintf(buf, sizeof(buf), "%ld" DEG, (long)motor->motor_temp);
-    set_text(m->motor_temp, buf);
-    set_text_color(m->motor_temp, temp_text_color(motor->motor_temp));
-    lv_snprintf(buf, sizeof(buf), "%ld" DEG, (long)motor->inverter_temp);
-    set_text(m->inverter_temp, buf);
-    set_text_color(m->inverter_temp, temp_text_color(motor->inverter_temp));
-    set_text_color(m->bolt, motor->enabled != 0U ? C_YELLOW : C_TRACK);
+    if((motor->invalid & DASH_MOTOR_NO_MOTOR_TEMP) != 0U) {
+        set_text(m->motor_temp, "--");
+        set_text_color(m->motor_temp, C_DIM);
+    }
+    else {
+        lv_snprintf(buf, sizeof(buf), "%ld" DEG, (long)motor->motor_temp);
+        set_text(m->motor_temp, buf);
+        set_text_color(m->motor_temp, temp_text_color(motor->motor_temp));
+    }
+    if((motor->invalid & DASH_MOTOR_NO_INV_TEMP) != 0U) {
+        set_text(m->inverter_temp, "--");
+        set_text_color(m->inverter_temp, C_DIM);
+    }
+    else {
+        lv_snprintf(buf, sizeof(buf), "%ld" DEG, (long)motor->inverter_temp);
+        set_text(m->inverter_temp, buf);
+        set_text_color(m->inverter_temp, temp_text_color(motor->inverter_temp));
+    }
+    set_text_color(m->bolt, ((motor->enabled != 0U) &&
+                             ((motor->invalid & DASH_MOTOR_NO_ENABLED) == 0U)) ? C_YELLOW : C_TRACK);
 
-    if(motor->diag != 0U) {
+    if((motor->invalid & DASH_MOTOR_NO_DIAG) != 0U) {
+        set_text(m->diag, "--");
+        set_text_color(m->diag, C_DIM);
+        if(lv_obj_get_style_bg_opa(m->diag, 0) != LV_OPA_TRANSP) {
+            lv_obj_set_style_bg_opa(m->diag, LV_OPA_TRANSP, 0);
+        }
+    }
+    else if(motor->diag != 0U) {
         lv_snprintf(buf, sizeof(buf), "E %04lX", (unsigned long)(motor->diag & 0xFFFFU));
         set_text(m->diag, buf);
         set_text_color(m->diag, C_TEXT);

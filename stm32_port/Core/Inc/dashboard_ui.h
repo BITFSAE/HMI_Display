@@ -7,6 +7,25 @@
 extern "C" {
 #endif
 
+/* dashboard_data_t.valid_mask: a bit is set while its CAN source is fresh and
+ * flagged valid. All bits start cleared (shown as "--") and are cleared again
+ * when the source frame times out or reports itself invalid. */
+#define DASH_VALID_SOC         (1UL << 0)   /* 0x4B0 byte5 bit2 */
+#define DASH_VALID_HV_V        (1UL << 1)   /* 0x4B0 byte5 bit0 */
+#define DASH_VALID_HV_I        (1UL << 2)   /* 0x4B0 byte5 bit1 */
+#define DASH_VALID_APS         (1UL << 3)   /* 0x305 */
+#define DASH_VALID_BRAKE       (1UL << 4)   /* 0x306 */
+#define DASH_VALID_TORQUE      (1UL << 5)   /* 0x502 */
+#define DASH_VALID_RPM         (1UL << 6)   /* 0x505 */
+#define DASH_VALID_MOTOR_TEMP  (1UL << 7)   /* 0x506 */
+#define DASH_VALID_INV_TEMP    (1UL << 8)   /* 0x507 */
+#define DASH_VALID_IGBT_TEMP   (1UL << 9)   /* 0x508 */
+#define DASH_VALID_AMK_EN      (1UL << 10)  /* 0x509 */
+#define DASH_VALID_DIAG_RL_RR  (1UL << 11)  /* 0x503: Diagnostic_number_1/2 */
+#define DASH_VALID_DIAG_FL_FR  (1UL << 12)  /* 0x504: Diagnostic_number_3/4 */
+#define DASH_VALID_LV_BUS      (1UL << 13)  /* 0x5A0, not the INA226-offline placeholder */
+#define DASH_VALID_FAN         (1UL << 14)  /* 0x5A2 */
+
 typedef struct {
 	/* Display speed in integer km/h. CAN GPS_Speed uses 0.1 km/h raw units. */
 	int32_t speed;
@@ -14,22 +33,25 @@ typedef struct {
 	int32_t soc;
 	/* DBC BO_1289 Debug9: ModeFlag, bit4|4@1- [-8,7] */
 	int32_t mode_index;
-	/* DBC BO_1282 Debug2: FR/FL/RR/RL_ActualTorque (1,0) Nm (DBC unit text "0.1%Mn" is wrong) */
+	/* DBC BO_1282 Debug2: RL/RR/FL/FR_ActualTorque (1,0) Nm */
 	/* Wheel order: 0=LF(DBC FL), 1=LR(DBC RL), 2=RF(DBC FR), 3=RR(DBC RR) */
 	int32_t torque[4];
-	/* DBC BO_1289 Debug9: FR/FL/RR/RL_AMK_bEnable, bit20~23 each 1bit */
+	/* DBC BO_1289 Debug9: FR/FL/RR/RL_AMK_bEnable at bit20/21/22/23 */
 	/* Wheel order: 0=LF, 1=LR, 2=RF, 3=RR */
 	uint8_t motor_enable[4];
-	/* DBC BO_1285 Debug5: FR/FL/RR/RL_ActualVelocity (1,0) */
+	/* DBC BO_1285 Debug5: RL/RR/FL/FR_ActualVelocity (1,0) */
 	/* Wheel order: 0=LF, 1=LR, 2=RF, 3=RR */
 	int32_t rpm[4];
 	/* DBC BO_1200 BatteryVoltage (V, 0.1V/raw /10) */
 	int32_t sum_voltage;
-	/* DBC BO_1200 BatteryCurrent (A, 0.1A/raw /10, signed) */
+	/* DBC BO_1200 BatteryCurrent (A, 0.1A/raw /10, signed; charge +, discharge -) */
 	int32_t sum_current;
+	/* Same two signals in raw 0.1 V / 0.1 A units, used for the power estimate. */
+	int32_t sum_voltage_dv;
+	int32_t sum_current_da;
 	/* 由can.c计算: max(电机/逆变器/IGBT温度, 四轮) degC, 无温度源时为0 */
 	int32_t max_temperature;
-	/* DBC BO_1286 Debug6: FR/FL/RR/RL_Motor_temperature (0.1,0) degC */
+	/* DBC BO_1286 Debug6: RL/RR/FL/FR_Motor_temperature (0.1,0) degC */
 	/* Wheel order: 0=LF, 1=LR, 2=RF, 3=RR */
 	int32_t motor_temp[4];
 	/* DBC BO_773 DataLogger: APS_OpenPct (0.1,0) % */
@@ -38,14 +60,14 @@ typedef struct {
 	int32_t steering_angle;
 	/* DBC BO_773 DataLogger: OilPressure_Kpa (0.001,0) Kpa */
 	int32_t oil_pressure;
-	/* DBC BO_1288 Debug8: FR/FL/RR/RL_IGBT_temperature (0.1,0) degC */
+	/* DBC BO_1288 Debug8: RL/RR/FL/FR_IGBT_temperature (0.1,0) degC */
 	/* Wheel order: 0=LF, 1=LR, 2=RF, 3=RR */
 	int32_t igbt_temp[4];
-	/* DBC BO_1287 Debug7: FR/FL/RR/RL_Inverter_temperature (0.1,0) degC */
+	/* DBC BO_1287 Debug7: RL/RR/FL/FR_Inverter_temperature (0.1,0) degC */
 	/* Wheel order: 0=LF, 1=LR, 2=RF, 3=RR */
 	int32_t inverter_temp[4];
-	/* DBC BO_1283 Debug3 / BO_1284 Debug4: Diagnostic_number_1~4 */
-	/* Wheel order: 0=LF, 1=LR, 2=RF, 3=RR */
+	/* DBC BO_1283 Debug3 / BO_1284 Debug4: Diagnostic_number_1~4 = AMK1~4 = RL/RR/FL/FR */
+	/* Wheel order: 0=LF, 1=LR, 2=RF, 3=RR (remapped like torque/rpm) */
 	uint32_t diag_num[4];
 	/* DBC BO_97 IMU_Accel: IMU_AccelX/Y/Z (0.00048828125,0) g */
 	int32_t imu_accel[3];
@@ -86,6 +108,8 @@ typedef struct {
 	/* DBC BO_1442 FanController_Status 0x5A2: Fan_PWM1/2_Duty (1%), 实测占空比;
 	 * DBC 只定义两路实测占空比, Fan3 无独立信号 */
 	int32_t fan_pwm_duty[2];
+	/* DASH_VALID_* bits; fields whose bit is clear are not meaningful. */
+	uint32_t valid_mask;
 } dashboard_data_t;
 
 void Dashboard_UI_Init(void);

@@ -55,6 +55,8 @@ static StackType_t g_can_task_stack[1024U];
 volatile uint32_t g_can_rx_drop_count;
 volatile uint32_t g_can_rx_invalid_count;
 volatile uint32_t g_can_rx_queue_peak;
+/* Bus-off events seen via HAL_CAN_ErrorCallback; recovery itself is ABOM in hardware. */
+volatile uint32_t g_can_bus_off_count;
 static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame);
 static void User_CAN_ProcessFifo1(const User_CAN_RxItem_t *frame);
 
@@ -139,34 +141,137 @@ static volatile uint8_t g_user_can_tx_tail;
 static volatile uint8_t g_user_can_tx_count;
 static volatile uint8_t g_user_can_tx_draining;
 static volatile uint32_t g_user_can_tx_drop_count;
-static dashboard_data_t g_can_dashboard_data = {
-  .speed = 24,             /* Startup placeholder; GPS speed is submitted separately. */
-  .soc = 24,               /* DBC BO_1200 BatterySOC (%) */
-  .mode_index = 0,         /* DBC BO_1289 Debug9: ModeFlag [-8,7] */
-  .torque = {24, 24, 24, 24},     /* DBC BO_1282 Debug2: ActualTorque (1,0) */
-  .motor_enable = {1, 1, 1, 1},   /* DBC BO_1289 Debug9: AMK_bEnable */
-  .rpm = {24, 24, 24, 24},        /* DBC BO_1285 Debug5: ActualVelocity (1,0) */
-  .sum_voltage = 24,        /* DBC BO_1200 BatteryVoltage (V) */
-  .sum_current = 24,        /* DBC BO_1200 BatteryCurrent (A) */
-  .max_temperature = 24,    /* 无DBC源: BO_1200无电池温度信号 */
-  .motor_temp = {48, 47, 49, 50},  /* DBC BO_1286 Debug6: Motor_temperature (0.1,0) degC */
-  .aps_open_pct = 0,        /* DBC BO_773 DataLogger: APS_OpenPct (0.1,0) % */
-  .steering_angle = 0,      /* DBC BO_773 DataLogger: SteeringWheelAngle (0.1,0) deg */
-  .oil_pressure = 0,        /* DBC BO_773 DataLogger: OilPressure_Kpa (0.001,0) Kpa, raw count */
-  .igbt_temp = {0, 0, 0, 0},       /* DBC BO_1288 Debug8: IGBT_temperature (0.1,0) degC */
-  .inverter_temp = {0, 0, 0, 0},   /* DBC BO_1287 Debug7: Inverter_temperature (0.1,0) degC */
-  .diag_num = {0, 0, 0, 0},        /* DBC BO_1283/1284 Debug3/4: Diagnostic_number */
-  .imu_accel = {0, 0, 0},   /* DBC BO_97 IMU_Accel: raw int16, scale=0.00048828125 g */
-  .imu_gyro = {0, 0, 0},    /* DBC BO_98 IMU_Gyro: raw int16, scale=0.0610352 deg/s */
-  .imu_roll = 0,            /* DBC BO_99 IMU_Roll: raw int16, scale=0.005493 deg */
-  .imu_pitch = 0,           /* DBC BO_100 IMU_Pitch: raw int16, scale=0.005493 deg */
-  .imu_yaw = 0,             /* DBC BO_101 IMU_Yaw: raw int16, scale=0.005493 deg */
-  .imu_mag = {0, 0, 0},     /* DBC BO_102 IMU_Magnetic: raw int16, scale=1 */
-  .signal_level = 0,        /* 非DBC */
-  .alert_active = 1,        /* 非DBC */
-  .odometer_tenths = 0,     /* GPS-owned odometer, not populated from CAN */
-  .brake_pct = 10,          /* 非DBC: 制动 0~100% */
+/* Nothing is valid until its frame arrives: valid_mask starts at 0 and the UI
+ * shows "--" (see User_CAN_CheckTimeouts for the drop-out path). */
+static dashboard_data_t g_can_dashboard_data;
+
+/* DBC order of the four per-wheel signals is RL, RR, FL, FR; dashboard order
+ * is 0=LF, 1=LR, 2=RF, 3=RR. */
+static const uint8_t k_can_dbc_to_dash[4] = {1U, 3U, 0U, 2U};
+
+/* Receive freshness. Each family of decoded frames owns DASH_VALID_* bits that
+ * are dropped after `timeout_ms` of silence. Timeouts are several nominal
+ * periods: BMS 0x4B0 500 ms, PDM/fan 100 ms, ECU frames 10..50 ms (still
+ * tentative in the interface repo, hence the generous second). */
+typedef enum {
+  CAN_SRC_BMS,
+  CAN_SRC_APS,
+  CAN_SRC_BRAKE,
+  CAN_SRC_TORQUE,
+  CAN_SRC_RPM,
+  CAN_SRC_MOTOR_TEMP,
+  CAN_SRC_INV_TEMP,
+  CAN_SRC_IGBT_TEMP,
+  CAN_SRC_AMK_STATE,
+  CAN_SRC_DIAG_RL_RR,
+  CAN_SRC_DIAG_FL_FR,
+  CAN_SRC_PDM_BUS,
+  CAN_SRC_FAN,
+  CAN_SRC_COUNT
+} can_src_t;
+
+#define CAN_TIMEOUT_BMS_MS  2000U
+#define CAN_TIMEOUT_ECU_MS  1000U
+#define CAN_TIMEOUT_PDM_MS  1500U  /* CANB接口.md 8.2: PDM lost after 1500 ms */
+#define CAN_TIMEOUT_FAN_MS  1500U  /* CANB接口.md 8.2: 0x5Ax stale after 1500 ms */
+#define CAN_TIMEOUT_POLL_MS 100U
+
+static const struct {
+  uint32_t valid_bits;
+  uint32_t timeout_ms;
+} k_can_src[CAN_SRC_COUNT] = {
+  [CAN_SRC_BMS]        = {DASH_VALID_SOC | DASH_VALID_HV_V | DASH_VALID_HV_I, CAN_TIMEOUT_BMS_MS},
+  [CAN_SRC_APS]        = {DASH_VALID_APS,        CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_BRAKE]      = {DASH_VALID_BRAKE,      CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_TORQUE]     = {DASH_VALID_TORQUE,     CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_RPM]        = {DASH_VALID_RPM,        CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_MOTOR_TEMP] = {DASH_VALID_MOTOR_TEMP, CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_INV_TEMP]   = {DASH_VALID_INV_TEMP,   CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_IGBT_TEMP]  = {DASH_VALID_IGBT_TEMP,  CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_AMK_STATE]  = {DASH_VALID_AMK_EN,     CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_DIAG_RL_RR] = {DASH_VALID_DIAG_RL_RR, CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_DIAG_FL_FR] = {DASH_VALID_DIAG_FL_FR, CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_PDM_BUS]    = {DASH_VALID_LV_BUS,     CAN_TIMEOUT_PDM_MS},
+  [CAN_SRC_FAN]        = {DASH_VALID_FAN,        CAN_TIMEOUT_FAN_MS},
 };
+static uint32_t g_can_src_tick[CAN_SRC_COUNT];  /* 0 = never received */
+static uint32_t g_can_timeout_check_tick;
+
+/* Records a frame of `src`; call before touching valid_mask for it. */
+static void User_CAN_NoteRx(can_src_t src, uint32_t now)
+{
+  g_can_src_tick[src] = (now != 0U) ? now : 1U;
+}
+
+static void User_CAN_SetValid(uint32_t bits, uint8_t valid)
+{
+  if(valid != 0U) g_can_dashboard_data.valid_mask |= bits;
+  else g_can_dashboard_data.valid_mask &= ~bits;
+}
+
+/* MAX T: highest fresh motor/inverter/IGBT temperature across the four wheels. */
+static void User_CAN_UpdateMaxTemp(void)
+{
+  const uint32_t valid = g_can_dashboard_data.valid_mask;
+  int32_t max_temp = 0;
+
+  for(uint32_t wheel = 0U; wheel < 4U; wheel++) {
+    if(((valid & DASH_VALID_MOTOR_TEMP) != 0U) && (g_can_dashboard_data.motor_temp[wheel] > max_temp)) {
+      max_temp = g_can_dashboard_data.motor_temp[wheel];
+    }
+    if(((valid & DASH_VALID_INV_TEMP) != 0U) && (g_can_dashboard_data.inverter_temp[wheel] > max_temp)) {
+      max_temp = g_can_dashboard_data.inverter_temp[wheel];
+    }
+    if(((valid & DASH_VALID_IGBT_TEMP) != 0U) && (g_can_dashboard_data.igbt_temp[wheel] > max_temp)) {
+      max_temp = g_can_dashboard_data.igbt_temp[wheel];
+    }
+  }
+  g_can_dashboard_data.max_temperature = max_temp;
+}
+
+/* Drops the valid bits of every source that has gone quiet. Returns non-zero
+ * when anything changed and the dashboard needs a fresh submit. */
+static uint8_t User_CAN_CheckTimeouts(uint32_t now)
+{
+  uint8_t changed = 0U;
+
+  for(uint32_t src = 0U; src < (uint32_t)CAN_SRC_COUNT; src++) {
+    if((g_can_src_tick[src] != 0U) &&
+       ((now - g_can_src_tick[src]) > k_can_src[src].timeout_ms) &&
+       ((g_can_dashboard_data.valid_mask & k_can_src[src].valid_bits) != 0U)) {
+      g_can_dashboard_data.valid_mask &= ~k_can_src[src].valid_bits;
+      changed = 1U;
+    }
+  }
+  return changed;
+}
+
+/* Rate-limited wrapper called from the CAN task after every wake-up. */
+static void User_CAN_ServiceTimeouts(uint32_t now)
+{
+  if((now - g_can_timeout_check_tick) < CAN_TIMEOUT_POLL_MS) return;
+  g_can_timeout_check_tick = now;
+  if(User_CAN_CheckTimeouts(now) != 0U) {
+    User_CAN_UpdateMaxTemp();
+    Dashboard_UI_SubmitData(&g_can_dashboard_data);
+  }
+}
+
+static uint16_t can_u16_le(const uint8_t * d, uint32_t i)
+{
+  return (uint16_t)((uint16_t)d[i] | ((uint16_t)d[i + 1U] << 8));
+}
+
+static uint16_t can_u16_be(const uint8_t * d, uint32_t i)
+{
+  return (uint16_t)(((uint16_t)d[i] << 8) | (uint16_t)d[i + 1U]);
+}
+
+static uint32_t can_u32_le(const uint8_t * d, uint32_t i)
+{
+  return (uint32_t)d[i] | ((uint32_t)d[i + 1U] << 8) |
+         ((uint32_t)d[i + 2U] << 16) | ((uint32_t)d[i + 3U] << 24);
+}
 
 static int32_t User_CAN_DecodeTireTemperatureCenti(uint8_t integer_part,
                                                    uint8_t fractional_part)
@@ -222,9 +327,9 @@ void MX_CAN1_Init(void)
   hcan1.Init.TimeSeg1 = CAN_BS1_12TQ;
   hcan1.Init.TimeSeg2 = CAN_BS2_1TQ;
   hcan1.Init.TimeTriggeredMode = DISABLE;
-  hcan1.Init.AutoBusOff = DISABLE;
+  hcan1.Init.AutoBusOff = ENABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
-  hcan1.Init.AutoRetransmission = DISABLE;
+  hcan1.Init.AutoRetransmission = ENABLE;
   hcan1.Init.ReceiveFifoLocked = DISABLE;
   hcan1.Init.TransmitFifoPriority = DISABLE;
   if (HAL_CAN_Init(&hcan1) != HAL_OK)
@@ -254,9 +359,9 @@ void MX_CAN2_Init(void)
   hcan2.Init.TimeSeg1 = CAN_BS1_12TQ;
   hcan2.Init.TimeSeg2 = CAN_BS2_1TQ;
   hcan2.Init.TimeTriggeredMode = DISABLE;
-  hcan2.Init.AutoBusOff = DISABLE;
+  hcan2.Init.AutoBusOff = ENABLE;
   hcan2.Init.AutoWakeUp = DISABLE;
-  hcan2.Init.AutoRetransmission = DISABLE;
+  hcan2.Init.AutoRetransmission = ENABLE;
   hcan2.Init.ReceiveFifoLocked = DISABLE;
   hcan2.Init.TransmitFifoPriority = DISABLE;
   if (HAL_CAN_Init(&hcan2) != HAL_OK)
@@ -613,10 +718,12 @@ void CAN_ServiceTask(void *argument)
   User_CAN_RxItem_t frame;
   (void)argument;
   for(;;) {
-    if(xQueueReceive(g_can_rx_queue, &frame, portMAX_DELAY) == pdPASS) {
+    /* Wake at least every CAN_TIMEOUT_POLL_MS so silent sources time out. */
+    if(xQueueReceive(g_can_rx_queue, &frame, pdMS_TO_TICKS(CAN_TIMEOUT_POLL_MS)) == pdPASS) {
       if(frame.fifo == 0U) User_CAN_ProcessFifo0(&frame);
       else User_CAN_ProcessFifo1(&frame);
     }
+    User_CAN_ServiceTimeouts(HAL_GetTick());
   }
   /* USER CODE END CAN_ServiceTask */
 }
@@ -656,6 +763,13 @@ void HAL_CAN_TxMailbox2CompleteCallback(CAN_HandleTypeDef *hcan)
   if((hcan != NULL) && (hcan->Instance == CAN1)) User_CAN_TxQueueDrain();
 }
 
+/* Only BUSOFF/ERROR notifications are armed (main.c). ABOM recovers the
+ * controller in hardware, so this just counts the event for diagnosis. */
+void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
+{
+  if((hcan != NULL) && ((HAL_CAN_GetError(hcan) & HAL_CAN_ERROR_BOF) != 0U)) g_can_bus_off_count++;
+}
+
 /*
  * @func: Send the consolidated steering command 0x703 (DBC BO_1795) to the ECU.
  * 0x700/0x701/0x702 are SteeringWheel->Display only and must NOT be forwarded
@@ -677,10 +791,38 @@ static void User_CAN_SendSteeringCmd(uint8_t slip_level,
   User_CAN_SendDlc(0x703U, cmd, 2U);
 }
 
+/* DBC SG_ RecorderToggle / ErrorClearActive: "Display acts only on the rising
+ * edge". The wheel may send either a single 1-frame per press or repeat it
+ * while held, and it is unconfirmed whether a 0-frame follows. A frame counts
+ * as a new press when the previous frame was 0, or when the previous 1-frame is
+ * older than CAN_BUTTON_REPEAT_GAP_MS (repeat frames are faster than that). */
+#define CAN_BUTTON_REPEAT_GAP_MS 300U
+
+typedef struct {
+  uint8_t level;
+  uint32_t last_active_tick;
+} User_CAN_Button_t;
+
+static uint8_t User_CAN_ButtonPressed(User_CAN_Button_t * button, uint8_t active, uint32_t now)
+{
+  uint8_t pressed = 0U;
+
+  if(active != 0U) {
+    if((button->level == 0U) || ((now - button->last_active_tick) > CAN_BUTTON_REPEAT_GAP_MS)) {
+      pressed = 1U;
+    }
+    button->last_active_tick = now;
+  }
+  button->level = active;
+  return pressed;
+}
+
 static void User_CAN_HandleSteeringWheel(const CAN_RxHeaderTypeDef * rx,
                                          const uint8_t data[8])
 {
   static uint8_t s_slip_level = 0U;
+  static User_CAN_Button_t s_recorder_button;
+  static User_CAN_Button_t s_clear_button;
 
   if((rx == NULL) || (data == NULL)) return;
 
@@ -689,52 +831,49 @@ static void User_CAN_HandleSteeringWheel(const CAN_RxHeaderTypeDef * rx,
     /* Vehicle_CanB.dbc BO_784 DriveMode_Request 0x310: DriveModeCode byte0 = ASCII '0'..'3' (48..51).
      * Drive mode is relayed verbatim to the ECU, except while a sprint/lap
      * timing session holds the mode lock: then the request is not relayed and
-     * Dashboard_UI_SubmitDriveMode() raises the MODE LOCK alert instead. */
+     * Dashboard_UI_SubmitDriveMode() raises the MODE LOCK alert instead.
+     * Codes outside 48..51 are dropped, neither relayed nor shown. */
     case 0x310:
     {
-      int32_t mode;
+      if((data[0] < 48U) || (data[0] > 51U)) {
+        g_can_rx_invalid_count++;
+        break;
+      }
       if(Dashboard_UI_IsTimingModeLocked() == 0U) {
         User_CAN_SendDlc(rx->StdId, data, rx->DLC);
       }
-      if(rx->DLC < 1U) break;
-      mode = (int32_t)data[0] - 48;
-      if(mode < 0) mode = 0;
-      if(mode > 3) mode = 3;
-      Dashboard_UI_SubmitDriveMode(mode);
+      Dashboard_UI_SubmitDriveMode((int32_t)data[0] - 48);
       break;
     }
 
-    /* Vehicle_CanB.dbc BO_1792 SlipLevel 0x700: byte0 [0..7] -> merge into 0x703 */
+    /* Vehicle_CanB.dbc BO_1792 SlipLevel 0x700: byte0 [0..7] -> merge into 0x703.
+     * An out-of-range level is dropped; no 0x703 is sent for it. */
     case 0x700:
     {
-      if((rx->DLC >= 1U) && (data[0] <= 7U)) {
-        s_slip_level = data[0];
-        Dashboard_UI_SubmitSlipLevel((int32_t)data[0]);
+      if(data[0] > 7U) {
+        g_can_rx_invalid_count++;
+        break;
       }
+      s_slip_level = data[0];
+      Dashboard_UI_SubmitSlipLevel((int32_t)data[0]);
       User_CAN_SendSteeringCmd(s_slip_level, 0U, 0U);
       break;
     }
 
-    /* Vehicle_CanB.dbc BO_1793 RecorderToggle 0x701: bit0, one-shot -> merge into 0x703 */
+    /* Vehicle_CanB.dbc BO_1793 RecorderToggle 0x701: bit0, rising edge -> merge into 0x703 */
     case 0x701:
     {
-      uint8_t toggle = 0U;
-      if((rx->DLC >= 1U) && ((data[0] & 0x01U) != 0U)) {
-        Dashboard_UI_RequestLapToggle();
-        toggle = 1U;
-      }
+      uint8_t toggle = User_CAN_ButtonPressed(&s_recorder_button, data[0] & 0x01U, HAL_GetTick());
+      if(toggle != 0U) Dashboard_UI_RequestLapToggle();
       User_CAN_SendSteeringCmd(s_slip_level, toggle, 0U);
       break;
     }
 
-    /* Vehicle_CanB.dbc BO_1794 ErrorClear_0x702: bit0, one-shot -> merge into 0x703 */
+    /* Vehicle_CanB.dbc BO_1794 ErrorClear_0x702: bit0, rising edge -> merge into 0x703 */
     case 0x702:
     {
-      uint8_t clear = 0U;
-      if((rx->DLC >= 1U) && ((data[0] & 0x01U) != 0U)) {
-        Dashboard_UI_RequestAlertClear();
-        clear = 1U;
-      }
+      uint8_t clear = User_CAN_ButtonPressed(&s_clear_button, data[0] & 0x01U, HAL_GetTick());
+      if(clear != 0U) Dashboard_UI_RequestAlertClear();
       User_CAN_SendSteeringCmd(s_slip_level, 0U, clear);
       break;
     }
@@ -751,6 +890,8 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 
 static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
 {
+  const uint32_t now = HAL_GetTick();
+
   RxHeader.StdId = frame->id;
   RxHeader.DLC = frame->dlc;
   if(frame->bus == 2U) {
@@ -768,239 +909,233 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
   if(frame->dlc < min_dlc) { g_can_rx_invalid_count++; return; }
   for(uint32_t i = 0U; i < 8U; i++) CAN_RxData[i] = frame->data[i];
 
-	switch(RxHeader.StdId)
-	{
-	  /* Vehicle_CanB.dbc BO_113..116, cell order #1..#16.
-	   * Each pair is integer byte followed by hundredths byte. */
-	  case 0x071:
-	  case 0x072:
-	  case 0x073:
-	  case 0x074:
-	  {
-	    if(RxHeader.DLC == 8U) {
-	      User_CAN_SubmitTireTemperatureFrame(RxHeader.StdId, CAN_RxData);
-	    }
-	    return;
-	  }
-
-	  /* DBC BO_1200 BMS_PackStatus 0x4B0, DLC=7:
-	   *   BatteryVoltage(byte0-1,BE,0.1V), BatteryCurrent(byte2-3,BE,int16,0.1A),
-	   *   BatterySOC(byte4,%), validity(byte5), AlarmLevel/State(byte6).
-	   * The on-car BMS often sends the validity byte without all bits set, so
-	   * the display takes the data bytes unconditionally and ignores byte5. */
-	  case 0x4B0:
-	  {
-	    g_can_dashboard_data.sum_voltage = (int32_t)((((uint16_t)CAN_RxData[0] << 8) | (uint16_t)CAN_RxData[1]) / 10);
-	    int16_t curr_raw = (int16_t)(((uint16_t)CAN_RxData[2] << 8) | (uint16_t)CAN_RxData[3]);
-	    g_can_dashboard_data.sum_current = (int32_t)(curr_raw / 10);
-	    g_can_dashboard_data.soc = (int32_t)CAN_RxData[4];
-	    break;
-	  }
-
-	  /* DBC BO_773 DataLogger 0x305: SteeringWheelAngle(0|16@1-), APS_OpenPct(16|16@1+), OilPressure_Kpa(32|16@1+) */
-	  case 0x305:
-	  {
-	    /* SG_ SteeringWheelAngle: 0|16@1- (0.1,0) deg, raw=int16*0.1 */
-	    g_can_dashboard_data.steering_angle = (int32_t)(int16_t)(CAN_RxData[0] | ((uint16_t)CAN_RxData[1] << 8));
-	    /* SG_ APS_OpenPct: 16|16@1+ (0.1,0) %, raw=uint16*0.1, store integer pct */
-	    {
-	      uint16_t aps_raw = (uint16_t)CAN_RxData[2] | ((uint16_t)CAN_RxData[3] << 8);
-	      g_can_dashboard_data.aps_open_pct = (int32_t)(aps_raw / 10U);
-	    }
-	    /* SG_ OilPressure_Kpa: 32|16@1+ (0.001,0) Kpa, raw count */
-	    {
-	      uint16_t oil_raw = (uint16_t)CAN_RxData[4] | ((uint16_t)CAN_RxData[5] << 8);
-	      g_can_dashboard_data.oil_pressure = (int32_t)oil_raw;
-	    }
-	    break;
-	  }
-
-	  /* DBC BO_774 BrakePedal_0x306: ECU gateway forward of CANC 0x270 IBS_Info
-	   * (WCBS). SG_ BrakePedalPct: 0|16@1+ (0.1,0) %, store integer pct;
-	   * SG_ BrakePedalSwtSts: 16|1@1+ (1=pressed). */
-	  case 0x306:
-	  {
-	    uint16_t brake_raw = (uint16_t)CAN_RxData[0] | ((uint16_t)CAN_RxData[1] << 8);
-	    g_can_dashboard_data.brake_pct = (int32_t)(brake_raw / 10U);
-	    break;
-	  }
-
-	  /* DBC BO_1282 Debug2 0x502: FR/FL/RR/RL_ActualTorque (1,0) Nm (DBC 单位文字误写为 0.1%Mn), 16-bit signed each */
-	  case 0x502:
-	  {
-	    /* DBC order: RL(0), RR(1), FL(2), FR(3) -> Dashboard: LF(0), LR(1), RF(2), RR(3) */
-	    static const uint8_t dbc_map[4] = {1U, 3U, 0U, 2U};
-	    uint32_t i;
-	    for(i = 0U; i < 4U; i++) {
-	      int16_t raw = (int16_t)(CAN_RxData[i * 2U] | ((uint16_t)CAN_RxData[i * 2U + 1U] << 8));
-	      g_can_dashboard_data.torque[dbc_map[i]] = (int32_t)raw;
-	    }
-	    break;
-	  }
-
-	  /* DBC BO_1285 Debug5 0x505: FR/FL/RR/RL_ActualVelocity (1,0), 16-bit signed each */
-	  case 0x505:
-	  {
-	    static const uint8_t dbc_map[4] = {1U, 3U, 0U, 2U};
-	    uint32_t i;
-	    for(i = 0U; i < 4U; i++) {
-	      int16_t raw = (int16_t)(CAN_RxData[i * 2U] | ((uint16_t)CAN_RxData[i * 2U + 1U] << 8));
-	      g_can_dashboard_data.rpm[dbc_map[i]] = (int32_t)raw;
-	    }
-	    break;
-	  }
-
-	  /* DBC BO_1286 Debug6 0x506: FR/FL/RR/RL_Motor_temperature (0.1,0) degC, 16-bit signed each */
-	  case 0x506:
-	  {
-	    static const uint8_t dbc_map[4] = {1U, 3U, 0U, 2U};
-	    uint32_t i;
-	    for(i = 0U; i < 4U; i++) {
-	      int16_t raw = (int16_t)(CAN_RxData[i * 2U] | ((uint16_t)CAN_RxData[i * 2U + 1U] << 8));
-	      g_can_dashboard_data.motor_temp[dbc_map[i]] = (int32_t)(raw / 10);
-	    }
-	    break;
-	  }
-
-	  /* DBC BO_1289 Debug9 0x509: AMK status flags + ModeFlag, DLC=5 */
-	  case 0x509:
-	  {
-	    /* SG_ FR_AMK_bEnable(20|1), FL_AMK_bEnable(21|1), RR_AMK_bEnable(22|1), RL_AMK_bEnable(23|1) */
-	    /* DBC byte2: bit4=FR, bit5=FL, bit6=RR, bit7=RL -> Dashboard: LF=FL, LR=RL, RF=FR, RR=RR */
-	    g_can_dashboard_data.motor_enable[0] = (CAN_RxData[2] >> 5) & 0x01U;
-	    g_can_dashboard_data.motor_enable[1] = (CAN_RxData[2] >> 7) & 0x01U;
-	    g_can_dashboard_data.motor_enable[2] = (CAN_RxData[2] >> 4) & 0x01U;
-	    g_can_dashboard_data.motor_enable[3] = (CAN_RxData[2] >> 6) & 0x01U;
-
-	    /* SG_ ModeFlag: 4|4@1- (1,0) [-8,7], signed 4-bit in byte0 high nibble */
-	    {
-	      int32_t mode_val = (int32_t)((CAN_RxData[0] >> 4) & 0x0FU);
-	      if(mode_val & 8) mode_val -= 16;
-	      g_can_dashboard_data.mode_index = mode_val;
-	      Dashboard_UI_SubmitDriveMode(mode_val);
-	    }
-	    break;
-	  }
-
-	  /* DBC BO_1288 Debug8 0x508: FR/FL/RR/RL_IGBT_temperature (0.1,0) degC, 16-bit signed each */
-	  case 0x508:
-	  {
-	    static const uint8_t dbc_map[4] = {1U, 3U, 0U, 2U};
-	    uint32_t i;
-	    for(i = 0U; i < 4U; i++) {
-	      int16_t raw = (int16_t)(CAN_RxData[i * 2U] | ((uint16_t)CAN_RxData[i * 2U + 1U] << 8));
-	      g_can_dashboard_data.igbt_temp[dbc_map[i]] = (int32_t)(raw / 10);
-	    }
-	    break;
-	  }
-
-	  /* DBC BO_1287 Debug7 0x507: FR/FL/RR/RL_Inverter_temperature (0.1,0) degC, 16-bit signed each */
-	  case 0x507:
-	  {
-	    static const uint8_t dbc_map[4] = {1U, 3U, 0U, 2U};
-	    uint32_t i;
-	    for(i = 0U; i < 4U; i++) {
-	      int16_t raw = (int16_t)(CAN_RxData[i * 2U] | ((uint16_t)CAN_RxData[i * 2U + 1U] << 8));
-	      g_can_dashboard_data.inverter_temp[dbc_map[i]] = (int32_t)(raw / 10);
-	    }
-	    break;
-	  }
-
-	  /* DBC BO_1284 Debug4 0x504: Diagnostic_number_3(0|32), Diagnostic_number_4(32|32), 32-bit each */
-	  case 0x504:
-	  {
-	    g_can_dashboard_data.diag_num[2] = (uint32_t)CAN_RxData[0]
-	      | ((uint32_t)CAN_RxData[1] << 8)
-	      | ((uint32_t)CAN_RxData[2] << 16)
-	      | ((uint32_t)CAN_RxData[3] << 24);
-	    g_can_dashboard_data.diag_num[3] = (uint32_t)CAN_RxData[4]
-	      | ((uint32_t)CAN_RxData[5] << 8)
-	      | ((uint32_t)CAN_RxData[6] << 16)
-	      | ((uint32_t)CAN_RxData[7] << 24);
-	    break;
-	  }
-
-	  /* DBC BO_1283 Debug3 0x503: Diagnostic_number_1(0|32), Diagnostic_number_2(32|32), 32-bit each */
-	  case 0x503:
-	  {
-	    g_can_dashboard_data.diag_num[0] = (uint32_t)CAN_RxData[0]
-	      | ((uint32_t)CAN_RxData[1] << 8)
-	      | ((uint32_t)CAN_RxData[2] << 16)
-	      | ((uint32_t)CAN_RxData[3] << 24);
-	    g_can_dashboard_data.diag_num[1] = (uint32_t)CAN_RxData[4]
-	      | ((uint32_t)CAN_RxData[5] << 8)
-	      | ((uint32_t)CAN_RxData[6] << 16)
-	      | ((uint32_t)CAN_RxData[7] << 24);
-	    break;
-	  }
-
-	  /* DBC BO_1440 PDM_LowVoltageBus 0x5A0: BusVoltage(7|16@0- 0.001V),
-	   * BusCurrent(23|16@0- 0.01A), BusPower(39|16@0+ 0.1W), BusEnergy(55|16@0+).
-	   * Stored in raw engineering units: mV / cA / dW. */
-	  case 0x5A0:
-	  {
-	    g_can_dashboard_data.lv_bus_voltage_mV =
-	      (int32_t)(int16_t)(((uint16_t)CAN_RxData[0] << 8) | (uint16_t)CAN_RxData[1]);
-	    g_can_dashboard_data.lv_bus_current_cA =
-	      (int32_t)(int16_t)(((uint16_t)CAN_RxData[2] << 8) | (uint16_t)CAN_RxData[3]);
-	    g_can_dashboard_data.lv_bus_power_dW =
-	      (int32_t)(((uint16_t)CAN_RxData[4] << 8) | (uint16_t)CAN_RxData[5]);
-	    break;
-	  }
-
-	  /* DBC BO_1441 PDM_LowVoltageBattery 0x5A1: battery-side mirror of 0x5A0.
-	   * UI shows the bus values; battery values are kept for diagnostics. */
-	  case 0x5A1:
-	  {
-	    g_can_dashboard_data.lv_batt_voltage_mV =
-	      (int32_t)(int16_t)(((uint16_t)CAN_RxData[0] << 8) | (uint16_t)CAN_RxData[1]);
-	    g_can_dashboard_data.lv_batt_current_cA =
-	      (int32_t)(int16_t)(((uint16_t)CAN_RxData[2] << 8) | (uint16_t)CAN_RxData[3]);
-	    g_can_dashboard_data.lv_batt_power_dW =
-	      (int32_t)(((uint16_t)CAN_RxData[4] << 8) | (uint16_t)CAN_RxData[5]);
-	    break;
-	  }
-
-	  /* DBC BO_1442 FanController_Status 0x5A2, 100ms: Fan1/2/3_RPM (7|16@0+, 1rpm),
-	   * Fan_PWM1_Duty(55|8 %), Fan_PWM2_Duty(63|8 %). The DBC defines only two
-	   * measured duty cycles; fan 3 has no independent duty signal. */
-	  case 0x5A2:
-	  {
-	    uint32_t fan;
-	    for(fan = 0U; fan < 3U; fan++) {
-	      g_can_dashboard_data.fan_rpm[fan] = (int32_t)(
-	        ((uint16_t)CAN_RxData[fan * 2U] << 8) |
-	        (uint16_t)CAN_RxData[fan * 2U + 1U]);
-	    }
-	    g_can_dashboard_data.fan_pwm_duty[0] = (int32_t)CAN_RxData[6];
-	    g_can_dashboard_data.fan_pwm_duty[1] = (int32_t)CAN_RxData[7];
-	    break;
-	  }
-
-	  default:
-	    break;
-    }
-
-    /* MAX T: highest of motor/inverter/IGBT temperature across the four wheels.
-     * Stays 0 until the first Debug6/7/8 frame arrives. */
+  switch(RxHeader.StdId)
+  {
+    /* Vehicle_CanB.dbc BO_113..116, cell order #1..#16.
+     * Each pair is integer byte followed by hundredths byte. */
+    case 0x071:
+    case 0x072:
+    case 0x073:
+    case 0x074:
     {
-      int32_t max_temp = 0;
-      uint32_t wheel;
-      for(wheel = 0U; wheel < 4U; wheel++) {
-        if(g_can_dashboard_data.motor_temp[wheel] > max_temp) {
-          max_temp = g_can_dashboard_data.motor_temp[wheel];
-        }
-        if(g_can_dashboard_data.inverter_temp[wheel] > max_temp) {
-          max_temp = g_can_dashboard_data.inverter_temp[wheel];
-        }
-        if(g_can_dashboard_data.igbt_temp[wheel] > max_temp) {
-          max_temp = g_can_dashboard_data.igbt_temp[wheel];
-        }
+      if(RxHeader.DLC == 8U) {
+        User_CAN_SubmitTireTemperatureFrame(RxHeader.StdId, CAN_RxData);
       }
-      g_can_dashboard_data.max_temperature = max_temp;
+      return;
     }
 
-    Dashboard_UI_SubmitData(&g_can_dashboard_data);
+    /* DBC BO_1200 BMS_PackStatus 0x4B0, DLC=7 (same layout as CAN1 0x186050F4):
+     *   BatteryVoltage(byte0-1,BE,0.1V), BatteryCurrent(byte2-3,BE,int16,0.1A),
+     *   BatterySOC(byte4,%), validity(byte5), AlarmLevel/State(byte6).
+     * Byte5 bit0/1/2 qualify voltage/current/SOC. Bit3/4 (cells/temperatures
+     * complete) do not concern these three fields. Current sign: charge +,
+     * discharge - (BMS .../电流检测与SOC模块.md, confirmed on a charging capture). */
+    case 0x4B0:
+    {
+      const uint8_t flags = CAN_RxData[5];
+      const uint16_t voltage_dv = can_u16_be(CAN_RxData, 0U);
+      const int16_t current_da = (int16_t)can_u16_be(CAN_RxData, 2U);
+      const uint8_t soc = CAN_RxData[4];
+
+      User_CAN_NoteRx(CAN_SRC_BMS, now);
+      if((flags & 0x01U) != 0U) {
+        g_can_dashboard_data.sum_voltage_dv = (int32_t)voltage_dv;
+        g_can_dashboard_data.sum_voltage = (int32_t)(voltage_dv / 10U);
+      }
+      if((flags & 0x02U) != 0U) {
+        g_can_dashboard_data.sum_current_da = (int32_t)current_da;
+        g_can_dashboard_data.sum_current = (int32_t)(current_da / 10);
+      }
+      if(((flags & 0x04U) != 0U) && (soc <= 100U)) {
+        g_can_dashboard_data.soc = (int32_t)soc;
+        User_CAN_SetValid(DASH_VALID_SOC, 1U);
+      }
+      else {
+        User_CAN_SetValid(DASH_VALID_SOC, 0U);
+      }
+      User_CAN_SetValid(DASH_VALID_HV_V, flags & 0x01U);
+      User_CAN_SetValid(DASH_VALID_HV_I, (flags >> 1) & 0x01U);
+      break;
+    }
+
+    /* DBC BO_773 DataLogger 0x305: SteeringWheelAngle(0|16@1-), APS_OpenPct(16|16@1+), OilPressure_Kpa(32|16@1+) */
+    case 0x305:
+    {
+      /* SG_ SteeringWheelAngle: 0|16@1- (0.1,0) deg, stored as the raw 0.1 deg count */
+      g_can_dashboard_data.steering_angle = (int32_t)(int16_t)can_u16_le(CAN_RxData, 0U);
+      /* SG_ APS_OpenPct: 16|16@1+ (0.1,0) %, store integer pct */
+      g_can_dashboard_data.aps_open_pct = (int32_t)(can_u16_le(CAN_RxData, 2U) / 10U);
+      /* SG_ OilPressure_Kpa: 32|16@1+ (0.001,0) Kpa, raw count */
+      g_can_dashboard_data.oil_pressure = (int32_t)can_u16_le(CAN_RxData, 4U);
+      User_CAN_NoteRx(CAN_SRC_APS, now);
+      User_CAN_SetValid(DASH_VALID_APS, 1U);
+      break;
+    }
+
+    /* DBC BO_774 BrakePedal_0x306: ECU gateway forward of CANC 0x270 IBS_Info
+     * (WCBS). SG_ BrakePedalPct: 0|16@1+ (0.1,0) %, store integer pct;
+     * SG_ BrakePedalSwtSts: 16|1@1+ (1=pressed). */
+    case 0x306:
+    {
+      g_can_dashboard_data.brake_pct = (int32_t)(can_u16_le(CAN_RxData, 0U) / 10U);
+      User_CAN_NoteRx(CAN_SRC_BRAKE, now);
+      User_CAN_SetValid(DASH_VALID_BRAKE, 1U);
+      break;
+    }
+
+    /* DBC BO_1282 Debug2 0x502: RL/RR/FL/FR_ActualTorque (1,0) Nm, 16-bit signed each */
+    case 0x502:
+    {
+      for(uint32_t i = 0U; i < 4U; i++) {
+        g_can_dashboard_data.torque[k_can_dbc_to_dash[i]] = (int32_t)(int16_t)can_u16_le(CAN_RxData, i * 2U);
+      }
+      User_CAN_NoteRx(CAN_SRC_TORQUE, now);
+      User_CAN_SetValid(DASH_VALID_TORQUE, 1U);
+      break;
+    }
+
+    /* DBC BO_1285 Debug5 0x505: RL/RR/FL/FR_ActualVelocity (1,0) rpm, 16-bit signed each */
+    case 0x505:
+    {
+      for(uint32_t i = 0U; i < 4U; i++) {
+        g_can_dashboard_data.rpm[k_can_dbc_to_dash[i]] = (int32_t)(int16_t)can_u16_le(CAN_RxData, i * 2U);
+      }
+      User_CAN_NoteRx(CAN_SRC_RPM, now);
+      User_CAN_SetValid(DASH_VALID_RPM, 1U);
+      break;
+    }
+
+    /* DBC BO_1286 Debug6 0x506: RL/RR/FL/FR_Motor_temperature (0.1,0) degC, 16-bit signed each */
+    case 0x506:
+    {
+      for(uint32_t i = 0U; i < 4U; i++) {
+        g_can_dashboard_data.motor_temp[k_can_dbc_to_dash[i]] = (int32_t)((int16_t)can_u16_le(CAN_RxData, i * 2U) / 10);
+      }
+      User_CAN_NoteRx(CAN_SRC_MOTOR_TEMP, now);
+      User_CAN_SetValid(DASH_VALID_MOTOR_TEMP, 1U);
+      break;
+    }
+
+    /* DBC BO_1289 Debug9 0x509: AMK status flags + ModeFlag, DLC=5 */
+    case 0x509:
+    {
+      /* SG_ FR_AMK_bEnable(20|1), FL_AMK_bEnable(21|1), RR_AMK_bEnable(22|1), RL_AMK_bEnable(23|1) */
+      /* DBC byte2: bit4=FR, bit5=FL, bit6=RR, bit7=RL -> Dashboard: LF=FL, LR=RL, RF=FR, RR=RR */
+      g_can_dashboard_data.motor_enable[0] = (CAN_RxData[2] >> 5) & 0x01U;
+      g_can_dashboard_data.motor_enable[1] = (CAN_RxData[2] >> 7) & 0x01U;
+      g_can_dashboard_data.motor_enable[2] = (CAN_RxData[2] >> 4) & 0x01U;
+      g_can_dashboard_data.motor_enable[3] = (CAN_RxData[2] >> 6) & 0x01U;
+      User_CAN_NoteRx(CAN_SRC_AMK_STATE, now);
+      User_CAN_SetValid(DASH_VALID_AMK_EN, 1U);
+
+      /* SG_ ModeFlag: 4|4@1- (1,0) [-8,7], signed 4-bit in byte0 high nibble.
+       * The DBC has no value table; 0=S 1=Q 2=C 3=E is assumed (same as the
+       * 0x310 request code - 48) and values outside 0..3 are ignored. */
+      {
+        int32_t mode_val = (int32_t)((CAN_RxData[0] >> 4) & 0x0FU);
+        if(mode_val & 8) mode_val -= 16;
+        g_can_dashboard_data.mode_index = mode_val;
+        Dashboard_UI_SubmitDriveMode(mode_val);
+      }
+      break;
+    }
+
+    /* DBC BO_1288 Debug8 0x508: RL/RR/FL/FR_IGBT_temperature (0.1,0) degC, 16-bit signed each */
+    case 0x508:
+    {
+      for(uint32_t i = 0U; i < 4U; i++) {
+        g_can_dashboard_data.igbt_temp[k_can_dbc_to_dash[i]] = (int32_t)((int16_t)can_u16_le(CAN_RxData, i * 2U) / 10);
+      }
+      User_CAN_NoteRx(CAN_SRC_IGBT_TEMP, now);
+      User_CAN_SetValid(DASH_VALID_IGBT_TEMP, 1U);
+      break;
+    }
+
+    /* DBC BO_1287 Debug7 0x507: RL/RR/FL/FR_Inverter_temperature (0.1,0) degC, 16-bit signed each */
+    case 0x507:
+    {
+      for(uint32_t i = 0U; i < 4U; i++) {
+        g_can_dashboard_data.inverter_temp[k_can_dbc_to_dash[i]] = (int32_t)((int16_t)can_u16_le(CAN_RxData, i * 2U) / 10);
+      }
+      User_CAN_NoteRx(CAN_SRC_INV_TEMP, now);
+      User_CAN_SetValid(DASH_VALID_INV_TEMP, 1U);
+      break;
+    }
+
+    /* DBC BO_1284 Debug4 0x504: Diagnostic_number_3(0|32), Diagnostic_number_4(32|32).
+     * Diagnostic_number_1..4 are AMK1..4 = RL, RR, FL, FR (archive/.../cana_canb_protocol.md),
+     * i.e. the same wheel order as the other per-wheel frames. */
+    case 0x504:
+    {
+      g_can_dashboard_data.diag_num[k_can_dbc_to_dash[2]] = can_u32_le(CAN_RxData, 0U);
+      g_can_dashboard_data.diag_num[k_can_dbc_to_dash[3]] = can_u32_le(CAN_RxData, 4U);
+      User_CAN_NoteRx(CAN_SRC_DIAG_FL_FR, now);
+      User_CAN_SetValid(DASH_VALID_DIAG_FL_FR, 1U);
+      break;
+    }
+
+    /* DBC BO_1283 Debug3 0x503: Diagnostic_number_1(0|32) = RL, Diagnostic_number_2(32|32) = RR */
+    case 0x503:
+    {
+      g_can_dashboard_data.diag_num[k_can_dbc_to_dash[0]] = can_u32_le(CAN_RxData, 0U);
+      g_can_dashboard_data.diag_num[k_can_dbc_to_dash[1]] = can_u32_le(CAN_RxData, 4U);
+      User_CAN_NoteRx(CAN_SRC_DIAG_RL_RR, now);
+      User_CAN_SetValid(DASH_VALID_DIAG_RL_RR, 1U);
+      break;
+    }
+
+    /* DBC BO_1440 PDM_LowVoltageBus 0x5A0: BusVoltage(7|16@0- 0.001V),
+     * BusCurrent(23|16@0- 0.01A), BusPower(39|16@0+ 0.1W), BusEnergy(55|16@0+ 0.01Wh).
+     * All four at their placeholders (0x7FFF, 0x7FFF, 0xFFFF, 0xFFFF) mean the
+     * INA226 is offline; a single saturated field does not. Stored in raw
+     * engineering units: mV / cA / dW. */
+    case 0x5A0:
+    {
+      const uint8_t offline = (can_u16_be(CAN_RxData, 0U) == 0x7FFFU) &&
+                              (can_u16_be(CAN_RxData, 2U) == 0x7FFFU) &&
+                              (can_u16_be(CAN_RxData, 4U) == 0xFFFFU) &&
+                              (can_u16_be(CAN_RxData, 6U) == 0xFFFFU);
+      User_CAN_NoteRx(CAN_SRC_PDM_BUS, now);
+      if(offline == 0U) {
+        g_can_dashboard_data.lv_bus_voltage_mV = (int32_t)(int16_t)can_u16_be(CAN_RxData, 0U);
+        g_can_dashboard_data.lv_bus_current_cA = (int32_t)(int16_t)can_u16_be(CAN_RxData, 2U);
+        g_can_dashboard_data.lv_bus_power_dW = (int32_t)can_u16_be(CAN_RxData, 4U);
+      }
+      User_CAN_SetValid(DASH_VALID_LV_BUS, (offline == 0U) ? 1U : 0U);
+      break;
+    }
+
+    /* DBC BO_1441 PDM_LowVoltageBattery 0x5A1: battery-side mirror of 0x5A0.
+     * UI shows the bus values; battery values are kept for diagnostics. */
+    case 0x5A1:
+    {
+      g_can_dashboard_data.lv_batt_voltage_mV = (int32_t)(int16_t)can_u16_be(CAN_RxData, 0U);
+      g_can_dashboard_data.lv_batt_current_cA = (int32_t)(int16_t)can_u16_be(CAN_RxData, 2U);
+      g_can_dashboard_data.lv_batt_power_dW = (int32_t)can_u16_be(CAN_RxData, 4U);
+      break;
+    }
+
+    /* DBC BO_1442 FanController_Status 0x5A2, 100ms: Fan1/2/3_RPM (7|16@0+, 1rpm),
+     * Fan_PWM1_Duty(55|8 %), Fan_PWM2_Duty(63|8 %). The DBC defines only two
+     * measured duty cycles; fan 3 has no independent duty signal. */
+    case 0x5A2:
+    {
+      for(uint32_t fan = 0U; fan < 3U; fan++) {
+        g_can_dashboard_data.fan_rpm[fan] = (int32_t)can_u16_be(CAN_RxData, fan * 2U);
+      }
+      g_can_dashboard_data.fan_pwm_duty[0] = (int32_t)CAN_RxData[6];
+      g_can_dashboard_data.fan_pwm_duty[1] = (int32_t)CAN_RxData[7];
+      User_CAN_NoteRx(CAN_SRC_FAN, now);
+      User_CAN_SetValid(DASH_VALID_FAN, 1U);
+      break;
+    }
+
+    default:
+      break;
+  }
+
+  User_CAN_UpdateMaxTemp();
+  Dashboard_UI_SubmitData(&g_can_dashboard_data);
 }
 
 /*

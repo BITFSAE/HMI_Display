@@ -31,6 +31,17 @@ typedef enum {
     DASH_ZONE_NIGHT     /* night button: toggle backlight dimming */
 } dash_zone_t;
 
+/* Pass as a value to the setters below to show "--" for that field. */
+#define DASH_VIEW_INVALID INT32_MIN
+
+/* dash_motor_t.invalid bits: field has no valid data and is shown as "--". */
+#define DASH_MOTOR_NO_TORQUE      (1U << 0)
+#define DASH_MOTOR_NO_RPM         (1U << 1)
+#define DASH_MOTOR_NO_MOTOR_TEMP  (1U << 2)
+#define DASH_MOTOR_NO_INV_TEMP    (1U << 3)
+#define DASH_MOTOR_NO_DIAG        (1U << 4)
+#define DASH_MOTOR_NO_ENABLED     (1U << 5)
+
 /* Per-wheel motor readout. Values keep the raw dashboard units. */
 typedef struct {
     int32_t torque;        /* Nm (DBC ActualTorque, raw 1 Nm; DBC unit text is wrong) */
@@ -41,6 +52,7 @@ typedef struct {
     int32_t inverter_temp; /* degC */
     uint32_t diag;         /* AMK diagnostic number, 0 = OK */
     uint8_t enabled;       /* AMK_bEnable */
+    uint8_t invalid;       /* DASH_MOTOR_NO_* bits, 0 = everything valid */
 } dash_motor_t;
 
 /* Thread-safe pure function: maps screen coordinates to a touch zone. */
@@ -53,10 +65,13 @@ void Dash_View_Create(void);
 void Dash_View_SetSpeed(int32_t kmh);
 void Dash_View_SetMode(dash_mode_t mode);
 void Dash_View_SetSlip(int32_t level);
+/* The pedal, battery, power, max-temp, low-voltage and fan setters accept
+ * DASH_VIEW_INVALID per argument and then show "--" (pedal bars empty). */
 void Dash_View_SetPedals(int32_t throttle_pct, int32_t brake_pct);
 void Dash_View_SetBattery(int32_t soc_pct, int32_t voltage_v, int32_t current_a);
 void Dash_View_SetPower(int32_t live_kw, int32_t peak_kw);
 void Dash_View_SetMaxTemp(int32_t temp_c);
+/* voltage_mv == DASH_VIEW_INVALID blanks all three values. */
 void Dash_View_SetLowVoltage(int32_t voltage_mv, int32_t current_ca, int32_t power_dw);
 /* Fan 3 has no duty signal in the DBC, so only two duties are passed. */
 void Dash_View_SetFans(const int32_t rpm[3], const int32_t duty_pct[2]);

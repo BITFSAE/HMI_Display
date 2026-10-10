@@ -68,6 +68,8 @@ typedef struct {uint32_t FilterActivation,FilterBank,FilterFIFOAssignment,Filter
 #define ENABLE 1
 #define DISABLE 0
 int HAL_CAN_ConfigFilter(CAN_HandleTypeDef *,CAN_FilterTypeDef *);
+#define HAL_CAN_ERROR_BOF 0x00000004U
+uint32_t HAL_CAN_GetError(CAN_HandleTypeDef *);
 uint32_t HAL_CAN_GetRxFifoFillLevel(CAN_HandleTypeDef *,uint32_t);
 int HAL_CAN_GetRxMessage(CAN_HandleTypeDef *,uint32_t,CAN_RxHeaderTypeDef *,uint8_t *);
 uint32_t HAL_CAN_GetTxMailboxesFreeLevel(CAN_HandleTypeDef *);

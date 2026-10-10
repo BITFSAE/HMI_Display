@@ -20,9 +20,11 @@ static uint8_t test_rx_data[8];
 static unsigned test_rx_pending,test_tx_count,test_can_speed_tenths;
 static unsigned test_tx_id_count[0x800];
 static uint8_t test_tx_id_data[0x800][8];
+static unsigned test_can_error;
 static CAN_TxHeaderTypeDef test_tx_header;
 static uint8_t test_tx_data[8];
 int HAL_CAN_ConfigFilter(CAN_HandleTypeDef *h,CAN_FilterTypeDef *f) {(void)h;(void)f;return HAL_OK;}
+uint32_t HAL_CAN_GetError(CAN_HandleTypeDef *h) {(void)h;return test_can_error;}
 uint32_t HAL_CAN_GetRxFifoFillLevel(CAN_HandleTypeDef *h,uint32_t fifo) {(void)h;(void)fifo;return test_rx_pending;}
 int HAL_CAN_GetRxMessage(CAN_HandleTypeDef *h,uint32_t fifo,CAN_RxHeaderTypeDef *rx,uint8_t *data) {(void)h;(void)fifo;assert(test_rx_pending);test_rx_pending--;*rx=test_rx_header;memcpy(data,test_rx_data,8);return HAL_OK;}
 uint32_t HAL_CAN_GetTxMailboxesFreeLevel(CAN_HandleTypeDef *h) {(void)h;return 1;}
@@ -133,6 +135,136 @@ static void test_can(void)
     test_rx_header.DLC=2;test_rx_pending=1;invalid=g_can_rx_invalid_count;
     HAL_CAN_RxFifo1MsgPendingCallback(&hcan1);service_can();assert(g_can_rx_invalid_count==invalid+1);
     puts("CAN: bounded FIFO, queue saturation, short/remote frames, valid DLCs and steering relay passed");
+}
+/* Every DASH_VALID_* bit, for tests that feed hand-built telemetry to the UI. */
+#define TEST_ALL_VALID ((DASH_VALID_FAN<<1)-1U)
+static void inject(uint16_t id,unsigned dlc,const uint8_t *bytes)
+{
+    memset(test_rx_data,0,8);memcpy(test_rx_data,bytes,dlc);
+    receive(id,dlc,1);service_can();
+}
+static void inject_wheel(uint16_t id,unsigned dlc,uint8_t first)
+{
+    test_rx_header=(CAN_RxHeaderTypeDef){.StdId=id,.DLC=dlc};
+    memset(test_rx_data,0,8);test_rx_data[0]=first;test_rx_pending=1;
+    HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);service_can();
+}
+static void test_can_decode(void)
+{
+    const dashboard_data_t *d=&g_can_dashboard_data;
+    /* Nothing is valid before the first frame. */
+    assert((d->valid_mask&(DASH_VALID_SOC|DASH_VALID_LV_BUS|DASH_VALID_FAN|DASH_VALID_TORQUE))==0);
+
+    /* 0x503/0x504 carry AMK1..4 = RL, RR, FL, FR; dashboard order is LF, LR, RF, RR. */
+    {
+        const uint8_t a[8]={0x31,0x02,0,0, 0x22,0,0,0},b[8]={0x33,0,0,0, 0x44,0,0,0};
+        inject(0x503,8,a);inject(0x504,8,b);
+        assert(d->diag_num[1]==0x231&&d->diag_num[3]==0x22);   /* LR=RL=#1, RR=RR=#2 */
+        assert(d->diag_num[0]==0x33&&d->diag_num[2]==0x44);    /* LF=FL=#3, RF=FR=#4 */
+        assert((d->valid_mask&(DASH_VALID_DIAG_RL_RR|DASH_VALID_DIAG_FL_FR))==(DASH_VALID_DIAG_RL_RR|DASH_VALID_DIAG_FL_FR));
+    }
+    /* Per-wheel 0x506 temperatures and MAX T over fresh sources only. */
+    {
+        const uint8_t t[8]={0x2C,0x01, 0x90,0x01, 0xF4,0x01, 0x58,0x02};  /* RL 30, RR 40, FL 50, FR 60 degC */
+        inject(0x506,8,t);
+        assert(d->motor_temp[0]==50&&d->motor_temp[1]==30&&d->motor_temp[2]==60&&d->motor_temp[3]==40);
+        assert(d->max_temperature==60);
+    }
+    /* 0x4B0: 549.1 V, -85.7 A (discharge is negative), SOC 77, all three flags set. */
+    {
+        const uint8_t pack[7]={0x15,0x73, 0xFC,0xA7, 77, 0x1F, 0x50};
+        const uint32_t valid=DASH_VALID_SOC|DASH_VALID_HV_V|DASH_VALID_HV_I;
+        unsigned peak_before;
+        inject(0x4B0,7,pack);
+        assert(d->sum_voltage_dv==5491&&d->sum_voltage==549&&d->sum_current_da==-857&&d->sum_current==-85&&d->soc==77);
+        assert((d->valid_mask&valid)==valid);
+        /* P NOW is the discharge power: 549.1 V x 85.7 A = 47.06 kW -> 47. */
+        test_tick+=300;Dashboard_UI_Process();
+        assert(g_power_peak==47);peak_before=(unsigned)g_power_peak;
+        /* Charging (+2.9 A) is not drive power and must not move the peak. */
+        {
+            const uint8_t charge[7]={0x15,0x73, 0x00,0x1D, 77, 0x1F, 0x50};
+            inject(0x4B0,7,charge);test_tick+=300;Dashboard_UI_Process();
+            assert(d->sum_current_da==29&&(unsigned)g_power_peak==peak_before);
+        }
+        /* SOC flag clear (BMS default 80 % before initialisation): SOC invalid, V and I stay valid. */
+        {
+            const uint8_t no_soc[7]={0x15,0x73, 0x00,0x1D, 80, 0x1B, 0x50};
+            inject(0x4B0,7,no_soc);
+            assert((d->valid_mask&DASH_VALID_SOC)==0&&(d->valid_mask&(DASH_VALID_HV_V|DASH_VALID_HV_I))==(DASH_VALID_HV_V|DASH_VALID_HV_I));
+            assert(d->soc==77);                                   /* the unqualified 80 is not stored */
+        }
+        /* No flags: nothing from this frame is usable. SOC above 100 % is rejected even when flagged. */
+        {
+            const uint8_t none[7]={0x15,0x73, 0x00,0x1D, 77, 0x00, 0x50},bad[7]={0x15,0x73, 0x00,0x1D, 101, 0x1F, 0x50};
+            inject(0x4B0,7,none);assert((d->valid_mask&valid)==0);
+            inject(0x4B0,7,bad);assert((d->valid_mask&DASH_VALID_SOC)==0&&(d->valid_mask&DASH_VALID_HV_V)!=0);
+        }
+    }
+    /* PDM: only all four placeholders together mean the INA226 is offline. */
+    {
+        const uint8_t on[8]={0x35,0xFC, 0x04,0xD8, 0x06,0xAB, 0x00,0x10};     /* 13.820 V, 12.40 A */
+        const uint8_t sat[8]={0x7F,0xFF, 0x04,0xD8, 0x06,0xAB, 0x00,0x10};    /* saturated voltage only */
+        const uint8_t off[8]={0x7F,0xFF, 0x7F,0xFF, 0xFF,0xFF, 0xFF,0xFF};
+        inject(0x5A0,8,on);assert((d->valid_mask&DASH_VALID_LV_BUS)!=0&&d->lv_bus_voltage_mV==13820);
+        inject(0x5A0,8,sat);assert((d->valid_mask&DASH_VALID_LV_BUS)!=0&&d->lv_bus_voltage_mV==32767);
+        inject(0x5A0,8,off);assert((d->valid_mask&DASH_VALID_LV_BUS)==0&&d->lv_bus_voltage_mV==32767);
+        inject(0x5A0,8,on);assert((d->valid_mask&DASH_VALID_LV_BUS)!=0&&d->lv_bus_voltage_mV==13820);
+    }
+    /* Silence drops the valid bits: ECU frames after 1 s, BMS after 2 s, never-seen sources stay invalid. */
+    {
+        const uint8_t fan[8]={0x08,0x00, 0x08,0x00, 0x08,0x00, 40,41};
+        const uint8_t pack[7]={0x15,0x73, 0xFC,0xA7, 77, 0x1F, 0x50};
+        inject(0x5A2,8,fan);inject(0x4B0,7,pack);
+        assert((d->valid_mask&DASH_VALID_FAN)!=0&&(d->valid_mask&DASH_VALID_SOC)!=0&&(d->valid_mask&DASH_VALID_MOTOR_TEMP)!=0);
+        test_tick+=1001;User_CAN_ServiceTimeouts(test_tick);
+        assert((d->valid_mask&DASH_VALID_MOTOR_TEMP)==0&&d->max_temperature==0);   /* ECU temperatures timed out */
+        assert((d->valid_mask&DASH_VALID_FAN)!=0&&(d->valid_mask&DASH_VALID_SOC)!=0); /* fan 1.5 s, BMS 2 s still fresh */
+        test_tick+=600;User_CAN_ServiceTimeouts(test_tick);
+        assert((d->valid_mask&DASH_VALID_FAN)==0&&(d->valid_mask&DASH_VALID_SOC)!=0);
+        test_tick+=500;User_CAN_ServiceTimeouts(test_tick);
+        assert((d->valid_mask&(DASH_VALID_SOC|DASH_VALID_HV_V|DASH_VALID_HV_I))==0);
+        assert((d->valid_mask&DASH_VALID_BRAKE)==0);                                 /* 0x306 was never received */
+        Dashboard_UI_Process();test_tick+=300;Dashboard_UI_Process();
+        assert((Dashboard_UI_GetCurrentData()->valid_mask&DASH_VALID_SOC)==0);       /* and the UI copy follows */
+        inject(0x4B0,7,pack);assert((d->valid_mask&DASH_VALID_SOC)!=0);               /* data resumes */
+    }
+    /* Bus-off notification is counted. */
+    {
+        unsigned bus_off=g_can_bus_off_count;
+        test_can_error=0x1;HAL_CAN_ErrorCallback(&hcan1);assert(g_can_bus_off_count==bus_off);
+        test_can_error=HAL_CAN_ERROR_BOF;HAL_CAN_ErrorCallback(&hcan1);assert(g_can_bus_off_count==bus_off+1);
+        test_can_error=0;
+    }
+}
+static void test_steering(void)
+{
+    unsigned invalid=g_can_rx_invalid_count,relayed,commands;
+    /* 0x310: only ASCII '0'..'3' is relayed and shown. */
+    relayed=test_tx_id_count[0x310];
+    inject_wheel(0x310,8,0x35);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+1);
+    inject_wheel(0x310,8,0x2F);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+2);
+    inject_wheel(0x310,8,0x31);assert(test_tx_id_count[0x310]==relayed+1&&test_tx_id_data[0x310][0]==0x31);
+    /* 0x700: out-of-range level is dropped without a 0x703; a valid one is merged. */
+    commands=test_tx_id_count[0x703];
+    inject_wheel(0x700,1,9);assert(test_tx_id_count[0x703]==commands&&g_can_rx_invalid_count==invalid+3);
+    inject_wheel(0x700,1,5);assert(test_tx_id_count[0x703]==commands+1&&test_tx_id_data[0x703][0]==5);
+    /* 0x701: rising edge only. Held/repeated frames and a stuck 1 do not retrigger. */
+    g_pending_lap_toggle=0;
+    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1&&(test_tx_id_data[0x703][1]&1)==1&&test_tx_id_data[0x703][0]==5);
+    g_pending_lap_toggle=0;test_tick+=20;
+    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==0&&(test_tx_id_data[0x703][1]&1)==0);   /* repeat while held */
+    test_tick+=20;inject_wheel(0x701,1,0);assert(g_pending_lap_toggle==0);
+    test_tick+=20;inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1);                       /* 0 -> 1 */
+    g_pending_lap_toggle=0;test_tick+=100;
+    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==0);
+    test_tick+=400;inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1);                      /* single-shot sender without 0 frames */
+    g_pending_lap_toggle=0;
+    /* 0x702 is the same for the alert clear, carried in byte1 bit1. */
+    g_pending_alert_clear=0;
+    inject_wheel(0x702,1,1);assert(g_pending_alert_clear==1&&(test_tx_id_data[0x703][1]&2)==2);
+    g_pending_alert_clear=0;test_tick+=20;
+    inject_wheel(0x702,1,1);assert(g_pending_alert_clear==0&&(test_tx_id_data[0x703][1]&2)==0);
 }
 static void flash_blank(void) {memset(flash_words,0xFF,sizeof(flash_words));}
 static uint32_t odo_boot(void)
@@ -301,7 +433,8 @@ static void test_ui(void)
     lv_refr_now(NULL);assert(flushes==0);
     for(unsigned i=0;i<400;i++) {
         dashboard_data_t data=*Dashboard_UI_GetCurrentData();
-        data.soc=i%101;data.sum_voltage=400;data.sum_current=i%100;
+        data.valid_mask=TEST_ALL_VALID;data.soc=i%101;data.sum_voltage=400;data.sum_current=i%100;
+        data.sum_voltage_dv=4000;data.sum_current_da=-(int32_t)(i%100)*10;
         data.aps_open_pct=i%101;data.brake_pct=(i+10)%101;
         data.diag_num[i%4]=(i%5==0)?0x231:0;data.inverter_temp[i%4]=(int32_t)(i%120);
         data.lv_bus_current_cA=-(int32_t)i*10;data.fan_rpm[i%3]=(int32_t)i*10;
@@ -327,7 +460,8 @@ static void render_modes(const char *directory)
 {
     static const int32_t tires[4][4]={{7200,7600,8100,8400},{6900,7300,7700,8000},{7400,7900,8600,9300},{6600,7000,7300,7500}};
     dashboard_data_t data=*Dashboard_UI_GetCurrentData();
-    data.soc=76;data.sum_voltage=386;data.sum_current=118;data.max_temperature=74;
+    data.valid_mask=TEST_ALL_VALID;data.soc=76;data.sum_voltage=386;data.sum_current=-118;
+    data.sum_voltage_dv=3860;data.sum_current_da=-1180;data.max_temperature=74;
     data.aps_open_pct=62;data.brake_pct=0;
     data.lv_bus_voltage_mV=13820;data.lv_bus_current_cA=-1240;data.lv_bus_power_dW=1712;
     data.fan_rpm[0]=2376;data.fan_rpm[1]=2316;data.fan_rpm[2]=2196;data.fan_pwm_duty[0]=49;data.fan_pwm_duty[1]=49;
@@ -355,6 +489,6 @@ int main(int argc,char **argv)
     if(argc==1) {assert(!Dashboard_UI_IsStartupComplete());receive(0x305,6,3);assert(g_can_rx_queue->count==0);}
     init_ui();assert(Dashboard_UI_IsStartupComplete());
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_odometer();test_gps();test_ui();return 0;
+    test_can();test_can_decode();test_steering();test_odometer();test_gps();test_ui();return 0;
 }
 /* USER CODE END Firmware_Regression */

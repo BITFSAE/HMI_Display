@@ -418,10 +418,13 @@ int main(void)
   if(HAL_CAN_Start(&hcan1) != HAL_OK) {
     Error_Handler();
   }
+  /* ABOM is enabled in CubeMX, so bus-off recovers in hardware; the BUSOFF
+   * notification only feeds the g_can_bus_off_count diagnostic. */
   if(HAL_CAN_ActivateNotification(&hcan1,
                                   CAN_IT_RX_FIFO0_MSG_PENDING |
                                   CAN_IT_RX_FIFO1_MSG_PENDING |
-                                  CAN_IT_TX_MAILBOX_EMPTY) != HAL_OK) {
+                                  CAN_IT_TX_MAILBOX_EMPTY |
+                                  CAN_IT_ERROR | CAN_IT_BUSOFF) != HAL_OK) {
     Error_Handler();
   }
 
@@ -430,7 +433,8 @@ int main(void)
   if(HAL_CAN_Start(&hcan2) != HAL_OK) {
     Error_Handler();
   }
-  if(HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK) {
+  if(HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO0_MSG_PENDING |
+                                  CAN_IT_ERROR | CAN_IT_BUSOFF) != HAL_OK) {
     Error_Handler();
   }
 
