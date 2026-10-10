@@ -66,11 +66,11 @@ static uint8_t     g_odometer_initialized;
 #define GPS_CAN_SPEED_PERIOD_MS            50U
 #define GPS_CAN_SPEED_STALE_MS             500U
 /* 0x301/0x067/0x068 go out every GPS_CAN_SPEED_PERIOD_MS tick. Odometer, GPS
- * quality (0x069) and lap timing (0x06A) change slowly and the ground station
+ * quality (0x7A0) and lap timing (0x7A1) change slowly and the ground station
  * records them, so they use a multiple of the tick. A change of the lap count
  * sends both at once so a finished lap is reported without delay. */
-#define GPS_CAN_STATUS_TICKS               10U   /* 0x069: 500 ms */
-#define GPS_CAN_LAP_TICKS                   4U   /* 0x06A: 200 ms */
+#define GPS_CAN_STATUS_TICKS               10U   /* 0x7A0: 500 ms */
+#define GPS_CAN_LAP_TICKS                   4U   /* 0x7A1: 200 ms */
 #define GPS_CAN_SLOW_CYCLE_TICKS           20U   /* common multiple of both */
 /* How long the dashboard keeps showing the last valid speed after RMC stops
  * arriving (or arrives with V status). Bridges brief receiver dropouts without

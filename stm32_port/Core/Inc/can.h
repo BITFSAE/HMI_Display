@@ -64,8 +64,8 @@ typedef struct {
 /* Frame groups sent by CAN_SendGPSTelemetry(); the caller picks the due ones. */
 #define CAN_GPS_TX_POSITION (1U << 0)  /* 0x067 */
 #define CAN_GPS_TX_MOTION   (1U << 1)  /* 0x068 */
-#define CAN_GPS_TX_STATUS   (1U << 2)  /* 0x069: odometer, GPS quality, lap count */
-#define CAN_GPS_TX_LAP      (1U << 3)  /* 0x06A: lap timing */
+#define CAN_GPS_TX_STATUS   (1U << 2)  /* 0x7A0: odometer, GPS quality, lap count */
+#define CAN_GPS_TX_LAP      (1U << 3)  /* 0x7A1: lap timing */
 
 /* USER CODE END Private defines */
 

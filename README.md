@@ -223,7 +223,7 @@ int main(void) {
 ## 仪表盘显示项与 CAN 数据来源
 
 PC 模拟器（`src/freertos_main.c`）与 STM32F407 真机固件（`stm32_port/`）保持同一套 UI。
-DBC 以 [vehicle-interfaces](https://github.com/BITFSAE/vehicle-interfaces) 仓库 `can/Vehicle_CanB.dbc` 为准，副本在根目录 `Vehicle_CanB.dbc`。
+CAN 接口以 [vehicle-interfaces](https://github.com/BITFSAE/vehicle-interfaces) 仓库 `can/Vehicle_CanB.dbc` 和 `docs/CANB接口.md` 为准，与本仓库同级存放时路径为 `../vehicle-interfaces/can/Vehicle_CanB.dbc`；本仓库不再保留 DBC 副本。Display 发送的 GPS 帧（`0x301/0x067/0x068` 每 50 ms，`0x7A0` 每 500 ms，`0x7A1` 每 200 ms）已在该仓库登记为 Display 已确认，对应分支 `can/display-gps-telemetry`，合并后以 `main` 提交号为准。
 
 | 显示项 | 报文 | 说明 |
 | --- | --- | --- |

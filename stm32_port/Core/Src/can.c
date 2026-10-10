@@ -121,8 +121,10 @@ uint16_t CAN2_RX_MSG_ID_BANK0[4] = {0x310, 0x700, 0x701, 0x702};
 
 #define CAN_ID_GPS_POSITION        0x067U
 #define CAN_ID_GPS_MOTION          0x068U
-#define CAN_ID_GPS_STATUS          0x069U
-#define CAN_ID_GPS_LAP             0x06AU
+/* Slow telemetry-only frames use high IDs so they never win arbitration
+ * against SOP, BMS fault or other control traffic. */
+#define CAN_ID_GPS_STATUS          0x7A0U
+#define CAN_ID_GPS_LAP             0x7A1U
 #define USER_CAN_TX_QUEUE_CAPACITY 32U
 
 typedef struct {
@@ -630,7 +632,7 @@ void CAN_ServiceTask(void *argument)
  *   CANC 0x270 IBS_Info brake pedal), BO_769 GPS_Speed=0x301(Display->ECU),
  *   BO_1440 PDM_LowVoltageBus=0x5A0, BO_1441 PDM_LowVoltageBattery=0x5A1,
  *   BO_1442 FanController_Status=0x5A2 (Fan1/2/3_RPM + PWM1/2_Duty),
- *   BO_103..106 GPS telemetry=0x067..0x06A(Display->WirelessGateway),
+ *   BO_103/104 GPS telemetry=0x067/0x068, BO_1952/1953=0x7A0/0x7A1(Display->WirelessGateway),
  *   BO_113..116 tire-temperature cells 1..16=0x071..0x074,
  *   BO_80   IMU_Raw=0x50,
  *   Vehicle_CanB.dbc BO_1792=0x700(SlipLevel), BO_1793=0x701(RecorderToggle), BO_1794=0x702(ErrorClear),
@@ -1046,8 +1048,8 @@ static void can_pack_u24_le(uint8_t * data, uint32_t value)
 
 /*
  * GPS telemetry snapshot, all standard IDs and all new payloads use DLC=8.
- * 0x067: latitude/longitude; 0x068: motion/heading; 0x069: status/odometer;
- * 0x06A: lap timing. Tire inputs use 0x071..0x074 and are not used for GPS TX.
+ * 0x067: latitude/longitude; 0x068: motion/heading; 0x7A0: status/odometer;
+ * 0x7A1: lap timing. Tire inputs use 0x071..0x074 and are not used for GPS TX.
  * `frames` is a mask of CAN_GPS_TX_* groups; each group has its own period.
  */
 void CAN_SendGPSTelemetry(const CAN_GPSTelemetry_t * telemetry, uint32_t frames)

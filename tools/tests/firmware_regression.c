@@ -268,23 +268,23 @@ static void test_gps(void)
     memset(test_tx_id_count,0,sizeof(test_tx_id_count));
     g_gps_can_last_tick=0;g_gps_can_slow_phase=0;g_gps_can_lap_count=0;g_odometer_total_m=12345; /* 123 x 0.1 km */
     gps_can_speed_tick(test_tick);assert(test_can_speed_tenths==720);
-    assert(test_tx_count==sent+5&&test_tx_id_count[0x069]==1&&test_tx_id_count[0x06A]==1);
-    assert(test_tx_id_data[0x069][0]==123&&test_tx_id_data[0x069][1]==0&&test_tx_id_data[0x069][2]==0);
+    assert(test_tx_count==sent+5&&test_tx_id_count[0x7A0]==1&&test_tx_id_count[0x7A1]==1);
+    assert(test_tx_id_data[0x7A0][0]==123&&test_tx_id_data[0x7A0][1]==0&&test_tx_id_data[0x7A0][2]==0);
     sent=test_tx_count;gps_can_speed_tick(test_tick+49);assert(test_tx_count==sent);
     for(unsigned tick=1;tick<20;tick++) {
         g_gps_rmc_last_tick=test_tick+tick*50U;g_gps_rmc_valid=1;
         gps_can_speed_tick(test_tick+tick*50U);
     }
     assert(test_tx_id_count[0x301]==20&&test_tx_id_count[0x067]==20&&test_tx_id_count[0x068]==20);
-    assert(test_tx_id_count[0x069]==2&&test_tx_id_count[0x06A]==5);
+    assert(test_tx_id_count[0x7A0]==2&&test_tx_id_count[0x7A1]==5);
     /* A lap-count change sends status and lap timing at once, off the slow slots. */
-    unsigned status=test_tx_id_count[0x069],lap=test_tx_id_count[0x06A];
+    unsigned status=test_tx_id_count[0x7A0],lap=test_tx_id_count[0x7A1];
     assert(g_gps_can_slow_phase==0);gps_can_speed_tick(test_tick+20U*50U);   /* slot 0: both due */
-    assert(test_tx_id_count[0x069]==status+1&&test_tx_id_count[0x06A]==lap+1);
+    assert(test_tx_id_count[0x7A0]==status+1&&test_tx_id_count[0x7A1]==lap+1);
     g_gps_can_lap_count=7;gps_can_speed_tick(test_tick+21U*50U);            /* slot 1: nothing due, lap changed */
-    assert(test_tx_id_count[0x069]==status+2&&test_tx_id_count[0x06A]==lap+2&&g_gps_can_lap_count==0);
+    assert(test_tx_id_count[0x7A0]==status+2&&test_tx_id_count[0x7A1]==lap+2&&g_gps_can_lap_count==0);
     gps_can_speed_tick(test_tick+22U*50U);                                  /* slot 2: only the fast frames */
-    assert(test_tx_id_count[0x069]==status+2&&test_tx_id_count[0x06A]==lap+2);
+    assert(test_tx_id_count[0x7A0]==status+2&&test_tx_id_count[0x7A1]==lap+2);
     g_gps_rmc_last_tick=test_tick;g_gps_rmc_valid=1;g_gps_speed_kmh_centi=7200;g_gps_speed_kmh_int=72;
     g_gps_can_last_tick=test_tick+50;
     gps_can_speed_tick(test_tick+501);assert(test_can_speed_tenths==0&&g_gps_speed_ui_alive_tick==test_tick);
