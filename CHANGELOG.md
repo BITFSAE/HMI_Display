@@ -12,6 +12,20 @@
 - **未使用或用途不明的外设**：USART1、USART6 已初始化但应用层未使用；PC2（输入）、PC3（输出）`.ioc` 无标签、代码未引用。确认后可从 `.ioc` 移除或补充标签。
 - **缺少自动化用例**：圈速过线、冲刺计时的几何判断没有回归用例。
 - **体积较大的源文件**：`dashboard_ui.c`、`can.c`（CubeMX 生成文件的 USER 区内承载了解码、转发和 GPS 遥测）建议拆成独立模块。
+- **方向盘上电首帧丢失**：方向盘只在变化时发滑级和模式，车手屏界面初始化前收到的帧被丢弃。若车手屏比方向盘晚就绪，界面滑级为 0，且在电位器被拨动前，计时键或消错键触发的 `0x703` 带滑级 0。需方向盘周期重发当前状态，或车手屏在收到首个 `0x700` 前不发滑级（协议暂无“未知”编码，须先在中央库评审）。由代码推出，未上板验证。
+- **计时锁期间旋钮不同步**：锁定期间拨旋钮，车手屏不转发 `0x310`，方向盘解锁后不重发，旋钮位置与 ECU 实际模式不一致。
+- **方向盘抓包与 ECU 确认**：`0x701/0x702` 松开单帧、`0x310` DLC 8 目前只来自方向盘固件代码；ECU 是否使用 `0x703` 的计时位和清错位、`0x784` 是否保留均待确认。
+- **缺少用例**：计时锁生效时 `0x310` 不转发、界面启动完成前丢帧、`0x701/0x702` 触发后界面端动作。
+- **跨仓库提交未推送**：`vehicle-interfaces` 分支 `can/retire-imu-0x050`、`can/wheel-lap-timer-semantics`（后者基于前者）需走 PR；`Steering_wheel`、`CANRS485_G473`、`CAN2RS485` 为本地提交，未推送。`Steering_wheel` 根目录的 `Vehicle_CanB.dbc` 是过期快照，建议删除。
+
+## 2026-10-11 方向盘按键含义更正与方向盘文档
+
+- 更正：`0x701`（DBC 信号名 `RecorderToggle`）是圈速计时键，不是录像。此前文档把它写成“录像”，来自对 `Recorder` 的误译。信号名沿用旧称，改名会影响 ECU 等按名称生成代码的接收方，须在中央库评审。`0x702` 在车手屏上清除**全部**告警（含排队中的），此前文档写成“最早一条”，只有触摸告警条才逐条消除。
+- `can.c`：方向盘处理的局部变量 `s_recorder_button`、参数 `recorder_toggle` 改为 `s_lap_button`、`lap_toggle`，注释更正并写明方向盘固件的发送方式；逻辑未变。
+- 新增文档：[CAN 网络分工](docs/can_network.md)、[方向盘与车手屏](docs/steering_wheel.md)、[方向盘相关代码](docs/steering_wheel_code.md)，README 索引同步；`can_interface.md`、`gps_lap.md`、`configuration.md`、`dashboard_ui.md` 更正“录像”说法并按方向盘固件更新发送方式。
+- 关联仓库：`Steering_wheel` 更正按键含义并删除 `0x50` 接收与 `0x60..0x66` 转发（本地提交 `15528ba`、`08fdd31`）；`vehicle-interfaces` 分支 `can/wheel-lap-timer-semantics`（`611c8bd`）更正 DBC 注释和接口文档。
+- 已验证：`./build_fw.sh` 无警告，Flash 243,136 B（61.8%）、主 SRAM 92,024 B（70.2%）、CCM 61,440 B（93.8%）；`python3 tools/run_firmware_tests.py` 通过；`Steering_wheel` 的 `cmake --build build/Debug` 无警告（FLASH 21.9%、RAM 9.2%）；`vehicle-interfaces` 的 `validate_interfaces.py` 通过。
+- 未验证：方向盘发送方式未抓包；未上板、未实车；CubeIDE 完整构建。`docs/steering_wheel.md` 中“已知限制”由代码推出，均未上板复现。
 
 ## 2026-10-10 删除 0x102 心跳
 

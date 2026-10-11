@@ -20,6 +20,9 @@
 | 文档 | 内容 |
 | --- | --- |
 | [硬件映射](docs/hardware.md) | 时钟、引脚、CAN 位时序、FSMC 读写时序、背光、触摸、指示灯编码、与 `.ioc` 的有意差异 |
+| [CAN 网络分工](docs/can_network.md) | 两条总线、各节点收发什么、车手屏做哪三类事（显示、发送、方向盘网关） |
+| [方向盘与车手屏](docs/steering_wheel.md) | 方向盘按钮板和车手屏各做什么、每个控件的作用、操作的完整过程、已知限制 |
+| [方向盘相关代码](docs/steering_wheel_code.md) | 方向盘固件和车手屏侧处理的代码级细节与测试覆盖 |
 | [CAN 接口](docs/can_interface.md) | CAN1/CAN2 收发全表、超时与有效性、方向盘帧处理、发送队列、与中央库未对齐项 |
 | [配置表](docs/configuration.md) | GPS、圈速、CAN、显示与实时的可调常量：位置、单位、影响 |
 | [GPS、圈速与冲刺](docs/gps_lap.md) | NMEA 处理、信号等级、里程、过线检测、75 m 冲刺、模式锁、降级行为 |

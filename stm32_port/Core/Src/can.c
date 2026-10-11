@@ -110,7 +110,7 @@ uint16_t CAN1_RX_MSG_ID_BANK2[4] = {0x503, 0x504, 0x5A0, 0x5A1};
 uint16_t CAN1_RX_MSG_ID_BANK4[4] = {0x5A2, 0x306, 0x5A2, 0x306};
 /* Bank5: Tire-temperature cells 1..16, four cells per frame. */
 uint16_t CAN1_RX_MSG_ID_BANK5[4] = {0x071, 0x072, 0x073, 0x074};
-/* Bank14: Vehicle_CanB.dbc steering wheel on CAN2 - DriveMode(0x310), SlipLevel(0x700), RecorderToggle(0x701), ErrorClear(0x702) */
+/* Bank14: Vehicle_CanB.dbc steering wheel on CAN2 - DriveMode(0x310), SlipLevel(0x700), RecorderToggle(0x701, lap-timer toggle), ErrorClear(0x702) */
 uint16_t CAN2_RX_MSG_ID_BANK0[4] = {0x310, 0x700, 0x701, 0x702};
 
 #define CAN_ID_GPS_POSITION        0x067U
@@ -570,7 +570,8 @@ void CAN1_Filter_Config(void)
  * are merged into a single 0x703 (BO_1795) before being sent to the ECU.
  *   BO_784  DriveMode_Request 0x310  DriveModeCode byte0 = ASCII '0'..'3' (48..51)
  *   BO_1792 SlipLevel_0x700   0x700  SlipLevel byte0 [0..7]
- *   BO_1793 RecorderToggle    0x701  RecorderToggle bit0, sent once per press
+ *   BO_1793 RecorderToggle    0x701  lap-timer toggle bit0, one frame per press
+ *                                    (the DBC name is historical, it is not a video recorder)
  *   BO_1794 ErrorClear_0x702  0x702  ErrorClearActive bit0, sent once per press
  */
 void CAN2_Filter_Config(void)
@@ -732,27 +733,30 @@ void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
  * 0x700/0x701/0x702 are SteeringWheel->Display only and must NOT be forwarded
  * verbatim; the ECU consumes only this merged frame.
  *   byte0      = SlipLevel 0..7
- *   byte1 bit0 = RecorderToggle (one-shot)
+ *   byte1 bit0 = RecorderToggle, i.e. the lap-timer toggle (one-shot)
  *   byte1 bit1 = ErrorClearActive (one-shot)
  */
 static void User_CAN_SendSteeringCmd(uint8_t slip_level,
-                                     uint8_t recorder_toggle,
+                                     uint8_t lap_toggle,
                                      uint8_t error_clear)
 {
   uint8_t cmd[2] = {0};
 
   cmd[0] = slip_level & 0x07U;
-  if(recorder_toggle != 0U) cmd[1] |= 0x01U;
+  if(lap_toggle != 0U)   cmd[1] |= 0x01U;
   if(error_clear != 0U)     cmd[1] |= 0x02U;
 
   User_CAN_SendDlc(0x703U, cmd, 2U);
 }
 
 /* DBC SG_ RecorderToggle / ErrorClearActive: "Display acts only on the rising
- * edge". The wheel may send either a single 1-frame per press or repeat it
- * while held, and it is unconfirmed whether a 0-frame follows. A frame counts
- * as a new press when the previous frame was 0, or when the previous 1-frame is
- * older than CAN_BUTTON_REPEAT_GAP_MS (repeat frames are faster than that). */
+ * edge". The wheel firmware (repo Steering_wheel, cb60d69) sends one 1-frame
+ * when the button is released and never a 0-frame; this is read from its code,
+ * not yet confirmed on the bus. A frame counts as a new press when the
+ * previous frame was 0, or when the previous 1-frame is older than
+ * CAN_BUTTON_REPEAT_GAP_MS. With that sender the gap is the only thing that
+ * separates presses, so two presses less than 300 ms apart count as one. The
+ * 0-frame and repeat-while-held cases are kept for other senders. */
 #define CAN_BUTTON_REPEAT_GAP_MS 300U
 
 typedef struct {
@@ -778,7 +782,7 @@ static void User_CAN_HandleSteeringWheel(const CAN_RxHeaderTypeDef * rx,
                                          const uint8_t data[8])
 {
   static uint8_t s_slip_level = 0U;
-  static User_CAN_Button_t s_recorder_button;
+  static User_CAN_Button_t s_lap_button;
   static User_CAN_Button_t s_clear_button;
 
   if((rx == NULL) || (data == NULL)) return;
@@ -817,10 +821,11 @@ static void User_CAN_HandleSteeringWheel(const CAN_RxHeaderTypeDef * rx,
       break;
     }
 
-    /* Vehicle_CanB.dbc BO_1793 RecorderToggle 0x701: bit0, rising edge -> merge into 0x703 */
+    /* Vehicle_CanB.dbc BO_1793 RecorderToggle 0x701 (lap-timer toggle): bit0, rising
+     * edge -> start/stop lap or sprint timing and merge into 0x703 */
     case 0x701:
     {
-      uint8_t toggle = User_CAN_ButtonPressed(&s_recorder_button, data[0] & 0x01U, HAL_GetTick());
+      uint8_t toggle = User_CAN_ButtonPressed(&s_lap_button, data[0] & 0x01U, HAL_GetTick());
       if(toggle != 0U) Dashboard_UI_RequestLapToggle();
       User_CAN_SendSteeringCmd(s_slip_level, toggle, 0U);
       break;
