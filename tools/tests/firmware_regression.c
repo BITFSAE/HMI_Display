@@ -70,6 +70,7 @@ HAL_StatusTypeDef HAL_FLASHEx_Erase(FLASH_EraseInitTypeDef *init,uint32_t *error
 /* Compile actual application code; only the Cube-generated CAN init/MSP
  * sections are omitted by run_firmware_tests.py. Hardware/RTOS are mocks. */
 #include "can_app.inc"
+#include "../../stm32_port/Core/Src/sop.c"
 #include "../../stm32_port/Core/Src/odometer_flash.c"
 #include "../../stm32_port/Core/Src/gps_lap.c"
 #include "../../stm32_port/Core/Src/gps.c"
@@ -135,7 +136,7 @@ static void test_can(void)
     puts("CAN: bounded FIFO, queue saturation, short/remote frames, valid DLCs and steering relay passed");
 }
 /* Every DASH_VALID_* bit, for tests that feed hand-built telemetry to the UI. */
-#define TEST_ALL_VALID ((DASH_VALID_FAN<<1)-1U)
+#define TEST_ALL_VALID ((DASH_VALID_SOP_CURRENT<<1)-1U)
 static void inject(uint16_t id,unsigned dlc,const uint8_t *bytes)
 {
     memset(test_rx_data,0,8);memcpy(test_rx_data,bytes,dlc);
@@ -178,12 +179,15 @@ static void test_can_decode(void)
         assert((d->valid_mask&valid)==valid);
         /* P NOW is the discharge power: 549.1 V x 85.7 A = 47.06 kW -> 47. */
         test_tick+=300;Dashboard_UI_Process();
-        assert(g_power_peak==47);peak_before=(unsigned)g_power_peak;
+        assert(g_power_peak==47&&g_power_peak_seen);peak_before=(unsigned)g_power_peak;
+        /* The PK row tracks the discharge current in 0.1 A: -85.7 A -> 857. */
+        assert(g_current_peak_seen&&g_current_peak_da==857);
         /* Charging (+2.9 A) is not drive power and must not move the peak. */
         {
             const uint8_t charge[7]={0x15,0x73, 0x00,0x1D, 77, 0x1F, 0x50};
             inject(0x4B0,7,charge);test_tick+=300;Dashboard_UI_Process();
             assert(d->sum_current_da==29&&(unsigned)g_power_peak==peak_before);
+            assert(g_current_peak_da==857);                       /* charging never raises the current peak */
         }
         /* SOC flag clear (BMS default 80 % before initialisation): SOC invalid, V and I stay valid. */
         {
@@ -226,6 +230,50 @@ static void test_can_decode(void)
         Dashboard_UI_Process();test_tick+=300;Dashboard_UI_Process();
         assert((Dashboard_UI_GetCurrentData()->valid_mask&DASH_VALID_SOC)==0);       /* and the UI copy follows */
         inject(0x4B0,7,pack);assert((d->valid_mask&DASH_VALID_SOC)!=0);               /* data resumes */
+    }
+    /* BMS SOP V2: 0x4A0 power limits (CRC) and 0x4A3 current limits, separate freshness. */
+    {
+        /* Sample frames from vehicle-interfaces docs/CANB接口.md 4.4. */
+        const uint8_t power[8]={0xE4,0x02,0x28,0x00,0x05,0x02,0x01,0x29};   /* 74.0 kW / 4.0 kW, valid */
+        const uint8_t current[8]={0x08,0x07,0x50,0x00,0x00,0x00,0xFF,0x24}; /* 180.0 A / 8.0 A, inputs valid */
+        const uint8_t check[9]={'1','2','3','4','5','6','7','8','9'};
+        uint8_t frame[8];
+        unsigned invalid;
+        assert(Sop_Crc8(check,9)==0x4B);
+        assert((d->valid_mask&(DASH_VALID_SOP_POWER|DASH_VALID_SOP_CURRENT))==0);   /* nothing before the first frame */
+        inject(0x4A0,8,power);inject(0x4A3,8,current);
+        assert((d->valid_mask&(DASH_VALID_SOP_POWER|DASH_VALID_SOP_CURRENT))==(DASH_VALID_SOP_POWER|DASH_VALID_SOP_CURRENT));
+        assert(d->sop_discharge_power_dkw==740&&d->sop_charge_power_dkw==40);
+        assert(d->sop_discharge_current_da==1800&&d->sop_charge_current_da==80);
+        test_tick+=300;Dashboard_UI_Process();
+        assert(Dashboard_UI_GetCurrentData()->sop_discharge_power_dkw==740&&(Dashboard_UI_GetCurrentData()->valid_mask&DASH_VALID_SOP_POWER)!=0);
+        /* Rejected frames change nothing and are counted: bad CRC, version 1, reserved bit, short DLC. */
+        invalid=g_can_rx_invalid_count;
+        memcpy(frame,power,8);frame[0]=0x10;inject(0x4A0,8,frame);                 /* CRC no longer matches */
+        assert(d->sop_discharge_power_dkw==740);
+        memcpy(frame,power,8);frame[5]=1;frame[7]=Sop_Crc8((const uint8_t[]){0x04,0xA0,0xE4,0x02,0x28,0x00,0x05,1,0x01},9);
+        inject(0x4A0,8,frame);assert(d->sop_discharge_power_dkw==740);               /* valid CRC, wrong version */
+        memcpy(frame,power,8);frame[6]=0x03;frame[7]=Sop_Crc8((const uint8_t[]){0x04,0xA0,0xE4,0x02,0x28,0x00,0x05,0x02,0x03},9);
+        inject(0x4A0,8,frame);assert(d->sop_discharge_power_dkw==740);               /* reserved bit set */
+        inject(0x4A0,7,power);                                                       /* DLC 7 */
+        memcpy(frame,current,8);frame[7]=0x14;inject(0x4A3,8,frame);                 /* 0x4A3 version 1 */
+        assert(g_can_rx_invalid_count==invalid+5&&d->sop_discharge_current_da==1800);
+        /* LimitsValid=0: limits are not usable, power invalid but current stays. */
+        memcpy(frame,power,8);frame[0]=frame[1]=frame[2]=frame[3]=0;frame[6]=0;
+        frame[7]=Sop_Crc8((const uint8_t[]){0x04,0xA0,0,0,0,0,0x05,0x02,0x00},9);
+        inject(0x4A0,8,frame);
+        assert((d->valid_mask&DASH_VALID_SOP_POWER)==0&&(d->valid_mask&DASH_VALID_SOP_CURRENT)!=0);
+        /* InputHealth bit7 clear: current limits are not trusted. */
+        memcpy(frame,current,8);frame[6]=0x7F;inject(0x4A3,8,frame);
+        assert((d->valid_mask&DASH_VALID_SOP_CURRENT)==0);
+        /* Resume, then silence: power times out after 300 ms, current after 1.5 s. */
+        inject(0x4A0,8,power);inject(0x4A3,8,current);
+        test_tick+=301;User_CAN_ServiceTimeouts(test_tick);
+        assert((d->valid_mask&DASH_VALID_SOP_POWER)==0&&(d->valid_mask&DASH_VALID_SOP_CURRENT)!=0);
+        test_tick+=1300;User_CAN_ServiceTimeouts(test_tick);
+        assert((d->valid_mask&DASH_VALID_SOP_CURRENT)==0);
+        Dashboard_UI_Process();test_tick+=300;Dashboard_UI_Process();
+        assert((Dashboard_UI_GetCurrentData()->valid_mask&(DASH_VALID_SOP_POWER|DASH_VALID_SOP_CURRENT))==0);
     }
     /* Bus-off notification is counted. */
     {
@@ -421,6 +469,22 @@ static void test_gps(void)
     gps_can_speed_tick(test_tick+3001);assert(g_gps_speed_ui_alive_tick==0&&g_pending_speed==0);
     puts("GPS: fragmented NMEA, pathological heading, tick wrap, DMA polling and per-frame CAN periods passed");
 }
+/* Per-motor PK is the highest power since power-on: lifting off, zero torque or regen never clears it. */
+static void test_motor_peak(void)
+{
+    static const int32_t torques[]={20,5,0,-3,30,10};
+    dashboard_data_t data=*Dashboard_UI_GetCurrentData();
+    int32_t expected=g_motor_power_peak[0];
+    data.valid_mask=TEST_ALL_VALID;data.rpm[0]=10000;
+    for(unsigned i=0;i<sizeof(torques)/sizeof(torques[0]);i++) {
+        const int32_t power=torques[i]*10000/955;          /* 0.1 kW, as in the UI */
+        data.torque[0]=torques[i];
+        Dashboard_UI_SubmitData(&data);test_tick+=300;Dashboard_UI_Process();
+        if(power>expected)expected=power;
+        assert(g_motor_power_peak[0]==expected);
+    }
+    assert(g_motor_power_peak[0]>=314);                    /* 30 Nm x 10000 rpm = 31.4 kW */
+}
 static void test_ui(void)
 {
     Dashboard_UI_RequestAlertClear();test_tick+=200;Dashboard_UI_Process();lv_refr_now(NULL);
@@ -436,6 +500,8 @@ static void test_ui(void)
         data.aps_open_pct=i%101;data.brake_pct=(i+10)%101;
         data.diag_num[i%4]=(i%5==0)?0x231:0;data.inverter_temp[i%4]=(int32_t)(i%120);
         data.lv_bus_current_cA=-(int32_t)i*10;data.fan_rpm[i%3]=(int32_t)i*10;
+        data.sop_discharge_power_dkw=(int32_t)(i%800);data.sop_charge_power_dkw=(int32_t)(i%80);
+        data.sop_discharge_current_da=(int32_t)i*5;data.sop_charge_current_da=(int32_t)(i%80);
         Dashboard_UI_SubmitData(&data);Dashboard_UI_SubmitSpeed(i%300);
         Dashboard_UI_SubmitDriveMode(i%4);Dashboard_UI_SubmitSlipLevel(i%8);
         Dashboard_UI_PushAlert("TEST ALERT");if(i%3==0)Dashboard_UI_RequestAlertClear();
@@ -453,7 +519,7 @@ static void test_ui(void)
     printf("UI: 400 telemetry/mode/alert cycles, identical-value skip and 120 KiB host pool passed (peak %zu, free %zu)\n",m.max_used,m.free_size);
 }
 /* Representative telemetry for screenshots: one frame per drive mode plus an
- * alert frame (mode-4) and the S-mode READY banner (mode-5). */
+ * alert frame (mode-4), the S-mode READY banner (mode-5) and the no-data frame (mode-6). */
 static void save_frame(const char *directory,unsigned index)
 {
     char path[1024];snprintf(path,sizeof(path),"%s/mode-%u.rgb565",directory,index);
@@ -462,12 +528,15 @@ static void save_frame(const char *directory,unsigned index)
 static void render_modes(const char *directory)
 {
     static const int32_t tires[4][4]={{7200,7600,8100,8400},{6900,7300,7700,8000},{7400,7900,8600,9300},{6600,7000,7300,7500}};
+    /* mode-6: the power-on frame, every CAN field still "--" (nothing received yet). */
+    save_frame(directory,6);
     dashboard_data_t data=*Dashboard_UI_GetCurrentData();
     data.valid_mask=TEST_ALL_VALID;data.soc=76;data.sum_voltage=386;data.sum_current=-118;
     data.sum_voltage_dv=3860;data.sum_current_da=-1180;data.max_temperature=74;
     data.aps_open_pct=62;data.brake_pct=0;
     data.lv_bus_voltage_mV=13820;data.lv_bus_current_cA=-1240;data.lv_bus_power_dW=1712;
     data.fan_rpm[0]=2376;data.fan_rpm[1]=2316;data.fan_rpm[2]=2196;data.fan_pwm_duty[0]=49;data.fan_pwm_duty[1]=49;
+    data.sop_discharge_power_dkw=740;data.sop_charge_power_dkw=40;data.sop_discharge_current_da=1800;data.sop_charge_current_da=80;
     for(unsigned w=0;w<4;w++) {
         data.torque[w]=18+(int32_t)w;data.rpm[w]=11800-(int32_t)w*120;data.motor_enable[w]=w!=3;
         data.motor_temp[w]=58+(int32_t)w*3;data.inverter_temp[w]=44+(int32_t)w*4;
@@ -492,6 +561,6 @@ int main(int argc,char **argv)
     if(argc==1) {assert(!Dashboard_UI_IsStartupComplete());receive(0x305,6,3);assert(g_can_rx_queue->count==0);}
     init_ui();assert(Dashboard_UI_IsStartupComplete());
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_can_decode();test_steering();test_odometer();test_gps();test_ui();return 0;
+    test_can();test_can_decode();test_steering();test_odometer();test_gps();test_ui();test_motor_peak();return 0;
 }
 /* USER CODE END Firmware_Regression */

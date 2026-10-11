@@ -48,6 +48,8 @@ static uint32_t g_tick;
 static int32_t g_lap_time, g_last_lap, g_best_lap, g_lap_count;
 static int32_t g_odometer_tenths = 412;
 static int32_t g_power_peak;
+static int32_t g_motor_peak[4];
+static int32_t g_current_peak;
 static const char * g_alerts[SIM_ALERT_MAX];
 static uint32_t g_alert_count;
 
@@ -128,6 +130,11 @@ static void demo_timer_cb(lv_timer_t * timer)
     if(power > g_power_peak) g_power_peak = power;
     Dash_View_SetBattery(soc, 392, current);
     Dash_View_SetPower(power, g_power_peak);
+    if(current > g_current_peak) g_current_peak = current;
+    Dash_View_SetCurrentPeak(g_current_peak);
+    /* BMS SOP: 放电上限随温升降额，回收上限固定 8.0 kW / 8.0 A。 */
+    Dash_View_SetSop(800 - triangle(g_tick, 600U, 300), 80,
+                     1800 - triangle(g_tick, 600U, 600), 80);
     Dash_View_SetMaxTemp(55 + triangle(g_tick, 600U, 35));
     Dash_View_SetLowVoltage(13820, -1240 - throttle * 4, 1712 + throttle * 5);
 
@@ -148,7 +155,8 @@ static void demo_timer_cb(lv_timer_t * timer)
         };
         int32_t tread[4];
         motor.power_dkw = (motor.torque * motor.rpm) / 955;
-        motor.power_peak_dkw = motor.power_dkw > 0 ? motor.power_dkw : 0;
+        if(motor.power_dkw > g_motor_peak[wheel]) g_motor_peak[wheel] = motor.power_dkw;
+        motor.power_peak_dkw = g_motor_peak[wheel];
         Dash_View_SetMotor(wheel, &motor);
         for(uint32_t seg = 0U; seg < 4U; seg++) {
             tread[seg] = (30 + triangle(g_tick, 360U, 70) + tread_offset[wheel][seg]) * 100;

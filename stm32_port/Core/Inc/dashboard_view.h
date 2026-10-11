@@ -47,7 +47,7 @@ typedef struct {
     int32_t torque;        /* Nm (DBC ActualTorque, raw 1 Nm; DBC unit text is wrong) */
     int32_t rpm;
     int32_t power_dkw;     /* 0.1 kW, torque x rpm / 9549 */
-    int32_t power_peak_dkw;
+    int32_t power_peak_dkw;  /* 0.1 kW, highest power since power-on (never reset) */
     int32_t motor_temp;    /* degC */
     int32_t inverter_temp; /* degC */
     uint32_t diag;         /* AMK diagnostic number, 0 = OK */
@@ -69,7 +69,17 @@ void Dash_View_SetSlip(int32_t level);
  * DASH_VIEW_INVALID per argument and then show "--" (pedal bars empty). */
 void Dash_View_SetPedals(int32_t throttle_pct, int32_t brake_pct);
 void Dash_View_SetBattery(int32_t soc_pct, int32_t voltage_v, int32_t current_a);
+/* peak_kw: highest discharge power since power-on; DASH_VIEW_INVALID until
+ * the first valid sample. */
 void Dash_View_SetPower(int32_t live_kw, int32_t peak_kw);
+/* Highest discharge current seen since power-on, whole amperes (right side
+ * of the PK row). */
+void Dash_View_SetCurrentPeak(int32_t peak_a);
+/* BMS SOP limits: power in 0.1 kW, current in 0.1 A. Power (0x4A0) and
+ * current (0x4A3) are separate frames, so each argument may be
+ * DASH_VIEW_INVALID on its own. */
+void Dash_View_SetSop(int32_t discharge_dkw, int32_t charge_dkw,
+                      int32_t discharge_da, int32_t charge_da);
 void Dash_View_SetMaxTemp(int32_t temp_c);
 /* voltage_mv == DASH_VIEW_INVALID blanks all three values. */
 void Dash_View_SetLowVoltage(int32_t voltage_mv, int32_t current_ca, int32_t power_dw);

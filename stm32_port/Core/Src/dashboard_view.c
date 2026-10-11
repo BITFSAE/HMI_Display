@@ -83,6 +83,18 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 #define NIGHT_W      40
 #define NIGHT_H      36
 
+/* SOP limits sit under the speed, between the two pedal readouts
+ * (x 290..510 stays clear of their 84 px wide labels). */
+#define SOP_X        290
+#define SOP_Y        332
+#define SOP_ROW_H    22
+#define SOP_CAP_W    56
+#define SOP_POWER_X  (SOP_X + SOP_CAP_W)
+#define SOP_POWER_W  86
+#define SOP_CURRENT_X (SOP_POWER_X + SOP_POWER_W + 4)
+#define SOP_CURRENT_W 74
+
+#define RIGHT_ROW_H  22   /* right-column row pitch; 24 would not fit the PK row */
 #define RIGHT_COL_X  614
 #define RIGHT_VAL_X  656
 #define RIGHT_END_X  786
@@ -142,10 +154,13 @@ static struct {
     lv_obj_t * hv_current;
     lv_obj_t * power_live;
     lv_obj_t * power_peak;
+    lv_obj_t * current_peak;
     lv_obj_t * max_temp;
     lv_obj_t * lv_voltage;
     lv_obj_t * lv_current;
     lv_obj_t * lv_power;
+    lv_obj_t * sop_power[2];     /* [0]=discharge [1]=charge */
+    lv_obj_t * sop_current[2];
     lv_obj_t * fan_duty[3];
     lv_obj_t * fan_rpm[3];
     dash_motor_ui_t motors[4];
@@ -527,6 +542,18 @@ static void create_centre(lv_obj_t * scr)
     ui.speed = make_label(scr, &st_speed, 262, 166, 276, &st_center, "0");
     make_label(scr, &st_unit, 262, 302, 276, &st_center, "km/h");
 
+    {
+        static const char * const sop_caption[2] = {"DISCH", "REGEN"};
+        for(uint32_t row = 0U; row < 2U; row++) {
+            const int32_t y = SOP_Y + (int32_t)row * SOP_ROW_H;
+            make_label(scr, &st_caption, SOP_X, y + 4, SOP_CAP_W, NULL, sop_caption[row]);
+            ui.sop_power[row] = make_label(scr, &st_value, SOP_POWER_X, y, SOP_POWER_W,
+                                           &st_right, "");
+            ui.sop_current[row] = make_label(scr, &st_value, SOP_CURRENT_X, y, SOP_CURRENT_W,
+                                             &st_right, "");
+        }
+    }
+
     ui.brake_bar = pedal(scr, BRAKE_X, &s_brake_bar, "BRAKE", C_RED, &ui.brake_pct);
     ui.throttle_bar = pedal(scr, THROTTLE_X, &s_throttle_bar, "THROTTLE", C_GREEN, &ui.throttle_pct);
 
@@ -561,16 +588,18 @@ static void create_right(lv_obj_t * scr)
     lv_obj_add_event_cb(ui.soc_bar, bar_draw_cb, LV_EVENT_DRAW_MAIN, &s_soc_bar);
 
     ui.hv_voltage = right_row(scr, 148, "HV", &ui.hv_current);
-    ui.power_live = right_row(scr, 172, "PWR", &ui.power_peak);
-    ui.max_temp = right_row(scr, 196, "TMAX", NULL);
-    make_line(scr, RIGHT_COL_X, 224, RIGHT_END_X - RIGHT_COL_X, 1);
-    ui.lv_voltage = right_row(scr, 232, "LV", &ui.lv_current);
-    ui.lv_power = right_row(scr, 256, "", NULL);
-    make_line(scr, RIGHT_COL_X, 284, RIGHT_END_X - RIGHT_COL_X, 1);
+    ui.power_live = right_row(scr, 148 + RIGHT_ROW_H, "PWR", NULL);
+    /* PK: highest power and highest discharge current since power-on. */
+    ui.power_peak = right_row(scr, 148 + 2 * RIGHT_ROW_H, "PK", &ui.current_peak);
+    ui.max_temp = right_row(scr, 148 + 3 * RIGHT_ROW_H, "TMAX", NULL);
+    make_line(scr, RIGHT_COL_X, 240, RIGHT_END_X - RIGHT_COL_X, 1);
+    ui.lv_voltage = right_row(scr, 247, "LV", &ui.lv_current);
+    ui.lv_power = right_row(scr, 247 + RIGHT_ROW_H, "", NULL);
+    make_line(scr, RIGHT_COL_X, 295, RIGHT_END_X - RIGHT_COL_X, 1);
     {
         static const char * const fan_caption[3] = {"FAN1", "FAN2", "FAN3"};
         for(uint32_t fan = 0U; fan < 3U; fan++) {
-            ui.fan_duty[fan] = right_row(scr, 292 + (int32_t)fan * 24, fan_caption[fan],
+            ui.fan_duty[fan] = right_row(scr, 302 + (int32_t)fan * RIGHT_ROW_H, fan_caption[fan],
                                          &ui.fan_rpm[fan]);
         }
     }
@@ -600,7 +629,7 @@ static void create_bottom(lv_obj_t * scr)
         /* Multi-line captions share the 24 px row pitch of the value labels. */
         lv_obj_t * cap = make_label(scr, &st_caption, x + 10, y + 4, 0, NULL, "TQ\nkW\nMOT");
         lv_obj_set_style_text_line_space(cap, 10, 0);
-        cap = make_label(scr, &st_caption, x + 106, y + 4, 0, NULL, "RPM\nPEAK\nINV");
+        cap = make_label(scr, &st_caption, x + 106, y + 4, 0, NULL, "RPM\nPK\nINV");
         lv_obj_set_style_text_line_space(cap, 10, 0);
         m->torque = make_label(scr, &st_value, x + 36, y, 62, &st_right, "");
         m->power = make_label(scr, &st_value, x + 36, y + 24, 62, &st_right, "");
@@ -794,8 +823,55 @@ void Dash_View_SetPower(int32_t live_kw, int32_t peak_kw)
         lv_snprintf(buf, sizeof(buf), "%ld kW", (long)live_kw);
         set_text(ui.power_live, buf);
     }
-    lv_snprintf(buf, sizeof(buf), "PK %ld", (long)peak_kw);
-    set_text(ui.power_peak, buf);
+    if(peak_kw == DASH_VIEW_INVALID) {
+        set_text(ui.power_peak, "-- kW");
+    }
+    else {
+        lv_snprintf(buf, sizeof(buf), "%ld kW", (long)peak_kw);
+        set_text(ui.power_peak, buf);
+    }
+}
+
+void Dash_View_SetCurrentPeak(int32_t peak_a)
+{
+    char buf[12];
+
+    if(peak_a == DASH_VIEW_INVALID) {
+        set_text(ui.current_peak, "-- A");
+    }
+    else {
+        lv_snprintf(buf, sizeof(buf), "%ld A", (long)peak_a);
+        set_text(ui.current_peak, buf);
+    }
+}
+
+/* One SOP value. Zero discharge limit means the BMS forbids drive torque, so it
+ * is red; any other valid value is white. */
+static void set_sop_value(lv_obj_t * label, int32_t deci, const char * unit, uint8_t warn_zero)
+{
+    char buf[16];
+
+    if(deci == DASH_VIEW_INVALID) {
+        lv_snprintf(buf, sizeof(buf), "--%s", unit);
+        set_text(label, buf);
+        set_text_color(label, C_DIM);
+        return;
+    }
+    format_deci(buf, sizeof(buf), deci, unit);
+    set_text(label, buf);
+    set_text_color(label, (warn_zero != 0U && deci == 0) ? C_RED : C_TEXT);
+}
+
+void Dash_View_SetSop(int32_t discharge_dkw, int32_t charge_dkw,
+                      int32_t discharge_da, int32_t charge_da)
+{
+    const int32_t power[2] = {discharge_dkw, charge_dkw};
+    const int32_t current[2] = {discharge_da, charge_da};
+
+    for(uint32_t row = 0U; row < 2U; row++) {
+        set_sop_value(ui.sop_power[row], power[row], " kW", (row == 0U) ? 1U : 0U);
+        set_sop_value(ui.sop_current[row], current[row], " A", (row == 0U) ? 1U : 0U);
+    }
 }
 
 void Dash_View_SetMaxTemp(int32_t temp_c)

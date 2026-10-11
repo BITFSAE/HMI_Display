@@ -44,7 +44,7 @@ UM982 启动时依次发送（每条后等待并继续读取 DMA）：`UNLOG COM
 
 | 设置 | 当前值 | 符号 | 单位/范围 | 影响与同步 |
 | --- | --- | --- | --- | --- |
-| 接收超时 | BMS 2000；ECU 1000；PDM 1500；风扇 1500 | `CAN_TIMEOUT_BMS_MS/ECU_MS/PDM_MS/FAN_MS` | ms | 超时后对应数值显示 `--`。ECU 周期在中央库仍为暂定值，取宽松门限；周期确定后应收紧 |
+| 接收超时 | BMS 2000；ECU 1000；PDM 1500；风扇 1500；SOP 功率 300；SOP 电流 1500 | `CAN_TIMEOUT_BMS_MS/ECU_MS/PDM_MS/FAN_MS/SOP_POWER_MS/SOP_CURRENT_MS` | ms | 超时后对应数值显示 `--`。ECU 周期在中央库仍为暂定值，取宽松门限；周期确定后应收紧 |
 | 超时检查间隔 | 100 | `CAN_TIMEOUT_POLL_MS` | ms | |
 | 方向盘按键重复间隔 | 300 | `CAN_BUTTON_REPEAT_GAP_MS` | ms | 判定「新按下」；方向盘固件按代码每次按键只发一个 1 帧，故该值是两次按下的最小间隔，待抓包确认 |
 | 接收队列 / 发送队列 | 64 / 32 | `USER_CAN_RX_QUEUE_CAPACITY`、`USER_CAN_TX_QUEUE_CAPACITY` | 帧 | 满时丢新帧 |

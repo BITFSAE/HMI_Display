@@ -27,6 +27,7 @@
 #include "task.h"
 #include "queue.h"
 #include "firmware_diag.h"
+#include "sop.h"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN 0 */
@@ -106,6 +107,8 @@ uint16_t CAN1_RX_MSG_ID_BANK1[4] = {0x506, 0x509, 0x508, 0x507};
 /* Bank2: Debug3_Diag12(0x503 BO_1283), Debug4_Diag34(0x504 BO_1284),
  * PDM_LowVoltageBus(0x5A0 BO_1440), PDM_LowVoltageBattery(0x5A1 BO_1441) */
 uint16_t CAN1_RX_MSG_ID_BANK2[4] = {0x503, 0x504, 0x5A0, 0x5A1};
+/* Bank3: BMS SOP V2 — BMS_SOPLimits(0x4A0 BO_1184), BMS_SOPStatus(0x4A3 BO_1187). 车手屏不收 ECU 的 0x4A4 确认 */
+uint16_t CAN1_RX_MSG_ID_BANK3[4] = {SOP_ID_POWER, SOP_ID_CURRENT, SOP_ID_POWER, SOP_ID_CURRENT};
 /* Bank4: FanController_Status(0x5A2 BO_1442), BrakePedal forward(0x306 BO_774) */
 uint16_t CAN1_RX_MSG_ID_BANK4[4] = {0x5A2, 0x306, 0x5A2, 0x306};
 /* Bank5: Tire-temperature cells 1..16, four cells per frame. */
@@ -159,6 +162,8 @@ typedef enum {
   CAN_SRC_DIAG_FL_FR,
   CAN_SRC_PDM_BUS,
   CAN_SRC_FAN,
+  CAN_SRC_SOP_POWER,
+  CAN_SRC_SOP_CURRENT,
   CAN_SRC_COUNT
 } can_src_t;
 
@@ -166,6 +171,11 @@ typedef enum {
 #define CAN_TIMEOUT_ECU_MS  1000U
 #define CAN_TIMEOUT_PDM_MS  1500U  /* CANB接口.md 8.2: PDM lost after 1500 ms */
 #define CAN_TIMEOUT_FAN_MS  1500U  /* CANB接口.md 8.2: 0x5Ax stale after 1500 ms */
+/* SOP：0x4A0 周期 10 ms，ECU 暂定 300 ms 超时(CANB接口.md 4.1)，车手屏取同值，
+ * 使显示的限值与 ECU 正在采用的一致；0x4A3 周期 500 ms，取 3 个周期。
+ * BMS 在自检、待机、预充、故障和充电时停发，此时界面显示 "--"。 */
+#define CAN_TIMEOUT_SOP_POWER_MS    300U
+#define CAN_TIMEOUT_SOP_CURRENT_MS  1500U
 #define CAN_TIMEOUT_POLL_MS 100U
 
 static const struct {
@@ -185,6 +195,8 @@ static const struct {
   [CAN_SRC_DIAG_FL_FR] = {DASH_VALID_DIAG_FL_FR, CAN_TIMEOUT_ECU_MS},
   [CAN_SRC_PDM_BUS]    = {DASH_VALID_LV_BUS,     CAN_TIMEOUT_PDM_MS},
   [CAN_SRC_FAN]        = {DASH_VALID_FAN,        CAN_TIMEOUT_FAN_MS},
+  [CAN_SRC_SOP_POWER]  = {DASH_VALID_SOP_POWER,  CAN_TIMEOUT_SOP_POWER_MS},
+  [CAN_SRC_SOP_CURRENT] = {DASH_VALID_SOP_CURRENT, CAN_TIMEOUT_SOP_CURRENT_MS},
 };
 static uint32_t g_can_src_tick[CAN_SRC_COUNT];  /* 0 = never received */
 static uint32_t g_can_timeout_check_tick;
@@ -543,6 +555,14 @@ void CAN1_Filter_Config(void)
 	CAN_FilterInitStructure.FilterIdLow = CAN1_RX_MSG_ID_BANK2[1] << 5;
 	CAN_FilterInitStructure.FilterMaskIdHigh = CAN1_RX_MSG_ID_BANK2[2] << 5;
 	CAN_FilterInitStructure.FilterMaskIdLow = CAN1_RX_MSG_ID_BANK2[3] << 5;
+	HAL_CAN_ConfigFilter(&hcan1, &CAN_FilterInitStructure);
+
+	/* Bank 3: BMS SOP V2 0x4A0/0x4A3 */
+	CAN_FilterInitStructure.FilterBank = 0x03;
+	CAN_FilterInitStructure.FilterIdHigh = CAN1_RX_MSG_ID_BANK3[0] << 5;
+	CAN_FilterInitStructure.FilterIdLow = CAN1_RX_MSG_ID_BANK3[1] << 5;
+	CAN_FilterInitStructure.FilterMaskIdHigh = CAN1_RX_MSG_ID_BANK3[2] << 5;
+	CAN_FilterInitStructure.FilterMaskIdLow = CAN1_RX_MSG_ID_BANK3[3] << 5;
 	HAL_CAN_ConfigFilter(&hcan1, &CAN_FilterInitStructure);
 
 	/* Bank 4: FanController_Status(0x5A2 BO_1442), three fan RPM + two PWM duty */
@@ -917,6 +937,39 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
       }
       User_CAN_SetValid(DASH_VALID_HV_V, flags & 0x01U);
       User_CAN_SetValid(DASH_VALID_HV_I, (flags >> 1) & 0x01U);
+      break;
+    }
+
+    /* DBC BO_1184 BMS_SOPLimits 0x4A0: 双向功率上限(0.1 kW)，单帧 CRC。
+     * 非法帧(DLC/版本/保留位/CRC)不更新数据也不刷新接收时间，由超时撤销有效位；
+     * LimitsValid=0 的合法帧功率为 0，按无限值处理显示 "--"。 */
+    case SOP_ID_POWER:
+    {
+      sop_power_t sop;
+      if(Sop_DecodePower(CAN_RxData, RxHeader.DLC, &sop) == 0U) {
+        g_can_rx_invalid_count++;
+        break;
+      }
+      User_CAN_NoteRx(CAN_SRC_SOP_POWER, now);
+      g_can_dashboard_data.sop_discharge_power_dkw = (int32_t)sop.discharge_dkw;
+      g_can_dashboard_data.sop_charge_power_dkw = (int32_t)sop.charge_dkw;
+      User_CAN_SetValid(DASH_VALID_SOP_POWER, sop.limits_valid);
+      break;
+    }
+
+    /* DBC BO_1187 BMS_SOPStatus 0x4A3: 允许放电/回充电流(0.1 A)，无 CRC。
+     * InputHealth bit7=0 表示 SOP 输入不全有效，电流限值不可信，显示 "--"。 */
+    case SOP_ID_CURRENT:
+    {
+      sop_current_t sop;
+      if(Sop_DecodeCurrent(CAN_RxData, RxHeader.DLC, &sop) == 0U) {
+        g_can_rx_invalid_count++;
+        break;
+      }
+      User_CAN_NoteRx(CAN_SRC_SOP_CURRENT, now);
+      g_can_dashboard_data.sop_discharge_current_da = (int32_t)sop.discharge_da;
+      g_can_dashboard_data.sop_charge_current_da = (int32_t)sop.charge_da;
+      User_CAN_SetValid(DASH_VALID_SOP_CURRENT, sop.inputs_valid);
       break;
     }
 

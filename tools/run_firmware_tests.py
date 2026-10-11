@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run actual firmware application/LVGL code with mocked hardware under ASan/UBSan.
 
---png DIR        also render the dashboard (4 drive modes, alert, READY) to PNG
+--png DIR        also render the dashboard (4 drive modes, alert, READY, no data) to PNG
 --compare-ref R  require the rendered frames to match git ref R pixel for pixel
                  (R must already contain dashboard_view.c)
 """
@@ -18,7 +18,7 @@ import tempfile
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
-FRAMES = 6
+FRAMES = 7
 
 
 def run(*args):

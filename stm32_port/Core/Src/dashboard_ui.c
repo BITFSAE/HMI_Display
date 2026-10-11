@@ -32,7 +32,15 @@ static int32_t g_best_lap_time = 0;
 static int32_t g_lap_delta = 0;
 static int32_t g_laps_current = 0;
 static int32_t g_laps_left = 75;
+/* 整车放电功率峰值(kW)：上电后的最大值，不清零。g_power_peak_seen 为 0 时尚未收到
+ * 有效电压和电流，界面显示 "--"。 */
 static int32_t g_power_peak = 0;
+static uint8_t g_power_peak_seen = 0U;
+/* 放电电流峰值(0.1 A)：上电后出现过的最大放电电流，与 g_power_peak 一样不清零。
+ * g_current_peak_seen 为 0 时尚未收到有效电流，界面显示 "--"。 */
+static int32_t g_current_peak_da = 0;
+static uint8_t g_current_peak_seen = 0U;
+/* 单电机轴功率峰值(0.1 kW)：上电后的最大值，与 g_power_peak 一样不清零。 */
 static int32_t g_motor_power_peak[4];
 /* Wheel order: 0=LF, 1=LR, 2=RF, 3=RR; segment order is outside-to-inside.
  * Tire temperatures are stored in 0.01 degC to preserve the CAN precision. */
@@ -86,6 +94,7 @@ static uint32_t g_lap_analysis_blink_tick = 0U;
 #define DASH_DIRTY_TIRE_3   (1UL << 12)
 #define DASH_DIRTY_LOWVOLTAGE (1UL << 13)
 #define DASH_DIRTY_FANS     (1UL << 14)
+#define DASH_DIRTY_SOP      (1UL << 15)
 #define DASH_DIRTY_MOTORS   (DASH_DIRTY_MOTOR_0 | DASH_DIRTY_MOTOR_1 | \
                              DASH_DIRTY_MOTOR_2 | DASH_DIRTY_MOTOR_3)
 #define DASH_DIRTY_TIRES    (DASH_DIRTY_TIRE_0 | DASH_DIRTY_TIRE_1 | \
@@ -93,7 +102,7 @@ static uint32_t g_lap_analysis_blink_tick = 0U;
 #define DASH_DIRTY_FAST     (DASH_DIRTY_MODE | DASH_DIRTY_PEDALS | DASH_DIRTY_MOTORS | \
                              DASH_DIRTY_SLIP | DASH_DIRTY_TIRES | DASH_DIRTY_FANS)
 #define DASH_DIRTY_SLOW     (DASH_DIRTY_BATTERY | DASH_DIRTY_ODOMETER | \
-                             DASH_DIRTY_LOWVOLTAGE)
+                             DASH_DIRTY_LOWVOLTAGE | DASH_DIRTY_SOP)
 #define DASH_DIRTY_ALL      (DASH_DIRTY_FAST | DASH_DIRTY_SLOW)
 /* Which DASH_VALID_* bits feed each dirty group. The three temperature bits
  * feed both the battery group (MAX T) and the motor columns. */
@@ -524,12 +533,7 @@ static void apply_motor_ui(uint32_t index)
         /* P[0.1 kW] = T[Nm] x n[rpm] x 10 / 9549; /955 keeps int32 within the
          * DBC ranges (|T| <= 32767, |n| <= 32767) at 0.01 % error. */
         power = (g_dashboard_data.torque[index] * g_dashboard_data.rpm[index]) / 955;
-        if(power <= 0) {
-            /* Power dropped to zero (or regen): reset the peak so it tracks the
-             * current drive cycle, not a stale historical max. */
-            g_motor_power_peak[index] = 0;
-        }
-        else if(power > g_motor_power_peak[index]) {
+        if(power > g_motor_power_peak[index]) {
             g_motor_power_peak[index] = power;
         }
     }
@@ -557,12 +561,21 @@ static void dashboard_apply_data(uint32_t dirty_mask)
             int64_t centiwatt = -((int64_t)g_dashboard_data.sum_voltage_dv *
                                   (int64_t)g_dashboard_data.sum_current_da);
             power_live = (centiwatt > 0) ? (int32_t)((centiwatt + 50000) / 100000) : 0;
+            g_power_peak_seen = 1U;
             if(power_live > g_power_peak) g_power_peak = power_live;
         }
         Dash_View_SetBattery(((valid & DASH_VALID_SOC) != 0U) ? g_dashboard_data.soc : DASH_VIEW_INVALID,
                              ((valid & DASH_VALID_HV_V) != 0U) ? g_dashboard_data.sum_voltage : DASH_VIEW_INVALID,
                              ((valid & DASH_VALID_HV_I) != 0U) ? g_dashboard_data.sum_current : DASH_VIEW_INVALID);
-        Dash_View_SetPower(power_live, g_power_peak);
+        Dash_View_SetPower(power_live, (g_power_peak_seen != 0U) ? g_power_peak : DASH_VIEW_INVALID);
+        /* 放电为负：取 -I，充电和回收不计入。显示按整安培截断，与 HV 行一致。 */
+        if((valid & DASH_VALID_HV_I) != 0U) {
+            const int32_t discharge_da = -g_dashboard_data.sum_current_da;
+            g_current_peak_seen = 1U;
+            if(discharge_da > g_current_peak_da) g_current_peak_da = discharge_da;
+        }
+        Dash_View_SetCurrentPeak((g_current_peak_seen != 0U) ? (g_current_peak_da / 10) :
+                                 DASH_VIEW_INVALID);
         /* can.c: max over the fresh motor/inverter/IGBT temperatures. */
         Dash_View_SetMaxTemp(((valid & (DASH_VALID_MOTOR_TEMP | DASH_VALID_INV_TEMP |
                                         DASH_VALID_IGBT_TEMP)) != 0U) ?
@@ -600,6 +613,15 @@ static void dashboard_apply_data(uint32_t dirty_mask)
         else {
             Dash_View_SetLowVoltage(DASH_VIEW_INVALID, 0, 0);
         }
+    }
+    if((dirty_mask & DASH_DIRTY_SOP) != 0U) {
+        /* DBC BO_1184/BO_1187: 功率与电流是两帧，各自判断新鲜度。 */
+        const uint8_t power_ok = ((valid & DASH_VALID_SOP_POWER) != 0U) ? 1U : 0U;
+        const uint8_t current_ok = ((valid & DASH_VALID_SOP_CURRENT) != 0U) ? 1U : 0U;
+        Dash_View_SetSop(power_ok ? g_dashboard_data.sop_discharge_power_dkw : DASH_VIEW_INVALID,
+                         power_ok ? g_dashboard_data.sop_charge_power_dkw : DASH_VIEW_INVALID,
+                         current_ok ? g_dashboard_data.sop_discharge_current_da : DASH_VIEW_INVALID,
+                         current_ok ? g_dashboard_data.sop_charge_current_da : DASH_VIEW_INVALID);
     }
     if((dirty_mask & DASH_DIRTY_FANS) != 0U) {
         /* DBC BO_1442: three RPM values, two measured duty cycles. */
@@ -658,6 +680,13 @@ void Dashboard_UI_SubmitData(const dashboard_data_t * data)
     if((valid_changed & DASH_VALID_FAN) != 0U) {
         dirty_mask |= DASH_DIRTY_FANS;
     }
+    if((g_pending_dashboard_data.sop_discharge_power_dkw != data->sop_discharge_power_dkw) ||
+       (g_pending_dashboard_data.sop_charge_power_dkw != data->sop_charge_power_dkw) ||
+       (g_pending_dashboard_data.sop_discharge_current_da != data->sop_discharge_current_da) ||
+       (g_pending_dashboard_data.sop_charge_current_da != data->sop_charge_current_da) ||
+       ((valid_changed & (DASH_VALID_SOP_POWER | DASH_VALID_SOP_CURRENT)) != 0U)) {
+        dirty_mask |= DASH_DIRTY_SOP;
+    }
     for(fan = 0U; fan < 3U; fan++) {
         if((g_pending_dashboard_data.fan_rpm[fan] != data->fan_rpm[fan]) ||
            ((fan < 2U) && (g_pending_dashboard_data.fan_pwm_duty[fan] != data->fan_pwm_duty[fan]))) {
@@ -698,6 +727,10 @@ void Dashboard_UI_SubmitData(const dashboard_data_t * data)
     for(fan = 0U; fan < 2U; fan++) {
         g_pending_dashboard_data.fan_pwm_duty[fan] = data->fan_pwm_duty[fan];
     }
+    g_pending_dashboard_data.sop_discharge_power_dkw = data->sop_discharge_power_dkw;
+    g_pending_dashboard_data.sop_charge_power_dkw = data->sop_charge_power_dkw;
+    g_pending_dashboard_data.sop_discharge_current_da = data->sop_discharge_current_da;
+    g_pending_dashboard_data.sop_charge_current_da = data->sop_charge_current_da;
     for(index = 0; index < 4U; index++) {
         g_pending_dashboard_data.torque[index] = data->torque[index];
         g_pending_dashboard_data.motor_enable[index] = data->motor_enable[index];
@@ -1191,6 +1224,13 @@ void Dashboard_UI_Process(void)
             g_dashboard_data.lv_bus_current_cA = g_pending_dashboard_data.lv_bus_current_cA;
             g_dashboard_data.lv_bus_power_dW = g_pending_dashboard_data.lv_bus_power_dW;
             dashboard_copy_valid(DASH_VALID_LV_BUS);
+        }
+        if((dashboard_mask & DASH_DIRTY_SOP) != 0U) {
+            g_dashboard_data.sop_discharge_power_dkw = g_pending_dashboard_data.sop_discharge_power_dkw;
+            g_dashboard_data.sop_charge_power_dkw = g_pending_dashboard_data.sop_charge_power_dkw;
+            g_dashboard_data.sop_discharge_current_da = g_pending_dashboard_data.sop_discharge_current_da;
+            g_dashboard_data.sop_charge_current_da = g_pending_dashboard_data.sop_charge_current_da;
+            dashboard_copy_valid(DASH_VALID_SOP_POWER | DASH_VALID_SOP_CURRENT);
         }
         if((dashboard_mask & DASH_DIRTY_FANS) != 0U) {
             for(uint32_t fan = 0U; fan < 3U; fan++) {

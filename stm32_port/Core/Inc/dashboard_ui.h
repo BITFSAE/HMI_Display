@@ -25,6 +25,8 @@ extern "C" {
 #define DASH_VALID_DIAG_FL_FR  (1UL << 12)  /* 0x504: Diagnostic_number_3/4 */
 #define DASH_VALID_LV_BUS      (1UL << 13)  /* 0x5A0, not the INA226-offline placeholder */
 #define DASH_VALID_FAN         (1UL << 14)  /* 0x5A2 */
+#define DASH_VALID_SOP_POWER   (1UL << 15)  /* 0x4A0, LimitsValid=1 且 CRC/版本通过 */
+#define DASH_VALID_SOP_CURRENT (1UL << 16)  /* 0x4A3, 版本通过且 InputHealth bit7=1 */
 
 typedef struct {
 	/* Display speed in integer km/h. CAN GPS_Speed uses 0.1 km/h raw units. */
@@ -96,6 +98,12 @@ typedef struct {
 	/* DBC BO_1442 FanController_Status 0x5A2: Fan_PWM1/2_Duty (1%), 实测占空比;
 	 * DBC 只定义两路实测占空比, Fan3 无独立信号 */
 	int32_t fan_pwm_duty[2];
+	/* DBC BO_1184 BMS_SOPLimits 0x4A0: DischargePowerLimit/ChargePowerLimit (0.1 kW) */
+	int32_t sop_discharge_power_dkw;
+	int32_t sop_charge_power_dkw;
+	/* DBC BO_1187 BMS_SOPStatus 0x4A3: DischargeCurrentLimit/ChargeCurrentLimit (0.1 A) */
+	int32_t sop_discharge_current_da;
+	int32_t sop_charge_current_da;
 	/* DASH_VALID_* bits; fields whose bit is clear are not meaningful. */
 	uint32_t valid_mask;
 } dashboard_data_t;
