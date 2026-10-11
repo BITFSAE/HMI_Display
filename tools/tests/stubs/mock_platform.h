@@ -68,6 +68,8 @@ typedef struct {uint32_t FilterActivation,FilterBank,FilterFIFOAssignment,Filter
 #define ENABLE 1
 #define DISABLE 0
 int HAL_CAN_ConfigFilter(CAN_HandleTypeDef *,CAN_FilterTypeDef *);
+#define HAL_CAN_ERROR_BOF 0x00000004U
+uint32_t HAL_CAN_GetError(CAN_HandleTypeDef *);
 uint32_t HAL_CAN_GetRxFifoFillLevel(CAN_HandleTypeDef *,uint32_t);
 int HAL_CAN_GetRxMessage(CAN_HandleTypeDef *,uint32_t,CAN_RxHeaderTypeDef *,uint8_t *);
 uint32_t HAL_CAN_GetTxMailboxesFreeLevel(CAN_HandleTypeDef *);
@@ -77,9 +79,6 @@ typedef struct {int unused;} UART_HandleTypeDef, DMA_HandleTypeDef;
 #define __HAL_DMA_GET_COUNTER(handle) (test_dma_ndtr)
 int HAL_UART_Transmit(UART_HandleTypeDef *,uint8_t *,uint16_t,uint32_t);
 static inline uint32_t HAL_GetTick(void) {return test_tick;}
-typedef struct {uint32_t ErrorCode;} SD_HandleTypeDef;
-extern SD_HandleTypeDef hsd;
-extern uint8_t g_sd_ready;
 #define LED_RED_GPIO_Port ((void *)1)
 #define LED_GREEN_GPIO_Port ((void *)1)
 #define LED_RED_Pin 1
@@ -111,22 +110,22 @@ static inline int HAL_TIM_PWM_Init(TIM_HandleTypeDef *h) {(void)h;return HAL_OK;
 static inline int HAL_TIM_PWM_ConfigChannel(TIM_HandleTypeDef *h,TIM_OC_InitTypeDef *c,uint32_t ch) {(void)h;(void)c;(void)ch;return HAL_OK;}
 static inline int HAL_TIM_PWM_Start(TIM_HandleTypeDef *h,uint32_t ch) {(void)h;(void)ch;return HAL_OK;}
 
-typedef int FATFS,FRESULT;
-typedef unsigned UINT;
-typedef struct {unsigned file;} FIL;
-#define FR_OK 0
-#define FR_DISK_ERR 1
-#define FR_NO_FILE 4
-#define FA_READ 1
-#define FA_WRITE 2
-#define FA_CREATE_ALWAYS 4
-extern FATFS SDFatFS;
-extern char SDPath[];
-FRESULT f_mount(FATFS *,const char *,int);
-FRESULT f_open(FIL *,const char *,unsigned);
-FRESULT f_read(FIL *,void *,unsigned,UINT *);
-FRESULT f_write(FIL *,const void *,unsigned,UINT *);
-FRESULT f_close(FIL *);
-FRESULT f_sync(FIL *);
+typedef int HAL_StatusTypeDef;
+typedef struct {uint32_t TypeErase,Banks,Sector,NbSectors,VoltageRange;} FLASH_EraseInitTypeDef;
+#define FLASH_TYPEPROGRAM_WORD 2U
+#define FLASH_TYPEERASE_SECTORS 0U
+#define FLASH_VOLTAGE_RANGE_3 2U
+#define FLASH_SECTOR_7 7U
+#define FLASH_FLAG_EOP 0x01U
+#define FLASH_FLAG_OPERR 0x02U
+#define FLASH_FLAG_WRPERR 0x10U
+#define FLASH_FLAG_PGAERR 0x20U
+#define FLASH_FLAG_PGPERR 0x40U
+#define FLASH_FLAG_PGSERR 0x80U
+#define __HAL_FLASH_CLEAR_FLAG(flags) ((void)(flags))
+HAL_StatusTypeDef HAL_FLASH_Unlock(void);
+HAL_StatusTypeDef HAL_FLASH_Lock(void);
+HAL_StatusTypeDef HAL_FLASH_Program(uint32_t,uint32_t,uint64_t);
+HAL_StatusTypeDef HAL_FLASHEx_Erase(FLASH_EraseInitTypeDef *,uint32_t *);
 #endif
 /* USER CODE END Host_Test_Platform */

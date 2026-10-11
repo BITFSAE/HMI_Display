@@ -1,4 +1,0 @@
-../Core/Src/delay.c:138:6:delay_init	1
-../Core/Src/delay.c:229:6:delay_us	3
-../Core/Src/delay.c:250:6:delay_ms	3
-../Core/Src/delay.c:275:6:HAL_Delay	1

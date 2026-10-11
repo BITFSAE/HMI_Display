@@ -5,10 +5,6 @@
 
 uint32_t test_tick=1000, test_primask, test_dma_ndtr=512;
 unsigned test_mutex_depth;
-SD_HandleTypeDef hsd;
-uint8_t g_sd_ready=1;
-FATFS SDFatFS;
-char SDPath[]="0:";
 UART_HandleTypeDef huart3;
 DMA_HandleTypeDef hdma_usart3_rx;
 CAN_HandleTypeDef hcan1={CAN1},hcan2={CAN2};
@@ -22,31 +18,63 @@ int HAL_UART_Transmit(UART_HandleTypeDef *h,uint8_t *b,uint16_t n,uint32_t timeo
 static CAN_RxHeaderTypeDef test_rx_header;
 static uint8_t test_rx_data[8];
 static unsigned test_rx_pending,test_tx_count,test_can_speed_tenths;
+static unsigned test_tx_id_count[0x800];
+static uint8_t test_tx_id_data[0x800][8];
+static unsigned test_can_error;
 static CAN_TxHeaderTypeDef test_tx_header;
 static uint8_t test_tx_data[8];
 int HAL_CAN_ConfigFilter(CAN_HandleTypeDef *h,CAN_FilterTypeDef *f) {(void)h;(void)f;return HAL_OK;}
+uint32_t HAL_CAN_GetError(CAN_HandleTypeDef *h) {(void)h;return test_can_error;}
 uint32_t HAL_CAN_GetRxFifoFillLevel(CAN_HandleTypeDef *h,uint32_t fifo) {(void)h;(void)fifo;return test_rx_pending;}
 int HAL_CAN_GetRxMessage(CAN_HandleTypeDef *h,uint32_t fifo,CAN_RxHeaderTypeDef *rx,uint8_t *data) {(void)h;(void)fifo;assert(test_rx_pending);test_rx_pending--;*rx=test_rx_header;memcpy(data,test_rx_data,8);return HAL_OK;}
 uint32_t HAL_CAN_GetTxMailboxesFreeLevel(CAN_HandleTypeDef *h) {(void)h;return 1;}
-int HAL_CAN_AddTxMessage(CAN_HandleTypeDef *h,CAN_TxHeaderTypeDef *tx,uint8_t *data,uint32_t *mail) {(void)h;*mail=0;test_tx_count++;test_tx_header=*tx;memcpy(test_tx_data,data,8);if(tx->StdId==0x301)test_can_speed_tenths=data[0]|((unsigned)data[1]<<8);return HAL_OK;}
+int HAL_CAN_AddTxMessage(CAN_HandleTypeDef *h,CAN_TxHeaderTypeDef *tx,uint8_t *data,uint32_t *mail) {(void)h;*mail=0;test_tx_count++;test_tx_header=*tx;memcpy(test_tx_data,data,8);if(tx->StdId<0x800){test_tx_id_count[tx->StdId]++;memcpy(test_tx_id_data[tx->StdId],data,8);}if(tx->StdId==0x301)test_can_speed_tenths=data[0]|((unsigned)data[1]<<8);return HAL_OK;}
 
-static struct {uint8_t bytes[128];unsigned size;} files[3];
-static int test_io_error,test_short_write,test_mounted;
-static int test_open_error_file=-1,test_read_error_file=-1,test_close_error_file=-1;
-static int test_sync_error;
-FRESULT f_mount(FATFS *fs,const char *path,int opt) {(void)path;(void)opt;assert(test_mutex_depth);test_mounted=fs!=NULL;return fs&&test_io_error?FR_DISK_ERR:FR_OK;}
-FRESULT f_open(FIL *fil,const char *path,unsigned mode) {assert(test_mounted&&test_mutex_depth);fil->file=strstr(path,"ODO_A")?0:strstr(path,"ODO_B")?1:2;if((int)fil->file==test_open_error_file)return FR_DISK_ERR;if(mode&FA_CREATE_ALWAYS)files[fil->file].size=0;return files[fil->file].size||(mode&FA_CREATE_ALWAYS)?FR_OK:FR_NO_FILE;}
-FRESULT f_read(FIL *fil,void *data,unsigned size,UINT *bytes) {assert(test_mutex_depth);if((int)fil->file==test_read_error_file)return FR_DISK_ERR;*bytes=files[fil->file].size<size?files[fil->file].size:size;memcpy(data,files[fil->file].bytes,*bytes);return FR_OK;}
-FRESULT f_write(FIL *fil,const void *data,unsigned size,UINT *bytes) {assert(test_mutex_depth&&size<=128);*bytes=test_short_write?size-1:size;memcpy(files[fil->file].bytes,data,*bytes);files[fil->file].size=*bytes;return FR_OK;}
-FRESULT f_close(FIL *fil) {assert(test_mutex_depth);return (int)fil->file==test_close_error_file?FR_DISK_ERR:FR_OK;}
-FRESULT f_sync(FIL *fil) {(void)fil;assert(test_mutex_depth);return test_sync_error?FR_DISK_ERR:FR_OK;}
+/* Internal flash sector 7 with NOR semantics: programming only clears bits and
+ * erase sets every bit. Faults are injected per call. */
+#define ODO_TEST_BASE 0x08060000UL
+#define ODO_TEST_WORDS (0x20000U/4U)
+static uint32_t flash_words[ODO_TEST_WORDS];
+static unsigned flash_unlocked,flash_erase_calls,flash_program_calls;
+static int flash_tear_call=-1,flash_fail_programs,flash_ignore_programs,flash_fail_erase;
+static uint32_t flash_read(uint32_t address)
+{
+    assert(address>=ODO_TEST_BASE&&address<ODO_TEST_BASE+ODO_TEST_WORDS*4U&&(address&3U)==0U);
+    return flash_words[(address-ODO_TEST_BASE)/4U];
+}
+#define ODO_FLASH_READ32(address) flash_read(address)
+#define ODO_FLUSH_DATA_CACHE() ((void)0)
+HAL_StatusTypeDef HAL_FLASH_Unlock(void) {assert(!flash_unlocked);flash_unlocked=1;return HAL_OK;}
+HAL_StatusTypeDef HAL_FLASH_Lock(void) {assert(flash_unlocked);flash_unlocked=0;return HAL_OK;}
+HAL_StatusTypeDef HAL_FLASH_Program(uint32_t type,uint32_t address,uint64_t data)
+{
+    assert(flash_unlocked&&type==FLASH_TYPEPROGRAM_WORD&&data<=UINT32_MAX);
+    unsigned call=flash_program_calls++;
+    (void)flash_read(address);                                  /* range and alignment check */
+    if(flash_fail_programs)return HAL_ERROR;
+    if(flash_ignore_programs)return HAL_OK;
+    uint32_t *word=&flash_words[(address-ODO_TEST_BASE)/4U];
+    if((int)call==flash_tear_call) {*word&=(uint32_t)data|0xFFFF0000U;return HAL_ERROR;} /* power lost mid-word */
+    *word&=(uint32_t)data;
+    return HAL_OK;
+}
+HAL_StatusTypeDef HAL_FLASHEx_Erase(FLASH_EraseInitTypeDef *init,uint32_t *error)
+{
+    assert(flash_unlocked&&init->TypeErase==FLASH_TYPEERASE_SECTORS&&init->Sector==FLASH_SECTOR_7);
+    assert(init->NbSectors==1&&init->VoltageRange==FLASH_VOLTAGE_RANGE_3);
+    flash_erase_calls++;
+    if(flash_fail_erase) {*error=7;return HAL_ERROR;}
+    memset(flash_words,0xFF,sizeof(flash_words));*error=0xFFFFFFFFU;return HAL_OK;
+}
 
 /* Compile actual application code; only the Cube-generated CAN init/MSP
  * sections are omitted by run_firmware_tests.py. Hardware/RTOS are mocks. */
 #include "can_app.inc"
-#include "../../stm32_port/Core/Src/sd_log.c"
+#include "../../stm32_port/Core/Src/sop.c"
+#include "../../stm32_port/Core/Src/odometer_flash.c"
 #include "../../stm32_port/Core/Src/gps_lap.c"
 #include "../../stm32_port/Core/Src/gps.c"
+#include "../../stm32_port/Core/lvgl/lvgl.h"
 #ifndef DASHBOARD_UI_SOURCE
 #define DASHBOARD_UI_SOURCE "../../stm32_port/Core/Src/dashboard_ui.c"
 #endif
@@ -77,7 +105,7 @@ static void service_can(void)
 {
     User_CAN_RxItem_t frame;
     while(xQueueReceive(g_can_rx_queue,&frame,0)==pdPASS) {
-        if(frame.fifo==0)User_CAN_ProcessFifo0(&frame);else User_CAN_ProcessFifo1(&frame);
+        User_CAN_ProcessFifo0(&frame);
     }
 }
 static void receive(uint16_t id,unsigned dlc,unsigned count)
@@ -101,77 +129,302 @@ static void test_can(void)
     assert(test_tx_header.StdId==0x703&&test_tx_header.DLC==2&&test_tx_data[0]==7);
     test_rx_header.RTR=1;test_rx_pending=1;invalid=g_can_rx_invalid_count;
     HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);assert(g_can_rx_invalid_count==invalid+1);
-    test_rx_header=(CAN_RxHeaderTypeDef){.StdId=0x50,.DLC=8};
-    memset(test_rx_data,0,8);test_rx_data[0]=0x55;test_rx_data[1]=0x51;test_rx_data[2]=0x34;test_rx_data[3]=0x12;
-    test_rx_pending=1;HAL_CAN_RxFifo1MsgPendingCallback(&hcan1);service_can();
-    assert(test_tx_header.StdId==0x61&&g_can_dashboard_data.imu_accel[0]==0x1234);
-    test_rx_header.DLC=2;test_rx_pending=1;invalid=g_can_rx_invalid_count;
-    HAL_CAN_RxFifo1MsgPendingCallback(&hcan1);service_can();assert(g_can_rx_invalid_count==invalid+1);
+    /* 0x050 的 IMU 设备已停用，车手屏不再转发 0x060..0x066；即使该 ID 到达也不得产生发送。 */
+    memset(test_rx_data,0,8);test_rx_data[0]=0x55;test_rx_data[1]=0x51;
+    unsigned tx_before=test_tx_count;
+    receive(0x50,8,1);service_can();assert(test_tx_count==tx_before);
     puts("CAN: bounded FIFO, queue saturation, short/remote frames, valid DLCs and steering relay passed");
 }
-static void store_record(unsigned file,uint32_t seq,uint32_t distance,int corrupt)
+/* Every DASH_VALID_* bit, for tests that feed hand-built telemetry to the UI. */
+#define TEST_ALL_VALID ((DASH_VALID_SOP_CURRENT<<1)-1U)
+static void inject(uint16_t id,unsigned dlc,const uint8_t *bytes)
 {
-    sd_odometer_record_t r={SD_ODOMETER_MAGIC,seq,distance,sd_odometer_checksum(seq,distance)};
-    if(corrupt)r.checksum^=1;
-    memcpy(files[file].bytes,&r,sizeof(r));files[file].size=sizeof(r);
+    memset(test_rx_data,0,8);memcpy(test_rx_data,bytes,dlc);
+    receive(id,dlc,1);service_can();
 }
-static void test_sd(void)
+static void inject_wheel(uint16_t id,unsigned dlc,uint8_t first)
 {
-    uint32_t distance;
-    SD_Odometer_StartTask();store_record(0,10,1234,0);store_record(1,11,1500,0);
-    /* Storage faults must leave initialization pending and preserve both
-     * records. GPS polling/configuration and CAN telemetry keep running. */
-    for(unsigned failure=0;failure<6;failure++) {
-        uint8_t records[2][128];
-        memcpy(records[0],files[0].bytes,128);memcpy(records[1],files[1].bytes,128);
-        g_sd_initial_odometer_ready=0;g_odometer_initialized=0;
-        if(failure==0)g_sd_ready=0;
-        if(failure==1)test_io_error=1;
-        if(failure==2)test_open_error_file=1;
-        if(failure==3)test_read_error_file=1;
-        if(failure==4)test_close_error_file=1;
-        if(failure==5)test_read_error_file=0;
-        unsigned failures=g_sd_odometer_load_fail_count;
-        assert(!sd_odometer_initialize()&&g_sd_odometer_load_fail_count==failures+1);
-        distance=999;assert(!SD_Odometer_GetInitial(&distance)&&distance==999);
-        assert(!sd_odometer_save(1));
-        unsigned sent=test_tx_count;g_gps_can_last_tick=0;
-        GPS_WaitAndDrain(100);assert(!g_odometer_initialized&&test_tx_count>sent);
-        assert(!memcmp(records[0],files[0].bytes,128)&&!memcmp(records[1],files[1].bytes,128));
-        assert(test_mutex_depth==0&&!test_mounted);
-        if(failure==1) {
-            SD_Log_InitAndWrite(NULL);assert(g_sd_diag_stage==SD_DIAG_MOUNT_FAILED&&!test_mounted&&test_mutex_depth==0);
-        }
-        g_sd_ready=1;test_io_error=0;test_open_error_file=-1;test_read_error_file=-1;test_close_error_file=-1;
-        assert(sd_odometer_initialize());gps_odometer_init();assert(g_odometer_total_m==1500);
-        g_odometer_total_m=1540;gps_odometer_init();assert(g_odometer_total_m==1540);
+    test_rx_header=(CAN_RxHeaderTypeDef){.StdId=id,.DLC=dlc};
+    memset(test_rx_data,0,8);test_rx_data[0]=first;test_rx_pending=1;
+    HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);service_can();
+}
+static void test_can_decode(void)
+{
+    const dashboard_data_t *d=&g_can_dashboard_data;
+    /* Nothing is valid before the first frame. */
+    assert((d->valid_mask&(DASH_VALID_SOC|DASH_VALID_LV_BUS|DASH_VALID_FAN|DASH_VALID_TORQUE))==0);
+
+    /* 0x503/0x504 carry AMK1..4 = RL, RR, FL, FR; dashboard order is LF, LR, RF, RR. */
+    {
+        const uint8_t a[8]={0x31,0x02,0,0, 0x22,0,0,0},b[8]={0x33,0,0,0, 0x44,0,0,0};
+        inject(0x503,8,a);inject(0x504,8,b);
+        assert(d->diag_num[1]==0x231&&d->diag_num[3]==0x22);   /* LR=RL=#1, RR=RR=#2 */
+        assert(d->diag_num[0]==0x33&&d->diag_num[2]==0x44);    /* LF=FL=#3, RF=FR=#4 */
+        assert((d->valid_mask&(DASH_VALID_DIAG_RL_RR|DASH_VALID_DIAG_FL_FR))==(DASH_VALID_DIAG_RL_RR|DASH_VALID_DIAG_FL_FR));
     }
-    assert(SD_Odometer_Load(&distance)&&distance==1500&&test_mutex_depth==0);
-    store_record(1,11,1500,1);assert(SD_Odometer_Load(&distance)&&distance==1234);
-    store_record(0,UINT32_MAX,2000,0);store_record(1,0,2100,0);
-    assert(SD_Odometer_Load(&distance)&&distance==2100);
-    assert(sd_odometer_save(2200));assert(SD_Odometer_Load(&distance)&&distance==2200);
-    uint32_t seq=g_sd_odometer_sequence;test_short_write=1;
-    assert(!sd_odometer_save(2300)&&g_sd_odometer_sequence==seq&&test_mutex_depth==0&&!test_mounted);test_short_write=0;
-    assert(SD_Odometer_Load(&distance)&&distance==2200);
-    /* Sequence parity need not match the file containing the latest record. */
-    store_record(0,UINT32_MAX,3000,0);files[1].size=0;
-    assert(SD_Odometer_Load(&distance)&&distance==3000);
-    test_short_write=1;assert(!sd_odometer_save(3100));test_short_write=0;
-    assert(SD_Odometer_Load(&distance)&&distance==3000);
-    assert(sd_odometer_save(3100)&&SD_Odometer_Load(&distance)&&distance==3100&&g_sd_odometer_sequence==0);
-    seq=g_sd_odometer_sequence;unsigned next=g_sd_odometer_next_file;
-    uint8_t preserved[128];memcpy(preserved,files[next^1].bytes,128);
-    test_sync_error=1;assert(!sd_odometer_save(3200)&&g_sd_odometer_sequence==seq&&g_sd_odometer_next_file==next);test_sync_error=0;
-    test_close_error_file=next;assert(!sd_odometer_save(3300)&&g_sd_odometer_sequence==seq&&g_sd_odometer_next_file==next);test_close_error_file=-1;
-    assert(!memcmp(preserved,files[next^1].bytes,128)&&test_mutex_depth==0&&!test_mounted);
-    test_io_error=1;assert(!SD_Odometer_Load(&distance)&&!sd_odometer_save(3400)&&test_mutex_depth==0&&!test_mounted);test_io_error=0;
-    files[0].size=files[1].size=0;g_sd_initial_odometer_ready=0;
-    assert(sd_odometer_initialize()&&SD_Odometer_GetInitial(&distance)&&distance==0);
-    assert(sd_odometer_save(2200));
-    SD_Log_InitAndWrite(NULL);assert(g_sd_diag_stage==SD_DIAG_OK&&test_mutex_depth==0);
-    assert(sd_odometer_initialize());g_odometer_initialized=0;gps_odometer_init();assert(g_odometer_total_m==2200);
-    puts("SD: startup I/O failures/recovery, empty card, preserved alternate record, sequence wrap and mutex cleanup passed");
+    /* Per-wheel 0x506 temperatures and MAX T over fresh sources only. */
+    {
+        const uint8_t t[8]={0x2C,0x01, 0x90,0x01, 0xF4,0x01, 0x58,0x02};  /* RL 30, RR 40, FL 50, FR 60 degC */
+        inject(0x506,8,t);
+        assert(d->motor_temp[0]==50&&d->motor_temp[1]==30&&d->motor_temp[2]==60&&d->motor_temp[3]==40);
+        assert(d->max_temperature==60);
+    }
+    /* 0x4B0: 549.1 V, -85.7 A (discharge is negative), SOC 77, all three flags set. */
+    {
+        const uint8_t pack[7]={0x15,0x73, 0xFC,0xA7, 77, 0x1F, 0x50};
+        const uint32_t valid=DASH_VALID_SOC|DASH_VALID_HV_V|DASH_VALID_HV_I;
+        unsigned peak_before;
+        inject(0x4B0,7,pack);
+        assert(d->sum_voltage_dv==5491&&d->sum_voltage==549&&d->sum_current_da==-857&&d->sum_current==-85&&d->soc==77);
+        assert((d->valid_mask&valid)==valid);
+        /* P NOW is the discharge power: 549.1 V x 85.7 A = 47.06 kW -> 47. */
+        test_tick+=300;Dashboard_UI_Process();
+        assert(g_power_peak==47&&g_power_peak_seen);peak_before=(unsigned)g_power_peak;
+        /* The PK row tracks the discharge current in 0.1 A: -85.7 A -> 857. */
+        assert(g_current_peak_seen&&g_current_peak_da==857);
+        /* Charging (+2.9 A) is not drive power and must not move the peak. */
+        {
+            const uint8_t charge[7]={0x15,0x73, 0x00,0x1D, 77, 0x1F, 0x50};
+            inject(0x4B0,7,charge);test_tick+=300;Dashboard_UI_Process();
+            assert(d->sum_current_da==29&&(unsigned)g_power_peak==peak_before);
+            assert(g_current_peak_da==857);                       /* charging never raises the current peak */
+        }
+        /* SOC flag clear (BMS default 80 % before initialisation): SOC invalid, V and I stay valid. */
+        {
+            const uint8_t no_soc[7]={0x15,0x73, 0x00,0x1D, 80, 0x1B, 0x50};
+            inject(0x4B0,7,no_soc);
+            assert((d->valid_mask&DASH_VALID_SOC)==0&&(d->valid_mask&(DASH_VALID_HV_V|DASH_VALID_HV_I))==(DASH_VALID_HV_V|DASH_VALID_HV_I));
+            assert(d->soc==77);                                   /* the unqualified 80 is not stored */
+        }
+        /* No flags: nothing from this frame is usable. SOC above 100 % is rejected even when flagged. */
+        {
+            const uint8_t none[7]={0x15,0x73, 0x00,0x1D, 77, 0x00, 0x50},bad[7]={0x15,0x73, 0x00,0x1D, 101, 0x1F, 0x50};
+            inject(0x4B0,7,none);assert((d->valid_mask&valid)==0);
+            inject(0x4B0,7,bad);assert((d->valid_mask&DASH_VALID_SOC)==0&&(d->valid_mask&DASH_VALID_HV_V)!=0);
+        }
+    }
+    /* PDM: only all four placeholders together mean the INA226 is offline. */
+    {
+        const uint8_t on[8]={0x35,0xFC, 0x04,0xD8, 0x06,0xAB, 0x00,0x10};     /* 13.820 V, 12.40 A */
+        const uint8_t sat[8]={0x7F,0xFF, 0x04,0xD8, 0x06,0xAB, 0x00,0x10};    /* saturated voltage only */
+        const uint8_t off[8]={0x7F,0xFF, 0x7F,0xFF, 0xFF,0xFF, 0xFF,0xFF};
+        inject(0x5A0,8,on);assert((d->valid_mask&DASH_VALID_LV_BUS)!=0&&d->lv_bus_voltage_mV==13820);
+        inject(0x5A0,8,sat);assert((d->valid_mask&DASH_VALID_LV_BUS)!=0&&d->lv_bus_voltage_mV==32767);
+        inject(0x5A0,8,off);assert((d->valid_mask&DASH_VALID_LV_BUS)==0&&d->lv_bus_voltage_mV==32767);
+        inject(0x5A0,8,on);assert((d->valid_mask&DASH_VALID_LV_BUS)!=0&&d->lv_bus_voltage_mV==13820);
+    }
+    /* 0x305 油压推算刹车条：2.1 kPa(2100)→0%，4.9 kPa(4900)→90%，线性并限幅到 0..100。 */
+    {
+        struct {uint16_t oil;int pct;} const cases[]={{0,0},{2099,0},{2100,0},{3500,45},{4900,90},{5200,99},{5300,100},{65535,100}};
+        for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
+            const uint8_t f[6]={0,0, 0xF4,0x01, (uint8_t)(cases[i].oil&0xFF),(uint8_t)(cases[i].oil>>8)};
+            inject(0x305,6,f);
+            assert((d->valid_mask&DASH_VALID_BRAKE)!=0&&d->brake_pct==cases[i].pct);
+            assert(d->oil_pressure==cases[i].oil&&d->aps_open_pct==50);          /* 油门仍取 byte2..3 */
+        }
+    }
+    /* Silence drops the valid bits: ECU frames after 1 s, BMS after 2 s, never-seen sources stay invalid. */
+    {
+        const uint8_t fan[8]={0x08,0x00, 0x08,0x00, 0x08,0x00, 40,41};
+        const uint8_t pack[7]={0x15,0x73, 0xFC,0xA7, 77, 0x1F, 0x50};
+        inject(0x5A2,8,fan);inject(0x4B0,7,pack);
+        assert((d->valid_mask&DASH_VALID_FAN)!=0&&(d->valid_mask&DASH_VALID_SOC)!=0&&(d->valid_mask&DASH_VALID_MOTOR_TEMP)!=0);
+        test_tick+=1001;User_CAN_ServiceTimeouts(test_tick);
+        assert((d->valid_mask&DASH_VALID_MOTOR_TEMP)==0&&d->max_temperature==0);   /* ECU temperatures timed out */
+        assert((d->valid_mask&DASH_VALID_FAN)!=0&&(d->valid_mask&DASH_VALID_SOC)!=0); /* fan 1.5 s, BMS 2 s still fresh */
+        test_tick+=600;User_CAN_ServiceTimeouts(test_tick);
+        assert((d->valid_mask&DASH_VALID_FAN)==0&&(d->valid_mask&DASH_VALID_SOC)!=0);
+        test_tick+=500;User_CAN_ServiceTimeouts(test_tick);
+        assert((d->valid_mask&(DASH_VALID_SOC|DASH_VALID_HV_V|DASH_VALID_HV_I))==0);
+        assert((d->valid_mask&(DASH_VALID_BRAKE|DASH_VALID_APS))==0);               /* 0x305 timed out: brake follows throttle */
+        Dashboard_UI_Process();test_tick+=300;Dashboard_UI_Process();
+        assert((Dashboard_UI_GetCurrentData()->valid_mask&DASH_VALID_SOC)==0);       /* and the UI copy follows */
+        inject(0x4B0,7,pack);assert((d->valid_mask&DASH_VALID_SOC)!=0);               /* data resumes */
+    }
+    /* BMS SOP V2: 0x4A0 power limits (CRC) and 0x4A3 current limits, separate freshness. */
+    {
+        /* Sample frames from vehicle-interfaces docs/CANB接口.md 4.4. */
+        const uint8_t power[8]={0xE4,0x02,0x28,0x00,0x05,0x02,0x01,0x29};   /* 74.0 kW / 4.0 kW, valid */
+        const uint8_t current[8]={0x08,0x07,0x50,0x00,0x00,0x00,0xFF,0x24}; /* 180.0 A / 8.0 A, inputs valid */
+        const uint8_t check[9]={'1','2','3','4','5','6','7','8','9'};
+        uint8_t frame[8];
+        unsigned invalid;
+        assert(Sop_Crc8(check,9)==0x4B);
+        assert((d->valid_mask&(DASH_VALID_SOP_POWER|DASH_VALID_SOP_CURRENT))==0);   /* nothing before the first frame */
+        inject(0x4A0,8,power);inject(0x4A3,8,current);
+        assert((d->valid_mask&(DASH_VALID_SOP_POWER|DASH_VALID_SOP_CURRENT))==(DASH_VALID_SOP_POWER|DASH_VALID_SOP_CURRENT));
+        assert(d->sop_discharge_power_dkw==740&&d->sop_charge_power_dkw==40);
+        assert(d->sop_discharge_current_da==1800&&d->sop_charge_current_da==80);
+        test_tick+=300;Dashboard_UI_Process();
+        assert(Dashboard_UI_GetCurrentData()->sop_discharge_power_dkw==740&&(Dashboard_UI_GetCurrentData()->valid_mask&DASH_VALID_SOP_POWER)!=0);
+        /* Rejected frames change nothing and are counted: bad CRC, version 1, reserved bit, short DLC. */
+        invalid=g_can_rx_invalid_count;
+        memcpy(frame,power,8);frame[0]=0x10;inject(0x4A0,8,frame);                 /* CRC no longer matches */
+        assert(d->sop_discharge_power_dkw==740);
+        memcpy(frame,power,8);frame[5]=1;frame[7]=Sop_Crc8((const uint8_t[]){0x04,0xA0,0xE4,0x02,0x28,0x00,0x05,1,0x01},9);
+        inject(0x4A0,8,frame);assert(d->sop_discharge_power_dkw==740);               /* valid CRC, wrong version */
+        memcpy(frame,power,8);frame[6]=0x03;frame[7]=Sop_Crc8((const uint8_t[]){0x04,0xA0,0xE4,0x02,0x28,0x00,0x05,0x02,0x03},9);
+        inject(0x4A0,8,frame);assert(d->sop_discharge_power_dkw==740);               /* reserved bit set */
+        inject(0x4A0,7,power);                                                       /* DLC 7 */
+        memcpy(frame,current,8);frame[7]=0x14;inject(0x4A3,8,frame);                 /* 0x4A3 version 1 */
+        assert(g_can_rx_invalid_count==invalid+5&&d->sop_discharge_current_da==1800);
+        /* LimitsValid=0: limits are not usable, power invalid but current stays. */
+        memcpy(frame,power,8);frame[0]=frame[1]=frame[2]=frame[3]=0;frame[6]=0;
+        frame[7]=Sop_Crc8((const uint8_t[]){0x04,0xA0,0,0,0,0,0x05,0x02,0x00},9);
+        inject(0x4A0,8,frame);
+        assert((d->valid_mask&DASH_VALID_SOP_POWER)==0&&(d->valid_mask&DASH_VALID_SOP_CURRENT)!=0);
+        /* InputHealth bit7 clear: current limits are not trusted. */
+        memcpy(frame,current,8);frame[6]=0x7F;inject(0x4A3,8,frame);
+        assert((d->valid_mask&DASH_VALID_SOP_CURRENT)==0);
+        /* Resume, then silence: power times out after 300 ms, current after 1.5 s. */
+        inject(0x4A0,8,power);inject(0x4A3,8,current);
+        test_tick+=301;User_CAN_ServiceTimeouts(test_tick);
+        assert((d->valid_mask&DASH_VALID_SOP_POWER)==0&&(d->valid_mask&DASH_VALID_SOP_CURRENT)!=0);
+        test_tick+=1300;User_CAN_ServiceTimeouts(test_tick);
+        assert((d->valid_mask&DASH_VALID_SOP_CURRENT)==0);
+        Dashboard_UI_Process();test_tick+=300;Dashboard_UI_Process();
+        assert((Dashboard_UI_GetCurrentData()->valid_mask&(DASH_VALID_SOP_POWER|DASH_VALID_SOP_CURRENT))==0);
+    }
+    /* Bus-off notification is counted. */
+    {
+        unsigned bus_off=g_can_bus_off_count;
+        test_can_error=0x1;HAL_CAN_ErrorCallback(&hcan1);assert(g_can_bus_off_count==bus_off);
+        test_can_error=HAL_CAN_ERROR_BOF;HAL_CAN_ErrorCallback(&hcan1);assert(g_can_bus_off_count==bus_off+1);
+        test_can_error=0;
+    }
+}
+static void test_steering(void)
+{
+    unsigned invalid=g_can_rx_invalid_count,relayed,commands;
+    /* 0x310: only ASCII '0'..'3' is relayed and shown. */
+    relayed=test_tx_id_count[0x310];
+    inject_wheel(0x310,8,0x35);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+1);
+    inject_wheel(0x310,8,0x2F);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+2);
+    inject_wheel(0x310,8,0x31);assert(test_tx_id_count[0x310]==relayed+1&&test_tx_id_data[0x310][0]==0x31);
+    /* 0x700: out-of-range level is dropped without a 0x703; a valid one is merged. */
+    commands=test_tx_id_count[0x703];
+    inject_wheel(0x700,1,9);assert(test_tx_id_count[0x703]==commands&&g_can_rx_invalid_count==invalid+3);
+    inject_wheel(0x700,1,5);assert(test_tx_id_count[0x703]==commands+1&&test_tx_id_data[0x703][0]==5);
+    /* 0x701: rising edge only. Held/repeated frames and a stuck 1 do not retrigger. */
+    g_pending_lap_toggle=0;
+    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1&&(test_tx_id_data[0x703][1]&1)==1&&test_tx_id_data[0x703][0]==5);
+    g_pending_lap_toggle=0;test_tick+=20;
+    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==0&&(test_tx_id_data[0x703][1]&1)==0);   /* repeat while held */
+    test_tick+=20;inject_wheel(0x701,1,0);assert(g_pending_lap_toggle==0);
+    test_tick+=20;inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1);                       /* 0 -> 1 */
+    g_pending_lap_toggle=0;test_tick+=100;
+    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==0);
+    test_tick+=400;inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1);                      /* single-shot sender without 0 frames */
+    g_pending_lap_toggle=0;
+    /* 0x702 is the same for the alert clear, carried in byte1 bit1. */
+    g_pending_alert_clear=0;
+    inject_wheel(0x702,1,1);assert(g_pending_alert_clear==1&&(test_tx_id_data[0x703][1]&2)==2);
+    g_pending_alert_clear=0;test_tick+=20;
+    inject_wheel(0x702,1,1);assert(g_pending_alert_clear==0&&(test_tx_id_data[0x703][1]&2)==0);
+}
+static void flash_blank(void) {memset(flash_words,0xFF,sizeof(flash_words));}
+static uint32_t odo_boot(void)
+{
+    uint32_t total=0xDEADBEEFU;
+    Odometer_Flash_Init();assert(Odometer_Flash_GetInitial(&total)&&!flash_unlocked);
+    return total;
+}
+/* Slot index of the newest valid record; ODO_SLOT_COUNT when there is none. */
+static uint32_t odo_last_valid_slot(void)
+{
+    uint32_t last=ODO_SLOT_COUNT,total;
+    for(uint32_t slot=0;slot<ODO_SLOT_COUNT;slot++)if(odo_read_slot(slot,&total)==ODO_SLOT_VALID)last=slot;
+    return last;
+}
+static void test_odometer(void)
+{
+    uint32_t total=777;
+    /* Nothing is read or written before Odometer_Flash_Init(). */
+    flash_blank();
+    assert(!Odometer_Flash_GetInitial(&total)&&total==777&&!Odometer_Flash_Save(5));
+    assert(g_odometer_flash_save_fail_count==1&&flash_program_calls==0);
+
+    /* Blank sector: starts at 0 without erasing; records survive a reboot. */
+    assert(odo_boot()==0&&flash_erase_calls==0);
+    for(uint32_t m=100;m<=500;m+=100)assert(Odometer_Flash_Save(m));
+    assert(odo_boot()==500&&odo_last_valid_slot()==4&&flash_erase_calls==0);
+    assert(Odometer_Flash_Save(600)&&odo_boot()==600&&odo_last_valid_slot()==5);
+    assert(!flash_unlocked&&g_odometer_flash_save_fail_count==1);
+
+    /* A failed write consumes the slot and the retry lands in the next one. */
+    flash_program_calls=0;
+    assert(Odometer_Flash_Save(700)&&odo_boot()==700);
+    /* Power lost halfway through the check word leaves a damaged slot. */
+    unsigned fails=g_odometer_flash_save_fail_count;
+    flash_tear_call=flash_program_calls+1;
+    uint32_t torn=odo_last_valid_slot()+1;
+    assert(Odometer_Flash_Save(800)&&odo_read_slot(torn,&total)==ODO_SLOT_DAMAGED);
+    flash_tear_call=-1;
+    assert(odo_last_valid_slot()==torn+1&&odo_boot()==800&&g_odometer_flash_save_fail_count==fails);
+    assert(Odometer_Flash_Save(900)&&odo_last_valid_slot()==torn+2&&odo_boot()==900);
+    /* Both attempts fail: report failure, keep the old record, never erase. */
+    flash_fail_programs=1;fails=g_odometer_flash_save_fail_count;
+    assert(!Odometer_Flash_Save(1000)&&g_odometer_flash_save_fail_count==fails+1);
+    flash_fail_programs=0;
+    assert(odo_boot()==900&&!flash_unlocked&&flash_erase_calls==0);
+    /* HAL reporting success without the data reaching flash is also a failure. */
+    flash_ignore_programs=1;
+    assert(!Odometer_Flash_Save(1100)&&g_odometer_flash_save_fail_count==fails+2);
+    flash_ignore_programs=0;
+    assert(odo_boot()==900&&Odometer_Flash_Save(1200)&&odo_boot()==1200);
+
+    /* Leftovers without a valid record (older firmware image, interrupted erase)
+     * are erased once; a damaged-only sector counts as empty. */
+    for(unsigned i=0;i<ODO_TEST_WORDS;i++)flash_words[i]=0x9E3779B1U*(i+1U);
+    unsigned erases=flash_erase_calls;
+    assert(odo_boot()==0&&flash_erase_calls==erases+1);
+    assert(Odometer_Flash_Save(50)&&odo_boot()==50&&flash_erase_calls==erases+1);
+    flash_blank();flash_words[0]=0x12345678U;
+    assert(odo_boot()==0&&flash_erase_calls==erases+2&&odo_last_valid_slot()==ODO_SLOT_COUNT);
+
+    /* Full sector: saving stops (no erase while driving), the next boot erases
+     * and carries the newest total into slot 0. */
+    flash_blank();assert(odo_boot()==0);
+    erases=flash_erase_calls;
+    for(uint32_t slot=0;slot<ODO_SLOT_COUNT;slot++)assert(Odometer_Flash_Save(1000+slot));
+    fails=g_odometer_flash_save_fail_count;
+    assert(!Odometer_Flash_Save(999999)&&g_odometer_flash_save_fail_count==fails+1&&flash_erase_calls==erases);
+    assert(odo_last_valid_slot()==ODO_SLOT_COUNT-1);
+    flash_fail_erase=1;
+    assert(odo_boot()==1000+ODO_SLOT_COUNT-1&&flash_erase_calls==erases+1&&odo_last_valid_slot()==ODO_SLOT_COUNT-1);
+    assert(!Odometer_Flash_Save(5)&&!flash_unlocked);          /* erase failed: read-only, old data intact */
+    flash_fail_erase=0;
+    assert(odo_boot()==1000+ODO_SLOT_COUNT-1&&flash_erase_calls==erases+2);
+    assert(odo_last_valid_slot()==0&&g_odometer_flash_erase_count>=1);
+    assert(Odometer_Flash_Save(20000)&&odo_last_valid_slot()==1&&odo_boot()==20000);
+    /* The carry-over write fails after the erase: the RAM value still reaches
+     * the UI, and the next successful save restores the record. */
+    flash_blank();assert(odo_boot()==0);
+    for(uint32_t slot=0;slot<ODO_SLOT_COUNT;slot++)assert(Odometer_Flash_Save(3000+slot));
+    flash_fail_programs=1;
+    assert(odo_boot()==3000+ODO_SLOT_COUNT-1&&odo_last_valid_slot()==ODO_SLOT_COUNT);
+    flash_fail_programs=0;
+    assert(Odometer_Flash_Save(40000)&&odo_boot()==40000);
+
+    /* GPS integration: the stored total starts the UI counter, every 100 m of
+     * travel is appended, and a read-only sector never stops the counter. */
+    flash_blank();assert(odo_boot()==0&&Odometer_Flash_Save(1000));
+    Odometer_Flash_Init();
+    g_odometer_initialized=0;gps_odometer_init();assert(g_odometer_initialized&&g_odometer_total_m==1000);
+    g_odometer_total_m=1540;gps_odometer_init();assert(g_odometer_total_m==1540);
+    for(unsigned step=0;step<130;step++) {
+        float latitude=(float)(30.0+step*8.993e-6);
+        gps_odometer_process(latitude,120.0f,7200,10000U+step*50U);
+    }
+    assert(g_odometer_total_m>=1640&&g_odometer_total_m-g_odometer_checkpoint_m<100U);
+    assert(g_odometer_checkpoint_m>=1640&&odo_boot()==g_odometer_checkpoint_m);
+    uint32_t shown=g_odometer_total_m;
+    flash_fail_programs=1;fails=g_odometer_flash_save_fail_count;
+    for(unsigned step=130;step<260;step++)
+        gps_odometer_process((float)(30.0+step*8.993e-6),120.0f,7200,10000U+step*50U);
+    flash_fail_programs=0;
+    assert(g_odometer_total_m>=shown+100U&&g_odometer_flash_save_fail_count>fails&&!flash_unlocked);
+    puts("Odometer: blank/reboot, torn and failed writes, junk sector, full sector, erase failure and GPS saves passed");
 }
 static void nmea(const char *payload)
 {
@@ -197,40 +450,120 @@ static void test_gps(void)
     assert(g_gps_poll_gap_max_ms==50&&g_gps_dma_late_poll_count==1);
     test_tick=10000;g_gps_rmc_last_tick=test_tick;g_gps_rmc_valid=1;
     g_gps_speed_kmh_centi=7200;g_gps_speed_kmh_int=72;g_gps_speed_ui_alive_tick=test_tick;
-    g_gps_can_last_tick=0;gps_can_speed_tick(test_tick);assert(test_can_speed_tenths==720);
-    unsigned sent=test_tx_count;gps_can_speed_tick(test_tick+49);assert(test_tx_count==sent);
-    gps_can_speed_tick(test_tick+50);assert(test_tx_count==sent+5);
+    /* Speed, position and motion go out every 50 ms; odometer/status every
+     * 500 ms and lap timing every 200 ms (20-tick cycle = 20/20/2/5 frames). */
+    unsigned sent=test_tx_count;
+    memset(test_tx_id_count,0,sizeof(test_tx_id_count));
+    g_gps_can_last_tick=0;g_gps_can_slow_phase=0;g_gps_can_lap_count=0;g_odometer_total_m=12345; /* 123 x 0.1 km */
+    gps_can_speed_tick(test_tick);assert(test_can_speed_tenths==720);
+    assert(test_tx_count==sent+5&&test_tx_id_count[0x7A0]==1&&test_tx_id_count[0x7A1]==1);
+    assert(test_tx_id_data[0x7A0][0]==123&&test_tx_id_data[0x7A0][1]==0&&test_tx_id_data[0x7A0][2]==0);
+    sent=test_tx_count;gps_can_speed_tick(test_tick+49);assert(test_tx_count==sent);
+    for(unsigned tick=1;tick<20;tick++) {
+        g_gps_rmc_last_tick=test_tick+tick*50U;g_gps_rmc_valid=1;
+        gps_can_speed_tick(test_tick+tick*50U);
+    }
+    assert(test_tx_id_count[0x301]==20&&test_tx_id_count[0x067]==20&&test_tx_id_count[0x068]==20);
+    assert(test_tx_id_count[0x7A0]==2&&test_tx_id_count[0x7A1]==5);
+    /* A lap-count change sends status and lap timing at once, off the slow slots. */
+    unsigned status=test_tx_id_count[0x7A0],lap=test_tx_id_count[0x7A1];
+    assert(g_gps_can_slow_phase==0);gps_can_speed_tick(test_tick+20U*50U);   /* slot 0: both due */
+    assert(test_tx_id_count[0x7A0]==status+1&&test_tx_id_count[0x7A1]==lap+1);
+    g_gps_can_lap_count=7;gps_can_speed_tick(test_tick+21U*50U);            /* slot 1: nothing due, lap changed */
+    assert(test_tx_id_count[0x7A0]==status+2&&test_tx_id_count[0x7A1]==lap+2&&g_gps_can_lap_count==0);
+    gps_can_speed_tick(test_tick+22U*50U);                                  /* slot 2: only the fast frames */
+    assert(test_tx_id_count[0x7A0]==status+2&&test_tx_id_count[0x7A1]==lap+2);
+    g_gps_rmc_last_tick=test_tick;g_gps_rmc_valid=1;g_gps_speed_kmh_centi=7200;g_gps_speed_kmh_int=72;
+    g_gps_can_last_tick=test_tick+50;
     gps_can_speed_tick(test_tick+501);assert(test_can_speed_tenths==0&&g_gps_speed_ui_alive_tick==test_tick);
     gps_can_speed_tick(test_tick+3001);assert(g_gps_speed_ui_alive_tick==0&&g_pending_speed==0);
-    puts("GPS: fragmented NMEA, pathological heading, tick wrap and configuration DMA polling passed");
+    puts("GPS: fragmented NMEA, pathological heading, tick wrap, DMA polling and per-frame CAN periods passed");
+}
+/* Per-motor PK is the highest power since power-on: lifting off, zero torque or regen never clears it. */
+static void test_motor_peak(void)
+{
+    static const int32_t torques[]={20,5,0,-3,30,10};
+    dashboard_data_t data=*Dashboard_UI_GetCurrentData();
+    int32_t expected=g_motor_power_peak[0];
+    data.valid_mask=TEST_ALL_VALID;data.rpm[0]=10000;
+    for(unsigned i=0;i<sizeof(torques)/sizeof(torques[0]);i++) {
+        const int32_t power=torques[i]*10000/955;          /* 0.1 kW, as in the UI */
+        data.torque[0]=torques[i];
+        Dashboard_UI_SubmitData(&data);test_tick+=300;Dashboard_UI_Process();
+        if(power>expected)expected=power;
+        assert(g_motor_power_peak[0]==expected);
+    }
+    assert(g_motor_power_peak[0]>=314);                    /* 30 Nm x 10000 rpm = 31.4 kW */
 }
 static void test_ui(void)
 {
     Dashboard_UI_RequestAlertClear();test_tick+=200;Dashboard_UI_Process();lv_refr_now(NULL);
-    flushes=0;dashboard_set_label_text(g_dashboard.soc_value,lv_label_get_text(g_dashboard.soc_value));
-    lv_refr_now(NULL);assert(flushes==0);
-    for(unsigned wheel=0;wheel<4;wheel++)apply_vehicle_motor_ui(wheel);
+    /* Re-submitting unchanged values must not invalidate anything. */
+    const dashboard_data_t *d=Dashboard_UI_GetCurrentData();
+    flushes=0;Dash_View_SetBattery(d->soc,d->sum_voltage,d->sum_current);
+    for(unsigned wheel=0;wheel<4;wheel++)Dash_View_SetTire(wheel,g_tire_temp[wheel]);
     lv_refr_now(NULL);assert(flushes==0);
     for(unsigned i=0;i<400;i++) {
         dashboard_data_t data=*Dashboard_UI_GetCurrentData();
-        data.soc=i%101;data.sum_voltage=400;data.sum_current=i%100;
+        data.valid_mask=TEST_ALL_VALID;data.soc=i%101;data.sum_voltage=400;data.sum_current=i%100;
+        data.sum_voltage_dv=4000;data.sum_current_da=-(int32_t)(i%100)*10;
         data.aps_open_pct=i%101;data.brake_pct=(i+10)%101;
-        Dashboard_UI_SubmitData(&data);Dashboard_UI_SubmitSpeed(i%100);
+        data.diag_num[i%4]=(i%5==0)?0x231:0;data.inverter_temp[i%4]=(int32_t)(i%120);
+        data.lv_bus_current_cA=-(int32_t)i*10;data.fan_rpm[i%3]=(int32_t)i*10;
+        data.sop_discharge_power_dkw=(int32_t)(i%800);data.sop_charge_power_dkw=(int32_t)(i%80);
+        data.sop_discharge_current_da=(int32_t)i*5;data.sop_charge_current_da=(int32_t)(i%80);
+        Dashboard_UI_SubmitData(&data);Dashboard_UI_SubmitSpeed(i%300);
         Dashboard_UI_SubmitDriveMode(i%4);Dashboard_UI_SubmitSlipLevel(i%8);
         Dashboard_UI_PushAlert("TEST ALERT");if(i%3==0)Dashboard_UI_RequestAlertClear();
         test_tick+=100;Dashboard_UI_Process();lv_refr_now(NULL);
         assert(test_primask==0&&test_mutex_depth==0);
     }
+    /* Inverter temperature, diagnostics, LV bus and fans reach the display copy. */
+    assert(Dashboard_UI_GetCurrentData()->lv_bus_current_cA==-3990);
+    /* Speed is not throttled: each GNSS value shows on the very next pass. */
+    for(int32_t kmh=40;kmh<46;kmh++) {
+        Dashboard_UI_SubmitSpeed(kmh);test_tick+=10;Dashboard_UI_Process();
+        assert(g_speed==kmh&&Dashboard_UI_GetCurrentData()->speed==kmh);
+    }
     lv_mem_monitor_t m;lv_mem_monitor(&m);assert(m.free_size>1024);
-    printf("UI: 400 telemetry/mode/alert cycles, identical-label skip and 120 KiB host pool passed (peak %zu, free %zu)\n",m.max_used,m.free_size);
+    printf("UI: 400 telemetry/mode/alert cycles, identical-value skip and 120 KiB host pool passed (peak %zu, free %zu)\n",m.max_used,m.free_size);
+}
+/* Representative telemetry for screenshots: one frame per drive mode plus an
+ * alert frame (mode-4), the S-mode READY banner (mode-5) and the no-data frame (mode-6). */
+static void save_frame(const char *directory,unsigned index)
+{
+    char path[1024];snprintf(path,sizeof(path),"%s/mode-%u.rgb565",directory,index);
+    FILE *file=fopen(path,"wb");assert(file);assert(fwrite(frame_pixels,2,800*480,file)==800*480);fclose(file);
 }
 static void render_modes(const char *directory)
 {
-    for(unsigned mode=0;mode<4;mode++) {
-        Dashboard_UI_SubmitDriveMode(mode);test_tick+=100;Dashboard_UI_Process();lv_refr_now(NULL);
-        char path[1024];snprintf(path,sizeof(path),"%s/mode-%u.rgb565",directory,mode);
-        FILE *file=fopen(path,"wb");assert(file);assert(fwrite(frame_pixels,2,800*480,file)==800*480);fclose(file);
+    static const int32_t tires[4][4]={{7200,7600,8100,8400},{6900,7300,7700,8000},{7400,7900,8600,9300},{6600,7000,7300,7500}};
+    /* mode-6: the power-on frame, every CAN field still "--" (nothing received yet). */
+    save_frame(directory,6);
+    dashboard_data_t data=*Dashboard_UI_GetCurrentData();
+    data.valid_mask=TEST_ALL_VALID;data.soc=76;data.sum_voltage=386;data.sum_current=-118;
+    data.sum_voltage_dv=3860;data.sum_current_da=-1180;data.max_temperature=74;
+    data.aps_open_pct=62;data.brake_pct=0;
+    data.lv_bus_voltage_mV=13820;data.lv_bus_current_cA=-1240;data.lv_bus_power_dW=1712;
+    data.fan_rpm[0]=2376;data.fan_rpm[1]=2316;data.fan_rpm[2]=2196;data.fan_pwm_duty[0]=49;data.fan_pwm_duty[1]=49;
+    data.sop_discharge_power_dkw=740;data.sop_charge_power_dkw=40;data.sop_discharge_current_da=1800;data.sop_charge_current_da=80;
+    for(unsigned w=0;w<4;w++) {
+        data.torque[w]=18+(int32_t)w;data.rpm[w]=11800-(int32_t)w*120;data.motor_enable[w]=w!=3;
+        data.motor_temp[w]=58+(int32_t)w*3;data.inverter_temp[w]=44+(int32_t)w*4;
+        Dashboard_UI_SubmitTireTemperaturesCenti(w,tires[w]);
     }
+    data.motor_temp[2]=88;data.diag_num[1]=0x0231;
+    Dashboard_UI_SubmitData(&data);Dashboard_UI_SubmitSpeed(87);Dashboard_UI_SubmitSlipLevel(3);
+    Dashboard_UI_SubmitSignalLevel(4);Dashboard_UI_SubmitOdometer(412);
+    for(unsigned mode=0;mode<4;mode++) {
+        Dashboard_UI_SubmitDriveMode(mode);test_tick+=300;Dashboard_UI_Process();
+        Dashboard_UI_SubmitLapTimes(6233,8410,8345,3);Dashboard_UI_SubmitLapDelta(-32);
+        test_tick+=300;Dashboard_UI_Process();lv_refr_now(NULL);save_frame(directory,mode);
+    }
+    Dashboard_UI_PushAlert("inverter overtemp");Dashboard_UI_PushAlert("gps not fixed");
+    test_tick+=300;Dashboard_UI_Process();lv_refr_now(NULL);save_frame(directory,4);
+    Dashboard_UI_RequestAlertClear();Dashboard_UI_SubmitDriveMode(0);Dashboard_UI_SetSprintReady(1);
+    Dashboard_UI_SubmitSpeed(0);test_tick+=300;Dashboard_UI_Process();lv_refr_now(NULL);save_frame(directory,5);
 }
 int main(int argc,char **argv)
 {
@@ -238,6 +571,6 @@ int main(int argc,char **argv)
     if(argc==1) {assert(!Dashboard_UI_IsStartupComplete());receive(0x305,6,3);assert(g_can_rx_queue->count==0);}
     init_ui();assert(Dashboard_UI_IsStartupComplete());
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_sd();test_gps();test_ui();return 0;
+    test_can();test_can_decode();test_steering();test_odometer();test_gps();test_ui();test_motor_peak();return 0;
 }
 /* USER CODE END Firmware_Regression */

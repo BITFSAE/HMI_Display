@@ -12,7 +12,8 @@ def output(prefix, tool, *args):
 
 
 def report(elf, prefix, stack_dir):
-    regions = {"FLASH": (0x08000000, 512 * 1024),
+    # Program area only: flash sector 7 (the last 128 KiB) stores the odometer.
+    regions = {"FLASH": (0x08000000, 384 * 1024),
                "SRAM": (0x20000000, 128 * 1024),
                "CCM": (0x10000000, 64 * 1024)}
     usage = dict.fromkeys(regions, 0)

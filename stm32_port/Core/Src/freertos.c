@@ -31,7 +31,6 @@
 #include "../lvgl/lvgl.h"
 #include "touch.h"
 #include "gps.h"
-#include "sd_log.h"
 #include "firmware_diag.h"
 
 extern void LVGL_Port_Init(void);
@@ -190,7 +189,6 @@ static void Dashboard_ServiceTask(void * argument)
   uint32_t delay_ms;
   uint32_t last_heartbeat_tick = 0U;
   uint32_t loop_start_cycles;
-  uint32_t last_can_heartbeat_tick = 0U;
 
   (void)argument;
   LVGL_Port_Init();
@@ -208,12 +206,6 @@ static void Dashboard_ServiceTask(void * argument)
        ((HAL_GetTick() - last_heartbeat_tick) >= 250U)) {
       last_heartbeat_tick = HAL_GetTick();
       HAL_GPIO_TogglePin(GPIOD, LED_GREEN_Pin);
-    }
-
-    if((Dashboard_UI_IsStartupComplete() != 0U) &&
-       ((HAL_GetTick() - last_can_heartbeat_tick) >= 500U)) {
-      last_can_heartbeat_tick = HAL_GetTick();
-      CAN1_SendHeartbeat();
     }
 
     uint32_t loop_cycles = DWT->CYCCNT - loop_start_cycles;

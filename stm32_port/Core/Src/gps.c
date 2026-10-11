@@ -4,7 +4,7 @@
 #include "gps_lap.h"
 #include "can.h"
 #include "dashboard_ui.h"
-#include "sd_log.h"
+#include "odometer_flash.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "firmware_diag.h"
@@ -46,6 +46,8 @@ static uint8_t     g_gga_signal_level;
 static uint32_t    g_hpr_last_tick;
 static uint32_t    g_gps_rmc_last_tick;
 static uint32_t    g_gps_can_last_tick;
+static uint8_t     g_gps_can_slow_phase;
+static uint8_t     g_gps_can_lap_count;
 static uint8_t     g_gps_rmc_valid;
 static uint32_t    g_gps_speed_ui_alive_tick;
 
@@ -63,6 +65,13 @@ static uint8_t     g_odometer_initialized;
 #define GPS_HPR_EXPIRE_MS               1500U
 #define GPS_CAN_SPEED_PERIOD_MS            50U
 #define GPS_CAN_SPEED_STALE_MS             500U
+/* 0x301/0x067/0x068 go out every GPS_CAN_SPEED_PERIOD_MS tick. Odometer, GPS
+ * quality (0x7A0) and lap timing (0x7A1) change slowly and the ground station
+ * records them, so they use a multiple of the tick. A change of the lap count
+ * sends both at once so a finished lap is reported without delay. */
+#define GPS_CAN_STATUS_TICKS               10U   /* 0x7A0: 500 ms */
+#define GPS_CAN_LAP_TICKS                   4U   /* 0x7A1: 200 ms */
+#define GPS_CAN_SLOW_CYCLE_TICKS           20U   /* common multiple of both */
 /* How long the dashboard keeps showing the last valid speed after RMC stops
  * arriving (or arrives with V status). Bridges brief receiver dropouts without
  * freezing a stale value for long. CAN telemetry still reports zero/invalid
@@ -83,7 +92,7 @@ static void gps_odometer_init(void)
 {
 	uint32_t initial_m;
 	if(g_odometer_initialized != 0U) return;
-	if(SD_Odometer_GetInitial(&initial_m) == 0U) return;
+	if(Odometer_Flash_GetInitial(&initial_m) == 0U) return;
 	g_odometer_total_m = initial_m;
 	g_odometer_checkpoint_m = g_odometer_total_m;
 	g_odometer_fraction_m = 0.0f;
@@ -155,7 +164,7 @@ static void gps_odometer_process(float latitude, float longitude,
 	if((g_odometer_total_m - g_odometer_checkpoint_m) >=
 	   GPS_ODOMETER_SAVE_INTERVAL_M) {
 		g_odometer_checkpoint_m = g_odometer_total_m;
-		SD_Odometer_RequestSave(g_odometer_total_m);
+		(void)Odometer_Flash_Save(g_odometer_total_m);
 	}
 
 	ui_tenths = (int32_t)(g_odometer_total_m / 100U);
@@ -213,6 +222,7 @@ static void gps_can_speed_tick(uint32_t now)
 {
 	int32_t speed_kmh_centi;
 	uint8_t rmc_valid;
+	uint32_t frames;
 	GPS_Data_t gps_snapshot;
 	GPS_LapDiagnostic_t lap_diagnostic;
 	CAN_GPSTelemetry_t telemetry;
@@ -286,8 +296,17 @@ static void gps_can_speed_tick(uint32_t now)
 	telemetry.lap_best_cs = gps_clamp_u16(GPS_Lap_GetBestLapHundredths());
 	telemetry.lap_delta_cs = gps_clamp_i16(GPS_Lap_GetDeltaHundredths());
 
+	frames = CAN_GPS_TX_POSITION | CAN_GPS_TX_MOTION;
+	if((g_gps_can_slow_phase % GPS_CAN_STATUS_TICKS) == 0U) frames |= CAN_GPS_TX_STATUS;
+	if((g_gps_can_slow_phase % GPS_CAN_LAP_TICKS) == 0U) frames |= CAN_GPS_TX_LAP;
+	if(telemetry.lap_count != g_gps_can_lap_count) {
+		g_gps_can_lap_count = telemetry.lap_count;
+		frames |= CAN_GPS_TX_STATUS | CAN_GPS_TX_LAP;
+	}
+	g_gps_can_slow_phase = (uint8_t)((g_gps_can_slow_phase + 1U) % GPS_CAN_SLOW_CYCLE_TICKS);
+
 	CAN_SendGPSSpeed((speed_kmh_centi + 5) / 10);
-	CAN_SendGPSTelemetry(&telemetry);
+	CAN_SendGPSTelemetry(&telemetry, frames);
 }
 
 static uint8_t nmea_checksum(const char * sentence)
@@ -833,8 +852,8 @@ static void GPS_ProcessByte(uint8_t byte)
 
 static void GPS_SentenceProcess(void)
 {
-    /* The SD task publishes the starting total only after a trustworthy read.
-     * Keep configuring/parsing GPS even when storage is absent or failing. */
+    /* Odometer_Flash_Init() ran before the scheduler; the starting total is
+     * published to the UI from here, once the dashboard is up. */
     gps_odometer_init();
     uint32_t now = HAL_GetTick();
     if(g_gps_poll_tick != 0U) {
@@ -982,6 +1001,8 @@ void GPS_Init(void)
 	g_hpr_last_tick = 0U;
 	g_gps_rmc_last_tick = 0U;
 	g_gps_can_last_tick = 0U;
+	g_gps_can_slow_phase = 0U;
+	g_gps_can_lap_count = 0U;
 	g_gps_rmc_valid = 0U;
 	g_gps_speed_ui_alive_tick = 0U;
 	g_odometer_initialized = 0U;
@@ -992,7 +1013,6 @@ void GPS_Init(void)
                                          (UBaseType_t)osPriorityNormal + 1U,
                                          g_gps_task_stack, &g_gps_task_control);
     Firmware_Diag_RegisterTask(FW_TASK_GPS, g_gps_task_handle, "GPS", sizeof(g_gps_task_stack));
-    SD_Odometer_StartTask();
 }
 
 void GPS_ISR_Notify(void)

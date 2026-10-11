@@ -1,8 +1,56 @@
-	# VSCode Simulator project for LVGL
+	# HMI_Display — BITFSAE 车手屏
 
-[LVGL](https://github.com/lvgl/lvgl) is written mainly for microcontrollers and embedded systems, however you can run the library **on your PC** as well without any embedded hardware. The code written on PC can be simply copied when your are using an embedded system.
+车手屏固件（STM32F407ZET6，经 FSMC 驱动 SSD1963 800×480 IPS 屏，LVGL 9.5）和 PC/macOS 模拟器。固件接收 CANB、方向盘 CAN2 与 UM982 GNSS 数据并显示，同时向 CANB 发送 GPS、里程、圈速和方向盘合并指令。仪表盘界面 `stm32_port/Core/Src/dashboard_view.c` 由固件和模拟器共用。
 
-This project is pre-configured for VSCode and should work work on Windows, Linux and MacOs as well. FreeRTOS is also included and can be optionally enabled to better simulate embedded system's behavior. 
+## 仓库结构
+
+| 路径 | 内容 |
+| --- | --- |
+| `stm32_port/` | **车手屏固件**，CubeIDE 工程名仍沿用旧名 `DATA_COLLECTION_INTEGRAL`。外设配置源是 `DATA_COLLECTION_INTEGRAL.ioc`（本仓库的车手屏 `.ioc` 只有这一个），应用代码在 `Core/Src`，`Core/lvgl` 是固件用的 LVGL 副本 |
+| `src/`、`CMakeLists.txt`、`config/`、`lv_conf.h`、`run_sim_mac.sh` | PC/macOS 模拟器（SDL2 + FreeRTOS） |
+| `build_fw.sh`、`build_fw.mk` | 固件命令行构建 |
+| `tools/` | 字体和 Logo 生成、固件内存报告、固件回归测试、GPS 测试数据生成（`gen_nmea.py`，输出 UM982 NMEA 测试语句） |
+| `docs/` | 设计与参考文档，索引见下节 |
+| `legacy/` | 不参与构建的遗留与参考资料，含旧版 F103 板（另一个 `.ioc`），见 [legacy/README.md](legacy/README.md) |
+| `lvgl/`、`FreeRTOS/`、`SDL2-2.32.10/` | 第三方源码，见下节 |
+| `simulator.code-workspace`、`lv_conf.defaults`、`licence.txt` | 上游 `lv_port_pc_vscode` 遗留：前者是 Windows 旧流程的工作区文件，含作者本机路径（`cmake.cmakePath`、构建任务），需自行修改才能用；`lv_conf.defaults` 未被构建引用；`licence.txt` 是上游 MIT 许可证 |
+
+### 文档索引
+
+| 文档 | 内容 |
+| --- | --- |
+| [硬件映射](docs/hardware.md) | 时钟、引脚、CAN 位时序、FSMC 读写时序、背光、触摸、指示灯编码、与 `.ioc` 的有意差异 |
+| [CAN 网络分工](docs/can_network.md) | 两条总线、各节点收发什么、车手屏做哪三类事（显示、发送、方向盘网关） |
+| [方向盘与车手屏](docs/steering_wheel.md) | 方向盘按钮板和车手屏各做什么、每个控件的作用、操作的完整过程、已知限制 |
+| [方向盘相关代码](docs/steering_wheel_code.md) | 方向盘固件和车手屏侧处理的代码级细节与测试覆盖 |
+| [CAN 接口](docs/can_interface.md) | CAN1/CAN2 收发全表、超时与有效性、方向盘帧处理、发送队列、与中央库未对齐项 |
+| [配置表](docs/configuration.md) | GPS、圈速、CAN、显示与实时的可调常量：位置、单位、影响 |
+| [GPS、圈速与冲刺](docs/gps_lap.md) | NMEA 处理、信号等级、里程、过线检测、75 m 冲刺、模式锁、降级行为 |
+| [仪表盘界面](docs/dashboard_ui.md) | 布局、触摸区域、绘制约束、字库与 Logo、验证命令 |
+| [固件资源与性能优化](docs/firmware_optimization.md) | Flash/SRAM/CCM 预算、任务与栈、运行诊断 |
+| [里程存储](docs/odometer_storage.md) | 内部 Flash 扇区 7 的记录格式与掉电行为 |
+| [更新记录](CHANGELOG.md) | 完成的变更、未验证项与待办 |
+| `docs/reference/` | Unicore（UM982）高精度产品命令手册 PDF |
+
+### 第三方源码
+
+| 目录 | 版本 | 使用方 |
+| --- | --- | --- |
+| `lvgl/` | 9.5.0，完整源码树 | 模拟器（CMake） |
+| `stm32_port/Core/lvgl/` | 9.5.0，固件所需的裁剪子集；`src/` 与 `lvgl/src` 一致，仅 `lv_obj_style_gen.h` 一处缩进不同 | 固件（CubeIDE 与 `build_fw.sh`） |
+| `FreeRTOS/` | V11.1.0 | 仅模拟器（Windows 用 MinGW 端口，其余用 POSIX 端口） |
+| `stm32_port/Middlewares/Third_Party/FreeRTOS/` | V10.3.1 | 固件，由 CubeMX 管理 |
+| `SDL2-2.32.10/` | 2.32.10 | 仅 Windows（MinGW）模拟器；macOS/Linux 使用系统安装的 SDL2 |
+
+升级 LVGL 时两份一起替换，并对照模拟器的根目录 `lv_conf.h` 与固件的 `stm32_port/Core/lv_conf.h`（后者是真机内存和功能预算，二者不要互相覆盖）。
+
+模拟器对 LVGL 有一处本地补丁：`lvgl/src/drivers/sdl/lv_sdl_window.c` 按 `LV_SDL_ALLOW_HIGHDPI`（根目录 `lv_conf.h`）给窗口加 `SDL_WINDOW_ALLOW_HIGHDPI`，使高 DPI 屏按物理像素渲染而不发糊。替换 LVGL 后需补回。
+
+### 构建产物与本机配置不入库
+
+`stm32_port/Debug/`、`stm32_port/build_vscode/`、`cmake-build-mac/`、`bin/` 和 Keil 的 `MDK-ARM/DATA_COLLECTION_INTEGRAL/` 都被 `.gitignore` 忽略；2026-10-10 前误入库的产物已改为不跟踪，旧版本仍可从 git 历史取回。固件请用 `./build_fw.sh` 或 CubeIDE 重新构建。`.vscode/` 和根目录 `.settings/` 是本机 IDE 配置，同样不入库。
+
+`stm32_port/MDK-ARM/` 的 Keil 工程只含 CubeMX 生成的文件（还包括已移除的 FatFs/SD），没有 LVGL 和 `gps.c`、`dashboard_*.c`、`odometer_flash.c` 等应用模块，**不能**构建当前固件，以 CubeIDE 工程和 `build_fw.sh` 为准。
 
 ## Get started
 
@@ -52,11 +100,12 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 ```
 
 - 规则在 `build_fw.mk`：编译参数与 `stm32_port/.cproject` 的 Debug 配置一致（`-Os -g3`，Cortex-M4F 硬浮点，链接 `STM32F407ZETX_FLASH.ld`），源码目录与 LVGL 排除清单直接读 `.cproject`，新增 `.c/.s` 无需改动。
-- 产物位于 `stm32_port/build_vscode/`，包括 ELF、BIN、HEX、MAP 和内存报告（已被 `.gitignore` 忽略）。构建会打印 Flash、主 SRAM、CCM 占用和最大单函数栈帧。参数或工具链变化时自动重编。不复用 `stm32_port/Debug/` 的 makefile：其中 `Core/lvgl/**` 的 `subdir.mk` 未入库，且 `makefile` 写死了 Windows 下的链接脚本绝对路径。
-- 固件优化、任务栈、运行诊断和回归验证见 [固件资源与性能优化](docs/firmware_optimization.md)。CubeIDE 用户需重新构建，历史 Debug 产物不代表本次修改。
+- 产物位于 `stm32_port/build_vscode/`，包括 ELF、BIN、HEX、MAP 和内存报告（已被 `.gitignore` 忽略）。构建会打印 Flash、主 SRAM、CCM 占用和最大单函数栈帧。参数或工具链变化时自动重编。不复用 CubeIDE 在 `stm32_port/Debug/` 生成的 makefile：旧版入库的那份缺 `Core/lvgl/**` 的 `subdir.mk`，且写死了 Windows 下的链接脚本绝对路径。
+- 固件优化、任务栈、运行诊断和回归验证见 [固件资源与性能优化](docs/firmware_optimization.md)。CubeIDE 的 `Debug/` 不入库，克隆后需在 CubeIDE 里完整构建一次。
 - 工具链优先取 STM32 VS Code 扩展 bundles 里的 GNU Tools for STM32，否则用 PATH 中的 `arm-none-eabi-gcc`（已验证 ARM 官方 15.2.rel1 同样可构建）。
 - VS Code 任务：`Build Firmware`、`Rebuild Firmware (clean)`（`Tasks: Run Task`），编译报错可点击跳转。
-- 窗口内按键：空格循环模式，`S/Q/E/C` 选模式，`0`–`7` 滑移等级，`R` 圈速记录，`N` 夜间模式，`F` 切换告警，`[` `]`/`G` 信号强度，`Esc`/`X` 退出。
+- 模拟器与固件共用 `stm32_port/Core/Src/dashboard_view.c` 界面，只是数据换成动画演示，设计与约束见 [仪表盘界面](docs/dashboard_ui.md)。
+- 窗口内按键：空格循环模式，`S/Q/E/C` 选模式，`0`–`7` 滑移等级，`R` 圈速计时，`N` 夜间模式，`F` 推入演示告警，`Y` READY 横幅，`[` `]`/`G` 信号强度，`Esc`/`X` 退出。鼠标点击区域与触摸屏相同：顶栏开关计时，告警条消除一条，眼睛按钮切换夜间。
 
 ### Visual Studio Code
 
@@ -92,23 +141,9 @@ to build using the latest version of clang from homebrew, do the following:
 
 5. build using [step 4 above](#visual-studio-code)
 
-### FreeRTOS configuration
-To correctly configure the project, the RTOS (Real-Time Operating System) requires a significant amount of heap memory, especially when debugging an SDL (Simple DirectMedia Layer) window application. In this project, the heap memory has been experimentally set to **512 MB**.
+### 模拟器的 FreeRTOS 配置
 
-```c
-#define configTOTAL_HEAP_SIZE ( ( size_t ) ( 512 * 1024 * 1024 ) )  // 512 MB Heap
-```
-This configuration ensures that the SDL window is displayed in a timely manner. If this value is reduced, it may cause significant delays in the SDL window's appearance. If the allocated heap memory is too small, the window may fail to appear altogether.
-Therefore, it is crucial to allocate sufficient heap memory to ensure smooth execution and debugging experience.
-
-### Enable FreeRTOS 
-To enable the rtos part of this project select in lv_conf.h `#define LV_USE_OS   LV_OS_NONE` to `#define LV_USE_OS  LV_OS_FREERTOS`
-Additionaly you have to enable the compilation of all FreeRTOS Files by turning on the `option(USE_FREERTOS "Enable FreeRTOS" OFF)` in the CMakeLists.txt file or
-by enabling the same flag from the command line when bootstrapping `cmake`:
-
-```bash
-cmake -B build -DUSE_FREERTOS=ON
-```
+模拟器默认启用 FreeRTOS（`CMakeLists.txt` 中 `USE_FREERTOS` 为 `ON`，入口 `src/freertos_main.c`；设为 `OFF` 则回到上游的 `src/main.c` 演示入口）。`lv_conf.h` 里 macOS 的 `LV_USE_OS` 为 `LV_OS_NONE`，其余平台为 `LV_OS_FREERTOS`。FreeRTOS 堆在 `config/FreeRTOSConfig.h`，当前 96 KB。该配置与真机（`stm32_port/Core/Inc/FreeRTOSConfig.h`，由 CubeMX 管理）相互独立，改一边不影响另一边。
 
 ### CMake
 
@@ -123,7 +158,7 @@ make -j
 
 ## Run demos and examples
 
-By default, the widgets demo (`lv_demo_widgets()`) will run. If you want to run a different demo or example from the LVGL library,
+本节仅适用于 `USE_FREERTOS=OFF` 时的上游入口 `src/main.c`（默认的 `src/freertos_main.c` 显示仪表盘）。By default, the widgets demo (`lv_demo_widgets()`) will run. If you want to run a different demo or example from the LVGL library,
 simply replace the demo function call in the code with another one—such as `lv_demo_benchmark()` or `lv_example_label_1()`.
 
 ```c
@@ -218,30 +253,3 @@ int main(void) {
     /* ... rest of your application ...*/
 }
 ```
-
-## 仪表盘显示项与 CAN 数据来源
-
-PC 模拟器（`src/freertos_main.c`）与 STM32F407 真机固件（`stm32_port/`）保持同一套 UI。
-DBC 以 [vehicle-interfaces](https://github.com/BITFSAE/vehicle-interfaces) 仓库 `can/Vehicle_CanB.dbc` 为准，副本在根目录 `Vehicle_CanB.dbc`。
-
-| 显示项 | 报文 | 说明 |
-| --- | --- | --- |
-| 高压总压/总流/SOC | 0x4B0 BMS_PackStatus | 右上 TOTAL V / TOTAL A；忽略 byte5 有效性标志，直接取数据位 |
-| 整车功率 | 由 0x4B0 计算 | P NOW / P PEAK |
-| 油门开度 | 0x305 DataLogger APS_OpenPct | 中央大速度数字右侧绿色条 |
-| 刹车开度 | 0x306 BrakePedal_0x306（ECU 网关转发 CANC 0x270 IBS_Info） | 中央大速度数字左侧红色条；源信号为 WCBS AB_BrkPdlPct，20ms |
-| 四电机扭矩/转速/温度 | 0x502 / 0x505 / 0x506 | 底部四列 T / N / Tm |
-| 逆变器温度 | 0x507 Debug7 Inverter_temperature | 底部 Ti，按温度着色 |
-| IGBT 温度 | 0x508 Debug8 | 参与右上面板 MAX T 计算 |
-| 四电机报错码 | 0x503 / 0x504 Diagnostic_number | 底部 E 行，非零红色显示低 16 位 |
-| 低压电压/电流/功率 | 0x5A0 PDM_LowVoltageBus | 右上 LV V / LV A / LV W |
-| 低压电池侧（备用） | 0x5A1 PDM_LowVoltageBattery | 已解析，UI 显示母线值 |
-| 三风扇转速 + PWM 占空比 | 0x5A2 FanController_Status | 右上 F1/F2/F3；DBC 仅两路实测占空比，F3 显示 `--` |
-| MAX T | 0x506/0x507/0x508 取最大 | 电机/逆变器/IGBT 四轮最大值 |
-
-CAN1 过滤器为 ID 白名单模式（`can.c` 中 `CAN1_RX_MSG_ID_BANK*`），新增接收 ID 时需同步更新过滤器表。
-
-
-### 夜间模式
-
-左侧面板底部的圆形眼睛图标（日间睛开/夜间闭眼）：触摸后背光降至 45%，再触恢复。真机由 PF9 改接 TIM14_CH1 1kHz PWM 控制（用户代码区初始化，不依赖 CubeMX 重生）；模拟器用全屏 55% 黑色遮罩模拟，键盘 n 键可切换。

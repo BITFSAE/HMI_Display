@@ -1,9 +1,0 @@
-../Core/Src/usart.c:33:13:USART2_RestartReceive	1
-../Core/Src/usart.c:38:13:USART2_ProcessLine	25
-../Core/Src/usart.c:95:6:HAL_UART_RxCpltCallback	6
-../Core/Src/usart.c:131:6:MX_USART1_UART_Init	2
-../Core/Src/usart.c:160:6:MX_USART2_UART_Init	2
-../Core/Src/usart.c:193:6:MX_USART3_UART_Init	2
-../Core/Src/usart.c:227:6:MX_USART6_UART_Init	2
-../Core/Src/usart.c:255:6:HAL_UART_MspInit	9
-../Core/Src/usart.c:455:6:HAL_UART_MspDeInit	5

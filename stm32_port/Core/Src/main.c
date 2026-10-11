@@ -21,10 +21,8 @@
 #include "cmsis_os.h"
 #include "can.h"
 #include "dma.h"
-#include "fatfs.h"
 #include "i2c.h"
 #include "rtc.h"
-#include "sdio.h"
 #include "spi.h"
 #include "usart.h"
 #include "gpio.h"
@@ -34,7 +32,7 @@
 /* USER CODE BEGIN Includes */
 #include "../lvgl/lvgl.h"
 #include "dashboard_ui.h"
-#include "sd_log.h"
+#include "odometer_flash.h"
 #include "firmware_diag.h"
 
 /* USER CODE END Includes */
@@ -86,10 +84,8 @@ void LED_Diag_SetBootStage(uint8_t stage);
 #define MX_SPI1_Init() ((void)0)
 #define MX_USART1_UART_Init() ((void)0)
 #define MX_USART3_UART_Init() ((void)0)
-#define MX_FATFS_Init() ((void)0)
 #define MX_FSMC_Init() ((void)0)
 #define MX_USART2_UART_Init() ((void)0)
-#define MX_SDIO_SD_Init() ((void)0)
 #define osKernelInitialize() ((void)0)
 #define MX_FREERTOS_Init() ((void)0)
 #define osKernelStart() ((void)0)
@@ -121,7 +117,7 @@ static void BoardBringup_MinimalLoop(void)
 #define LCD_HOR_RES 800
 #define LCD_VER_RES 480
 
-// 1. 基础读写宏 (保持 A17 逻辑)
+// 1. 基础读写宏: 16 位总线下 FSMC_A16(PD11) 对应字节地址位 17, 作为 SSD1963 的命令/数据选择
 #define LCD_REG  *(__IO uint16_t *)(0x60000000)
 #define LCD_DATA *(__IO uint16_t *)(0x60020000)
 
@@ -270,6 +266,9 @@ void LVGL_Port_Init(void)
                NULL,
                sizeof(g_lvgl_draw_buf),
                LV_DISPLAY_RENDER_MODE_PARTIAL);
+  /* A new GNSS speed waits at most one refresh period before it is drawn;
+   * LV_DEF_REFR_PERIOD (33 ms) is shared with the simulator, so set it here. */
+  lv_timer_set_period(lv_display_get_refr_timer(g_lvgl_display), 16U);
 
   Dashboard_UI_Init();
   lv_refr_now(g_lvgl_display);
@@ -407,8 +406,6 @@ int main(void)
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_USART3_UART_Init();
-  MX_SDIO_SD_Init();
-  MX_FATFS_Init();
   MX_FSMC_Init();
   MX_USART2_UART_Init();
   MX_I2C1_Init();
@@ -417,14 +414,19 @@ int main(void)
 #if BOARD_BRINGUP_MINIMAL
   BoardBringup_MinimalInit();
 #else
+  /* An odometer sector erase stalls the CPU for seconds (about once per 1,600 km),
+   * so it runs before the CAN controllers start. */
+  Odometer_Flash_Init();
   CAN1_Filter_Config();
   if(HAL_CAN_Start(&hcan1) != HAL_OK) {
     Error_Handler();
   }
+  /* ABOM is enabled in CubeMX, so bus-off recovers in hardware; the BUSOFF
+   * notification only feeds the g_can_bus_off_count diagnostic. */
   if(HAL_CAN_ActivateNotification(&hcan1,
                                   CAN_IT_RX_FIFO0_MSG_PENDING |
-                                  CAN_IT_RX_FIFO1_MSG_PENDING |
-                                  CAN_IT_TX_MAILBOX_EMPTY) != HAL_OK) {
+                                  CAN_IT_TX_MAILBOX_EMPTY |
+                                  CAN_IT_ERROR | CAN_IT_BUSOFF) != HAL_OK) {
     Error_Handler();
   }
 
@@ -433,7 +435,8 @@ int main(void)
   if(HAL_CAN_Start(&hcan2) != HAL_OK) {
     Error_Handler();
   }
-  if(HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK) {
+  if(HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO0_MSG_PENDING |
+                                  CAN_IT_ERROR | CAN_IT_BUSOFF) != HAL_OK) {
     Error_Handler();
   }
 
@@ -447,7 +450,8 @@ int main(void)
   SSD1963_Init();
   LED_Diag_SetBootStage(1);
   Firmware_Diag_Init();
-  /* The Dashboard task initializes LVGL and enables backlight after its first frame. */
+  /* Dashboard 任务初始化 LVGL。背光实际由 Dashboard_UI_Init 末尾的 TIM14 PWM 点亮,
+   * 早于随后 lv_refr_now 的首帧; LVGL_Port_Init 里的 LCD_Backlight_On 对已复用的 PF9 无效。 */
 #endif
   /* USER CODE END 2 */
 

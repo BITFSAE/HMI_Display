@@ -11,12 +11,12 @@ FW_OPT  ?= -Os
 
 # .cproject 中 Core 源目录的排除项(相对 Core/, 以 | 分隔), 取 Debug 配置那份
 EXCL := $(shell grep -o 'excluding="[^"]*"' .cproject | head -1 | sed 's/^excluding="//;s/"$$//')
-SRCS := $(shell find Core FATFS Middlewares Drivers \( -name '*.c' -o -name '*.s' \) | grep -v -E '^Core/($(EXCL))(/|$$)' | sort)
+SRCS := $(shell find Core Middlewares Drivers \( -name '*.c' -o -name '*.s' \) | grep -v -E '^Core/($(EXCL))(/|$$)' | sort)
 OBJS := $(addprefix $(OUT)/,$(addsuffix .o,$(basename $(SRCS))))
 
 INCS := Core/Inc Drivers/STM32F4xx_HAL_Driver/Inc Drivers/STM32F4xx_HAL_Driver/Inc/Legacy \
-        Drivers/CMSIS/Device/ST/STM32F4xx/Include Drivers/CMSIS/Include FATFS/Target FATFS/App \
-        Middlewares/Third_Party/FatFs/src Middlewares/Third_Party/FreeRTOS/Source/include \
+        Drivers/CMSIS/Device/ST/STM32F4xx/Include Drivers/CMSIS/Include \
+        Middlewares/Third_Party/FreeRTOS/Source/include \
         Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 \
         Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F
 

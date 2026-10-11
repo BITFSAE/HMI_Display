@@ -170,8 +170,8 @@ standard names. */
 #define USE_CUSTOM_SYSTICK_HANDLER_IMPLEMENTATION 0
 
 /* USER CODE BEGIN Defines */
-/* Application stacks are static; retain a 16 KiB heap for CMSIS/FatFs objects
- * and the generated bootstrap task. Idle also reclaims newlib state. */
+/* Application stacks are static; retain a 16 KiB heap for CMSIS objects and
+ * the generated bootstrap task. Idle also reclaims newlib state. */
 #undef configTOTAL_HEAP_SIZE
 #define configTOTAL_HEAP_SIZE ((size_t)(16U * 1024U))
 #undef configMINIMAL_STACK_SIZE

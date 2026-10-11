@@ -1,6 +1,0 @@
-../Core/Src/freertos.c:99:6:MX_FREERTOS_Init	1
-../Core/Src/freertos.c:143:6:StartDefaultTask	2
-../Core/Src/freertos.c:180:13:Dashboard_ServiceTask	11
-../Core/Src/freertos.c:227:6:Fault_Diagnostic_Assert	1
-../Core/Src/freertos.c:237:6:vApplicationStackOverflowHook	1
-../Core/Src/freertos.c:248:6:vApplicationMallocFailedHook	1
