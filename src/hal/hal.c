@@ -1,18 +1,5 @@
 #include "hal.h"
 
-#define TN_BASE_HOR_RES 480.0f
-#define TN_BASE_VER_RES 272.0f
-
-static void apply_tn_mapping_zoom(lv_display_t * disp, int32_t w, int32_t h)
-{
-  float hor_zoom = (float)w / TN_BASE_HOR_RES;
-  float ver_zoom = (float)h / TN_BASE_VER_RES;
-  float zoom = hor_zoom < ver_zoom ? hor_zoom : ver_zoom;
-
-  if(zoom < 1.0f) zoom = 1.0f;
-  lv_sdl_window_set_zoom(disp, zoom);
-}
-
 lv_display_t * sdl_hal_init(int32_t w, int32_t h)
 {
 
@@ -44,7 +31,8 @@ lv_display_t * sdl_hal_init(int32_t w, int32_t h)
 
   lv_sdl_window_set_title(disp, "4.3 inch IPS Simulator");
   lv_sdl_window_set_resizeable(disp, false);
-  apply_tn_mapping_zoom(disp, w, h);
+  /* 缩放固定为 1:1(lv_sdl_window 默认 zoom=1.0): 窗口与真机同为 800x480 逻辑像素。
+   * 非整数缩放会让 SDL 对纹理做不均匀拉伸, 与真机的 1:1 输出不符, 观感发糊。 */
 
   return disp;
 }

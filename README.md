@@ -44,6 +44,8 @@
 
 升级 LVGL 时两份一起替换，并对照模拟器的根目录 `lv_conf.h` 与固件的 `stm32_port/Core/lv_conf.h`（后者是真机内存和功能预算，二者不要互相覆盖）。
 
+模拟器对 LVGL 有一处本地补丁：`lvgl/src/drivers/sdl/lv_sdl_window.c` 按 `LV_SDL_ALLOW_HIGHDPI`（根目录 `lv_conf.h`）给窗口加 `SDL_WINDOW_ALLOW_HIGHDPI`，使高 DPI 屏按物理像素渲染而不发糊。替换 LVGL 后需补回。
+
 ### 构建产物与本机配置不入库
 
 `stm32_port/Debug/`、`stm32_port/build_vscode/`、`cmake-build-mac/`、`bin/` 和 Keil 的 `MDK-ARM/DATA_COLLECTION_INTEGRAL/` 都被 `.gitignore` 忽略；2026-10-10 前误入库的产物已改为不跟踪，旧版本仍可从 git 历史取回。固件请用 `./build_fw.sh` 或 CubeIDE 重新构建。`.vscode/` 和根目录 `.settings/` 是本机 IDE 配置，同样不入库。

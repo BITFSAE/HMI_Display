@@ -18,6 +18,13 @@
 - **缺少用例**：计时锁生效时 `0x310` 不转发、界面启动完成前丢帧、`0x701/0x702` 触发后界面端动作。
 - **跨仓库提交未推送**：`vehicle-interfaces` 分支 `can/retire-imu-0x050`、`can/wheel-lap-timer-semantics`（后者基于前者）需走 PR；`Steering_wheel`、`CANRS485_G473`、`CAN2RS485` 为本地提交，未推送。`Steering_wheel` 根目录的 `Vehicle_CanB.dbc` 是过期快照，建议删除。
 
+## 2026-10-11 模拟器窗口 1:1 显示
+
+- 原先 `hal.c` 按 480×272 基准取缩放 1.667，800×480 纹理被非整数拉伸；Retina 屏上还被系统 2 倍线性放大，界面发糊。现去掉缩放，窗口固定为 800×480 逻辑像素，与真机 1:1。
+- 根目录 `lv_conf.h` 新增 `LV_SDL_ALLOW_HIGHDPI`（1）；`lvgl/src/drivers/sdl/lv_sdl_window.c` 据此给窗口加 `SDL_WINDOW_ALLOW_HIGHDPI`，高 DPI 屏上纹理整数倍放大。这是对 LVGL 的本地补丁，升级 LVGL 时需保留（已写入 `README.md`）。
+- 验证：`./run_sim_mac.sh --build-only` 无新增警告；macOS Retina 下实际启动并截图，窗口 800×480 点、内容 1600×960 像素（恰为 2 倍）。**未在 Windows（MinGW）模拟器上验证**，系统缩放 125%/150% 时是否仍模糊未知。
+- 未改：模拟器仍为 32 位色、1 MB 池，与真机 RGB565、60 KiB 不同，见「待办」。
+
 ## 2026-10-11 方向盘按键含义更正与方向盘文档
 
 - 更正：`0x701`（DBC 信号名 `RecorderToggle`）是圈速计时键，不是录像。此前文档把它写成“录像”，来自对 `Recorder` 的误译。信号名沿用旧称，改名会影响 ECU 等按名称生成代码的接收方，须在中央库评审。`0x702` 在车手屏上清除**全部**告警（含排队中的），此前文档写成“最早一条”，只有触摸告警条才逐条消除。

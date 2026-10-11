@@ -295,6 +295,12 @@ static lv_result_t window_create(lv_display_t * disp)
     flag |= SDL_WINDOW_FULLSCREEN;
 #endif
 
+    /* 本仓库补丁: 高 DPI 屏上让 SDL 以物理像素渲染, 避免系统把 1x 画面线性放大而发糊;
+     * 开关 LV_SDL_ALLOW_HIGHDPI 在根目录 lv_conf.h, 升级 LVGL 时需保留此处 */
+#if defined(LV_SDL_ALLOW_HIGHDPI) && LV_SDL_ALLOW_HIGHDPI
+    flag |= SDL_WINDOW_ALLOW_HIGHDPI;
+#endif
+
     int32_t hor_res = (int32_t)((float)(disp->hor_res) * dsc->zoom);
     int32_t ver_res = (int32_t)((float)(disp->ver_res) * dsc->zoom);
     dsc->window = SDL_CreateWindow("LVGL Simulator",
