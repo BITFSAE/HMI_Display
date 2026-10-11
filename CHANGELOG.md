@@ -21,6 +21,11 @@
 - **SOP 与 PK 行未上板验证**：`0x4A0/0x4A3` 的实际周期、丢帧和 BMS 停发时的界面表现未在真机确认；目标机 LVGL 池余量未用 `g_firmware_diag.lvgl_*` 实测；CubeIDE 完整构建未运行。中央库 DBC 的 `0x4A0/0x4A3` 接收方未列 Display，`CANB接口.md` 第 4 章仍写“尚未实现”，需在中央库评审后补登。
 - **缺少用例**：计时锁生效时 `0x310` 不转发、界面启动完成前丢帧、`0x701/0x702` 触发后界面端动作。
 
+## 2026-10-11 合并 ui-redesign 到 master
+
+- `ui-redesign` 无冲突合并入 `master`，同时带入 master 上的提交 `db90653`（GPS 语句白名单：`UNLOG ALL` 清出厂日志，`GNGSV 5` 取多星座合并）。该提交只改了 `gps.c`，`docs/configuration.md` 的 UM982 启动命令此前未同步，现按代码更正。
+- 验证：合并后 `python3 tools/run_firmware_tests.py` 通过；`./build_fw.sh clean` 0 警告，Flash 244,208 B、主 SRAM 92,120 B、CCM 61,440 B。GPS 白名单本身（UM982 实际输出、RMC 丢帧是否消除）未上板验证。
+
 ## 2026-10-11 刹车条临时改用油压
 
 - 刹车踏板传感器的帧尚未就绪（中央库已删除 `0x306`，新 ID 未定），刹车条改由 `0x305` 的 `OilPressure_Kpa`（byte4..5，0.001 kPa）推算：2.1 kPa 为 0%，4.9 kPa 为 90%，线性换算并限幅到 0..100。`can.c` 新增 `can_oil_to_brake_pct`，刹车与油门同帧，共用 1000 ms 超时。
