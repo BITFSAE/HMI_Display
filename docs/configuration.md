@@ -47,6 +47,7 @@ UM982 启动时依次发送（每条后等待并继续读取 DMA）：`UNLOG COM
 | 接收超时 | BMS 2000；ECU 1000；PDM 1500；风扇 1500；SOP 功率 300；SOP 电流 1500 | `CAN_TIMEOUT_BMS_MS/ECU_MS/PDM_MS/FAN_MS/SOP_POWER_MS/SOP_CURRENT_MS` | ms | 超时后对应数值显示 `--`。ECU 周期在中央库仍为暂定值，取宽松门限；周期确定后应收紧 |
 | 超时检查间隔 | 100 | `CAN_TIMEOUT_POLL_MS` | ms | |
 | 方向盘按键重复间隔 | 300 | `CAN_BUTTON_REPEAT_GAP_MS` | ms | 判定「新按下」；方向盘固件按代码每次按键只发一个 1 帧，故该值是两次按下的最小间隔，待抓包确认 |
+| 刹车条油压标定（临时） | 2100 → 0%；4900 → 90% | `BRAKE_OIL_ZERO_RAW`、`BRAKE_OIL_FULL_RAW`、`BRAKE_OIL_FULL_PCT` | 0.001 kPa（即 2.1 / 4.9 kPa）；百分比 | `0x305` 油压线性换算为刹车条，限幅 0..100。刹车传感器就绪后改回真实刹车帧并删除 |
 | 接收队列 / 发送队列 | 64 / 32 | `USER_CAN_RX_QUEUE_CAPACITY`、`USER_CAN_TX_QUEUE_CAPACITY` | 帧 | 满时丢新帧 |
 | 接收白名单 | 见 [CAN 接口](can_interface.md) | `CAN1_RX_MSG_ID_BANK*`、`CAN2_RX_MSG_ID_BANK0` | CAN ID | 新增接收 ID 必须同步修改，并更新 [CAN 接口](can_interface.md) |
 | GPS 帧 ID | `0x067/0x068/0x7A0/0x7A1`（另有 `0x301`） | `CAN_ID_GPS_*` | CAN ID | 对外帧，改动先走中央库评审 |

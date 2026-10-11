@@ -14,7 +14,7 @@ extern "C" {
 #define DASH_VALID_HV_V        (1UL << 1)   /* 0x4B0 byte5 bit0 */
 #define DASH_VALID_HV_I        (1UL << 2)   /* 0x4B0 byte5 bit1 */
 #define DASH_VALID_APS         (1UL << 3)   /* 0x305 */
-#define DASH_VALID_BRAKE       (1UL << 4)   /* 0x306 */
+#define DASH_VALID_BRAKE       (1UL << 4)   /* 0x305 油压推算（临时） */
 #define DASH_VALID_TORQUE      (1UL << 5)   /* 0x502 */
 #define DASH_VALID_RPM         (1UL << 6)   /* 0x505 */
 #define DASH_VALID_MOTOR_TEMP  (1UL << 7)   /* 0x506 */
@@ -77,7 +77,7 @@ typedef struct {
 	uint8_t alert_active;
 	/* 非DBC: 里程(0.1km) */
 	int32_t odometer_tenths;
-	/* DBC BO_774 BrakePedal_0x306 (网关转发CANC 0x270 IBS_Info): BrakePedalPct (%) */
+	/* 刹车开度 %，0..100。临时由 0x305 油压推算：2.1 kPa→0%，4.9 kPa→90%（见 can.c） */
 	int32_t brake_pct;
 	/* Vehicle_CanB.dbc BO_1792: SlipLevel 0..7 */
 	int32_t slip_level;

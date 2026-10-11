@@ -109,8 +109,8 @@ uint16_t CAN1_RX_MSG_ID_BANK1[4] = {0x506, 0x509, 0x508, 0x507};
 uint16_t CAN1_RX_MSG_ID_BANK2[4] = {0x503, 0x504, 0x5A0, 0x5A1};
 /* Bank3: BMS SOP V2 — BMS_SOPLimits(0x4A0 BO_1184), BMS_SOPStatus(0x4A3 BO_1187). 车手屏不收 ECU 的 0x4A4 确认 */
 uint16_t CAN1_RX_MSG_ID_BANK3[4] = {SOP_ID_POWER, SOP_ID_CURRENT, SOP_ID_POWER, SOP_ID_CURRENT};
-/* Bank4: FanController_Status(0x5A2 BO_1442), BrakePedal forward(0x306 BO_774) */
-uint16_t CAN1_RX_MSG_ID_BANK4[4] = {0x5A2, 0x306, 0x5A2, 0x306};
+/* Bank4: FanController_Status(0x5A2 BO_1442)；中央库已删除 0x306，刹车暂由 0x305 油压推算 */
+uint16_t CAN1_RX_MSG_ID_BANK4[4] = {0x5A2, 0x5A2, 0x5A2, 0x5A2};
 /* Bank5: Tire-temperature cells 1..16, four cells per frame. */
 uint16_t CAN1_RX_MSG_ID_BANK5[4] = {0x071, 0x072, 0x073, 0x074};
 /* Bank14: Vehicle_CanB.dbc steering wheel on CAN2 - DriveMode(0x310), SlipLevel(0x700), RecorderToggle(0x701, lap-timer toggle), ErrorClear(0x702) */
@@ -264,6 +264,22 @@ static void User_CAN_ServiceTimeouts(uint32_t now)
 static uint16_t can_u16_le(const uint8_t * d, uint32_t i)
 {
   return (uint16_t)((uint16_t)d[i] | ((uint16_t)d[i + 1U] << 8));
+}
+
+/* 临时方案：刹车踏板传感器（原 0x306）尚无可用帧，刹车条改由 0x305 的油压推算。
+ * 油压原始值为 0.001 kPa/LSB：2.1 kPa（2100）对应 0%，4.9 kPa（4900）对应 90%，
+ * 线性换算并限幅到 0..100；低于 2.1 kPa 记 0%，超过约 5.2 kPa 记 100%。
+ * 传感器就绪后改回真实刹车帧，并删除本换算。 */
+#define BRAKE_OIL_ZERO_RAW  2100U
+#define BRAKE_OIL_FULL_RAW  4900U
+#define BRAKE_OIL_FULL_PCT  90U
+
+static int32_t can_oil_to_brake_pct(uint16_t oil_raw)
+{
+  if(oil_raw <= BRAKE_OIL_ZERO_RAW) return 0;
+  uint32_t pct = ((uint32_t)oil_raw - BRAKE_OIL_ZERO_RAW) * BRAKE_OIL_FULL_PCT /
+                 (BRAKE_OIL_FULL_RAW - BRAKE_OIL_ZERO_RAW);
+  return (pct > 100U) ? 100 : (int32_t)pct;
 }
 
 static uint16_t can_u16_be(const uint8_t * d, uint32_t i)
@@ -714,8 +730,8 @@ void CAN_ServiceTask(void *argument)
  *   BO_1289 Debug9=0x509, BO_1288 Debug8=0x508, BO_1287 Debug7=0x507,
  *   BO_1286 Debug6=0x506, BO_1285 Debug5=0x505, BO_1282 Debug2=0x502,
  *   BO_1284 Debug4=0x504, BO_1283 Debug3=0x503,
- *   BO_773  DataLogger=0x305, BO_774 BrakePedal_0x306 (ECU gateway forward of
- *   CANC 0x270 IBS_Info brake pedal), BO_769 GPS_Speed=0x301(Display->ECU),
+ *   BO_773  DataLogger=0x305 (油门、油压；刹车条暂由油压推算，0x306 已被中央库删除),
+ *   BO_769 GPS_Speed=0x301(Display->ECU),
  *   BO_1440 PDM_LowVoltageBus=0x5A0, BO_1441 PDM_LowVoltageBattery=0x5A1,
  *   BO_1442 FanController_Status=0x5A2 (Fan1/2/3_RPM + PWM1/2_Duty),
  *   BO_103/104 GPS telemetry=0x067/0x068, BO_1952/1953=0x7A0/0x7A1(Display->WirelessGateway),
@@ -981,18 +997,12 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
       /* SG_ APS_OpenPct: 16|16@1+ (0.1,0) %, store integer pct */
       g_can_dashboard_data.aps_open_pct = (int32_t)(can_u16_le(CAN_RxData, 2U) / 10U);
       /* SG_ OilPressure_Kpa: 32|16@1+ (0.001,0) Kpa, raw count */
-      g_can_dashboard_data.oil_pressure = (int32_t)can_u16_le(CAN_RxData, 4U);
+      const uint16_t oil_raw = can_u16_le(CAN_RxData, 4U);
+      g_can_dashboard_data.oil_pressure = (int32_t)oil_raw;
       User_CAN_NoteRx(CAN_SRC_APS, now);
       User_CAN_SetValid(DASH_VALID_APS, 1U);
-      break;
-    }
-
-    /* DBC BO_774 BrakePedal_0x306: ECU gateway forward of CANC 0x270 IBS_Info
-     * (WCBS). SG_ BrakePedalPct: 0|16@1+ (0.1,0) %, store integer pct;
-     * SG_ BrakePedalSwtSts: 16|1@1+ (1=pressed). */
-    case 0x306:
-    {
-      g_can_dashboard_data.brake_pct = (int32_t)(can_u16_le(CAN_RxData, 0U) / 10U);
+      /* 刹车条临时取油压推算值，与油门同帧同新鲜度（见 can_oil_to_brake_pct） */
+      g_can_dashboard_data.brake_pct = can_oil_to_brake_pct(oil_raw);
       User_CAN_NoteRx(CAN_SRC_BRAKE, now);
       User_CAN_SetValid(DASH_VALID_BRAKE, 1U);
       break;

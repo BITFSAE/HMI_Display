@@ -213,6 +213,16 @@ static void test_can_decode(void)
         inject(0x5A0,8,off);assert((d->valid_mask&DASH_VALID_LV_BUS)==0&&d->lv_bus_voltage_mV==32767);
         inject(0x5A0,8,on);assert((d->valid_mask&DASH_VALID_LV_BUS)!=0&&d->lv_bus_voltage_mV==13820);
     }
+    /* 0x305 油压推算刹车条：2.1 kPa(2100)→0%，4.9 kPa(4900)→90%，线性并限幅到 0..100。 */
+    {
+        struct {uint16_t oil;int pct;} const cases[]={{0,0},{2099,0},{2100,0},{3500,45},{4900,90},{5200,99},{5300,100},{65535,100}};
+        for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
+            const uint8_t f[6]={0,0, 0xF4,0x01, (uint8_t)(cases[i].oil&0xFF),(uint8_t)(cases[i].oil>>8)};
+            inject(0x305,6,f);
+            assert((d->valid_mask&DASH_VALID_BRAKE)!=0&&d->brake_pct==cases[i].pct);
+            assert(d->oil_pressure==cases[i].oil&&d->aps_open_pct==50);          /* 油门仍取 byte2..3 */
+        }
+    }
     /* Silence drops the valid bits: ECU frames after 1 s, BMS after 2 s, never-seen sources stay invalid. */
     {
         const uint8_t fan[8]={0x08,0x00, 0x08,0x00, 0x08,0x00, 40,41};
@@ -226,7 +236,7 @@ static void test_can_decode(void)
         assert((d->valid_mask&DASH_VALID_FAN)==0&&(d->valid_mask&DASH_VALID_SOC)!=0);
         test_tick+=500;User_CAN_ServiceTimeouts(test_tick);
         assert((d->valid_mask&(DASH_VALID_SOC|DASH_VALID_HV_V|DASH_VALID_HV_I))==0);
-        assert((d->valid_mask&DASH_VALID_BRAKE)==0);                                 /* 0x306 was never received */
+        assert((d->valid_mask&(DASH_VALID_BRAKE|DASH_VALID_APS))==0);               /* 0x305 timed out: brake follows throttle */
         Dashboard_UI_Process();test_tick+=300;Dashboard_UI_Process();
         assert((Dashboard_UI_GetCurrentData()->valid_mask&DASH_VALID_SOC)==0);       /* and the UI copy follows */
         inject(0x4B0,7,pack);assert((d->valid_mask&DASH_VALID_SOC)!=0);               /* data resumes */
