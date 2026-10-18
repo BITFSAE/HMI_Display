@@ -938,8 +938,9 @@ static void GPS_TaskFunc(void * argument)
 	 * port is wired to USART3. */
 	GPS_SendCmd("UNLOG");
 	GPS_WaitAndDrain(300U);
-	/* Vehicle dynamics profile: up to 100 m/s horizontal speed and lower
-	 * vertical dynamics than the UM982 default UAV profile. */
+	/* §3.6 车载动态：水平最大 100 m/s，位置变化率低于 UM982 默认 UAV（50 m/s）。
+	 * 节标题脚注写「当前暂不支持」，正文又列出该模式；代码不解析应答，无法判断是否生效。
+	 * 车速显示不做平滑，见 docs/gps_lap.md。 */
 	GPS_SendCmd("MODE ROVER AUTOMOTIVE");
 	GPS_WaitAndDrain(500U);
 	GPS_SendCmd("CONFIG HEADING FIXLENGTH");
@@ -949,7 +950,8 @@ static void GPS_TaskFunc(void * argument)
 	GPS_SendCmd("CONFIG HEADING LENGTH 111 10");
 	GPS_WaitAndDrain(100U);
 	/* Whitelist: only the four sentence families the parser consumes.  RMC at
-	 * 20 Hz drives speed/CAN/lap timing, GGA at 1 Hz fix quality and satellite
+	 * the requested 0.05 s period (20 Hz; protocol §1 examples stop at 0.1 s)
+	 * drives speed/CAN/lap timing, GGA at 1 Hz fix quality and satellite
 	 * count, HPR at 5 Hz dual-antenna heading, and GSV every 5 s the signal
 	 * bar.  Requests always carry the GP prefix (protocol manual 7.1 lists
 	 * GBGSV/GLGSV/... as invalid input); the talker of the returned sentences
