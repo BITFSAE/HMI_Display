@@ -7,6 +7,15 @@
 - 四轮电机故障码改为十进制，保留四位补零格式。例如 `0x0231` 显示为 `E 0561`，零仍显示 `OK`，无效数据仍显示 `--`。直接格式化完整诊断码，移除低 16 位截断。CAN 帧和解码不变；显示格式见 [仪表盘界面](docs/dashboard_ui.md)，文档截图已更新。
 - 验证：`./build_fw.sh` 通过，0 警告；Flash 244,208 B、主 SRAM 92,120 B、CCM 61,440 B，均不变。`python3 tools/run_firmware_tests.py --png /tmp/hmi-motor-decimal` 通过，已核对渲染的 `E 0561`。`./run_sim_mac.sh --build-only` 通过，链接器报告重复库警告。
 
+### 2026-10-18 按协议文档修正 GPS 白名单命令
+
+- `UNLOG ALL` 改为无参数 `UNLOG`：协议文档（`docs/reference/Unicore_Reference_Commands_Manual_High_Precision_V1_CH.pdf`）§8.1 只定义 `UNLOG`（停止当前串口全部输出）、`UNLOG <语句>`、`UNLOG COM<x>`、`UNLOG COM<x> <语句>`，"ALL" 不是文档写法。若原写法被接收机拒绝，出厂默认的 1 Hz 全星座流不会被清掉，GSV 突发可能再次冲垮 DMA 环、跑动中速度显示 0。
+- `GNGSV 5` 改为 `GPGSV 5`：§7.1 规定请求统一用 GP 前缀（GBGSV、GLGSV 等为非法输入；§7.2.11 的 `GPHPR` 输出即为 `$GNHPR`），GN/GP/GB 是输出说话者、由接收机按参与定位的系统决定，与请求前缀无关；解析器按报文名匹配，两种说话者的 GSV 都能收。
+- 其余命令逐条核对无误、未改：`MODE ROVER AUTOMOTIVE`（§3.5 车载动态模式，水平最大 100 m/s）、`CONFIG HEADING FIXLENGTH` 与 `CONFIG HEADING LENGTH 111 10`（§4.8，两参数单位均为 cm，参数 2 为容许误差）、`GPRMC 0.05`、`GPGGA 1`、`GPHPR 0.2`（§7.2.11）、`SAVECONFIG`（§8.4）。注意 §1 的更新率示例只列到 0.1 s（10 Hz），`GPRMC 0.05`（20 Hz）待上板确认。
+- `docs/configuration.md` 与 `gps.c` 注释同步。
+- 验证：`mingw32-make -f build_fw.mk` 全量 ARM 构建 0 警告，Flash 244,204 B（-4，即命令字符串缩短的字节数）、主 SRAM 92,120 B、CCM 61,440 B；主机回归（CAN、里程、GPS、界面四组断言）通过。主机回归在 Windows 上无 ASan/UBSan 运行库，本次去掉 `-fsanitize` 后运行，消毒器版本需在 macOS/Linux 上补跑。
+- **未验证**：未上板。`UNLOG` 的实际清除效果、`GPGSV` 返回语句的说话者与条数、20 Hz RMC 是否被接收机接受，需接上模块后确认。
+
 ### 待办
 
 未注明日期的条目已对照 2026-10-10 的代码核对，尚未处理。
@@ -26,16 +35,7 @@
 - **默认模式显示**：ECU 上电后回报 `ModeFlag=-1`（默认模式），界面忽略该值并保持上一个模式，可能与 ECU 实际模式不一致。待 ECU 确认枚举后决定是否增加默认模式显示。
 - **SOP 与 PK 行未上板验证**：`0x4A0/0x4A3` 的实际周期、丢帧和 BMS 停发时的界面表现未在真机确认；目标机 LVGL 池余量未用 `g_firmware_diag.lvgl_*` 实测；CubeIDE 完整构建未运行。中央库 DBC 的 `0x4A0/0x4A3` 接收方未列 Display，`CANB接口.md` 第 4 章仍写“尚未实现”，需在中央库评审后补登。
 - **缺少用例**：计时锁生效时 `0x310` 不转发、界面启动完成前丢帧、`0x701/0x702` 触发后界面端动作。
-- **GPS 白名单待上板确认**：无参数 `UNLOG` 的实际清除效果、`GPGSV` 返回语句的说话者和条数、`GPRMC 0.05`（20 Hz）与 `GPHPR 0.2`（5 Hz）是否被 UM982 接受，见下方 2026-10-18 条目。
-
-## 2026-10-18 按协议文档修正 GPS 白名单命令
-
-- `UNLOG ALL` 改为无参数 `UNLOG`：协议文档（`docs/reference/Unicore_Reference_Commands_Manual_High_Precision_V1_CH.pdf`）§8.1 只定义 `UNLOG`（停止当前串口全部输出）、`UNLOG <语句>`、`UNLOG COM<x>`、`UNLOG COM<x> <语句>`，"ALL" 不是文档写法。若原写法被接收机拒绝，出厂默认的 1 Hz 全星座流不会被清掉，GSV 突发可能再次冲垮 DMA 环、跑动中速度显示 0。
-- `GNGSV 5` 改为 `GPGSV 5`：§7.1 规定请求统一用 GP 前缀（GBGSV、GLGSV 等为非法输入；§7.2.11 的 `GPHPR` 输出即为 `$GNHPR`），GN/GP/GB 是输出说话者、由接收机按参与定位的系统决定，与请求前缀无关；解析器按报文名匹配，两种说话者的 GSV 都能收。
-- 其余命令逐条核对无误、未改：`MODE ROVER AUTOMOTIVE`（§3.5 车载动态模式，水平最大 100 m/s）、`CONFIG HEADING FIXLENGTH` 与 `CONFIG HEADING LENGTH 111 10`（§4.8，两参数单位均为 cm，参数 2 为容许误差）、`GPRMC 0.05`、`GPGGA 1`、`GPHPR 0.2`（§7.2.11）、`SAVECONFIG`（§8.4）。注意 §1 的更新率示例只列到 0.1 s（10 Hz），`GPRMC 0.05`（20 Hz）待上板确认。
-- `docs/configuration.md` 与 `gps.c` 注释同步。
-- 验证：`mingw32-make -f build_fw.mk` 全量 ARM 构建 0 警告，Flash 244,204 B（-4，即命令字符串缩短的字节数）、主 SRAM 92,120 B、CCM 61,440 B；主机回归（CAN、里程、GPS、界面四组断言）通过。主机回归在 Windows 上无 ASan/UBSan 运行库，本次去掉 `-fsanitize` 后运行，消毒器版本需在 macOS/Linux 上补跑。
-- **未验证**：未上板。`UNLOG` 的实际清除效果、`GPGSV` 返回语句的说话者与条数、20 Hz RMC 是否被接收机接受，需接上模块后确认。
+- **GPS 白名单待上板确认**：无参数 `UNLOG` 的实际清除效果、`GPGSV` 返回语句的说话者和条数、`GPRMC 0.05`（20 Hz）与 `GPHPR 0.2`（5 Hz）是否被 UM982 接受，见上方 2026-10-18 条目。
 
 ## 2026-10-11 合并 ui-redesign 到 master
 
