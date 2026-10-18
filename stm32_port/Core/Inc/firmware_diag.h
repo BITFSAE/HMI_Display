@@ -4,10 +4,10 @@
 
 #include <stdint.h>
 
-#define FW_DIAG_TASK_COUNT 6U
+#define FW_DIAG_TASK_COUNT 7U
 typedef enum {
     FW_TASK_DASHBOARD, FW_TASK_TOUCH, FW_TASK_GPS, FW_TASK_CAN,
-    FW_TASK_IDLE, FW_TASK_TIMER
+    FW_TASK_IDLE, FW_TASK_TIMER, FW_TASK_CLI
 } firmware_task_id_t;
 
 typedef struct {

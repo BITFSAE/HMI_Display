@@ -29,7 +29,8 @@ extern "C" {
 #define DASH_VALID_SOP_CURRENT (1UL << 16)  /* 0x4A3, 版本通过且 InputHealth bit7=1 */
 
 typedef struct {
-	/* Display speed in integer km/h. CAN GPS_Speed uses 0.1 km/h raw units. */
+	/* Display speed in integer km/h; -1 = no trusted speed (shown as "--").
+	 * CAN GPS_Speed uses 0.1 km/h raw units. */
 	int32_t speed;
 	/* DBC BO_1200 BatterySOC (%) */
 	int32_t soc;
@@ -120,6 +121,8 @@ void Dashboard_UI_SubmitTireTemperatures(uint32_t wheel_index,
 void Dashboard_UI_SubmitTireTemperaturesCenti(uint32_t wheel_index,
                                               const int32_t temperatures_centi[4]);
 void Dashboard_UI_SubmitSpeed(int32_t speed);
+/* 没有可信速度（数据过期、无定位、上电后尚未收到）：界面显示 "--"，不是 0。 */
+void Dashboard_UI_SubmitSpeedInvalid(void);
 void Dashboard_UI_SubmitOdometer(int32_t odometer_tenths);
 void Dashboard_UI_SubmitDriveMode(int32_t mode_index);
 /* Non-zero while a sprint/lap timing session is active: drive-mode changes

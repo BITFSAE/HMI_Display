@@ -31,6 +31,7 @@
 #include "../lvgl/lvgl.h"
 #include "touch.h"
 #include "gps.h"
+#include "diag_cli.h"
 #include "firmware_diag.h"
 
 extern void LVGL_Port_Init(void);
@@ -133,6 +134,7 @@ void MX_FREERTOS_Init(void) {
   Firmware_Diag_RegisterTask(FW_TASK_TOUCH, touchTaskHandle, "Touch", sizeof(g_touch_task_stack));
   CAN_StartServiceTask();
   GPS_Init();
+  Diag_CLI_Init();
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */

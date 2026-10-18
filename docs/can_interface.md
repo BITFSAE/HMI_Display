@@ -73,7 +73,7 @@ SOP 只接收 BMS 发的 `0x4A0/0x4A3`，不接收 ECU 的 `0x4A4` 确认，也�
 | `0x703` | 2 | 事件：每收到一个有效 `0x700/0x701/0x702` | byte0 滑级 0..7；byte1 bit0 圈速计时（DBC 名 `RecorderToggle`）、bit1 清错 |
 | `0x310` | 透传 | 事件：收到 CAN2 的 `0x310` 且计时模式未锁 | 驾驶模式请求，原样转发 |
 
-`0x301/0x067/0x068/0x7A0/0x7A1` 的字段布局以中央库 `docs/CANB接口.md` 第 10 节为准（Display 已确认，实车联调待完成）。发送节拍为 50 ms，`0x7A0` 每 10 拍、`0x7A1` 每 4 拍，上电第一拍全部发送（`gps.c` `GPS_CAN_STATUS_TICKS`、`GPS_CAN_LAP_TICKS`）。GNSS 的 RMC 超过 500 ms 未更新时，`0x301` 的车速如实报 0；界面则保持最后有效车速 3 s，见 [配置表](configuration.md)。`0x7A0/0x7A1` 使用高 ID（低仲裁优先级），不会压过 SOP、BMS 故障等控制帧。
+`0x301/0x067/0x068/0x7A0/0x7A1` 的字段布局以中央库 `docs/CANB接口.md` 第 10 节为准（Display 已确认，实车联调待完成）。发送节拍为 50 ms，`0x7A0` 每 10 拍、`0x7A1` 每 4 拍，上电第一拍全部发送（`gps.c` `GPS_CAN_STATUS_TICKS`、`GPS_CAN_LAP_TICKS`）。速度数据龄期超过 500 ms（`GPS_CAN_SPEED_STALE_MS`）或 RMC 状态为 V 时，`0x301` 的车速报 0，同时 `0x068` 状态位 `RMC_VALID` 清零，接收方据此区分"真实的 0 km/h"和"没有可信速度"；界面则在速度超过本地新鲜度门限（20 Hz 下 150 ms）后显示 `--`，不再保持旧值，见 [GPS 与圈速](gps_lap.md)。**待在 `vehicle-interfaces` 评审**：CAN 失效门限是否改为与本地一致；`RMC_VALID` 位当前随 `0x068` 每 50 ms 发出，`0x7A0` 状态帧每 500 ms，是否在有效性变化时立即补发 `0x7A0`。评审前本仓库不改变这两处行为。另外 `0x068` 的 `POSITION_VALID` 位现在要求 GGA 定位质量和 RMC 位置都在新鲜度门限内（此前只看最后一条 GGA），数据过期时更早变为 0；位定义不变。`0x7A0/0x7A1` 使用高 ID（低仲裁优先级），不会压过 SOP、BMS 故障等控制帧。
 
 ### 发送队列与总线故障
 

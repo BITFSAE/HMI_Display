@@ -26,6 +26,7 @@
 | [CAN 接口](docs/can_interface.md) | CAN1/CAN2 收发全表、超时与有效性、方向盘帧处理、发送队列、与中央库未对齐项 |
 | [配置表](docs/configuration.md) | GPS、圈速、CAN、显示与实时的可调常量：位置、单位、影响 |
 | [GPS、圈速与冲刺](docs/gps_lap.md) | NMEA 处理、信号等级、里程、过线检测、75 m 冲刺、模式锁、降级行为 |
+| [串口诊断 CLI](docs/diagnostics.md) | USART6 命令行：`report`、`gps capture` 等命令、报告字段与判读、延迟测量范围 |
 | [仪表盘界面](docs/dashboard_ui.md) | 布局、触摸区域、绘制约束、字库与 Logo、验证命令 |
 | [固件资源与性能优化](docs/firmware_optimization.md) | Flash/SRAM/CCM 预算、任务与栈、运行诊断 |
 | [里程存储](docs/odometer_storage.md) | 内部 Flash 扇区 7 的记录格式与掉电行为 |

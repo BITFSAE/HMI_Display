@@ -129,6 +129,12 @@ static float g_sprint_ready_prev_latitude;
 static float g_sprint_ready_prev_longitude;
 static uint32_t g_sprint_ready_prev_tick;
 static uint8_t g_sprint_ready_prev_valid;
+/* 数据连续性：GPS_Data_t.continuity_seq 变化说明速度/位置曾失效又恢复。中断期间的旧位置不得
+ * 再用于过线判定或插值，恢复后的第一个样本只重建锚点，并标记受影响的计时结果。 */
+static uint32_t g_lap_seen_seq;
+static uint8_t  g_lap_gap_flag;
+static uint32_t g_sprint_seen_seq;
+static uint8_t  g_sprint_gap_flag;
 
 static float deg_to_radf32(float deg)
 {
@@ -474,6 +480,8 @@ static uint8_t GPS_Lap_StartAtCurrent_Impl(const GPS_Data_t * data)
 	if((data == NULL) || (data->valid == 0U) || !g_finish_set) return 0U;
 	if(coord_valid(data->latitude, data->longitude) == 0U) return 0U;
 	g_lap_active = 1U;
+	g_lap_seen_seq = data->continuity_seq;
+	g_lap_gap_flag = 0U;
 	g_lap_start_tick = HAL_GetTick();
 	g_lap_prev_tick = g_lap_start_tick;
 	g_lap_current_ms = 0;
@@ -505,6 +513,8 @@ static void GPS_Lap_Reset_Impl(void)
 	g_lap_prev_tick = 0;
 	g_lap_finish_armed = 0U;
 	g_lap_prev_valid = 0U;
+	g_lap_gap_flag = 0U;
+	g_sprint_gap_flag = 0U;
 	clear_current_samples();
 	g_lap_ref_sample_count = 0U;
 	g_lap_ref_valid = 0U;
@@ -582,7 +592,8 @@ static uint8_t GPS_Sprint_StartAtCurrent_Impl(const GPS_Data_t * data, float hea
 
 	if((data == NULL) || (data->valid == 0U)) return 0U;
 	if(coord_valid(data->latitude, data->longitude) == 0U) return 0U;
-	if((finite_f32(data->speed_kmh) == 0U) ||
+	/* 速度失效时 speed_kmh 是 0，但不代表停着：没有可信速度不能进入准备状态。 */
+	if((data->speed_valid == 0U) || (finite_f32(data->speed_kmh) == 0U) ||
 	   (data->speed_kmh >= GPS_SPRINT_START_SPEED_KMH)) return 0U;
 	if((finite_f32(heading_deg) == 0U) || (heading_deg < 0.0f) ||
 	   (heading_deg >= 360.0f)) return 0U;
@@ -599,6 +610,8 @@ static uint8_t GPS_Sprint_StartAtCurrent_Impl(const GPS_Data_t * data, float hea
 	now = HAL_GetTick();
 	g_sprint_active = 1U;
 	g_sprint_started = 0U;
+	g_sprint_seen_seq = data->continuity_seq;
+	g_sprint_gap_flag = 0U;
 	g_sprint_progress_m = 0.0f;
 	g_sprint_prev_forward_m = start_pos.forward_m;
 	g_sprint_prev_pos = start_pos;
@@ -630,6 +643,7 @@ static void GPS_Sprint_Cancel_Impl(void)
 	if(g_sprint_active == 0U) return;
 	g_sprint_active = 0U;
 	g_sprint_started = 0U;
+	g_sprint_gap_flag = 0U;
 	g_lap_current_ms = 0;
 	g_lap_start_tick = 0U;
 	g_sprint_progress_m = 0.0f;
@@ -680,14 +694,27 @@ static void GPS_SprintProcess_Impl(const GPS_Data_t * data)
 	uint32_t finish_tick;
 	int32_t reference_ms;
 	int32_t remaining_m;
+	uint8_t gap;
 
 	if(g_sprint_active == 0U) return;
 	if((data == NULL) || (data->valid == 0U)) return;
 	if(coord_valid(data->latitude, data->longitude) == 0U) return;
-	if((finite_f32(data->speed_kmh) == 0U) || (data->speed_kmh < 0.0f)) return;
+	if((data->speed_valid == 0U) || (finite_f32(data->speed_kmh) == 0U) ||
+	   (data->speed_kmh < 0.0f)) return;
 
 	now = HAL_GetTick();
+	gap = (uint8_t)(data->continuity_seq != g_sprint_seen_seq);
+	g_sprint_seen_seq = data->continuity_seq;
 	if(g_sprint_started == 0U) {
+		if(gap != 0U) {
+			if(data->speed_kmh > GPS_SPRINT_START_SPEED_KMH) {
+				/* 起步发生在数据中断期间：起步位置和时刻无法确定，这次冲刺作废。 */
+				GPS_Sprint_Cancel_Impl();
+				Dashboard_UI_PushAlert("gps lost, run void");
+				return;
+			}
+			g_sprint_ready_prev_valid = 0U;   /* 丢弃中断前的样本，只重建锚点 */
+		}
 		if((g_sprint_ready_prev_valid == 0U) ||
 		   (data->speed_kmh <= GPS_SPRINT_START_SPEED_KMH)) {
 			g_sprint_ready_prev_speed_kmh = data->speed_kmh;
@@ -743,6 +770,19 @@ static void GPS_SprintProcess_Impl(const GPS_Data_t * data)
 	else {
 		curr_pos = project_to_line(&g_sprint_start_line, data->latitude, data->longitude);
 		if(line_pos_valid(&curr_pos) == 0U) return;
+		if(gap != 0U) {
+			g_sprint_gap_flag = 1U;
+			if(curr_pos.forward_m >= GPS_SPRINT_DISTANCE_M) {
+				/* 终点在中断期间越过：不能用中断前的旧位置插值出完成时刻。 */
+				GPS_Sprint_Cancel_Impl();
+				Dashboard_UI_PushAlert("gps lost, run void");
+				return;
+			}
+			/* 以恢复后的第一个样本重建锚点，位移合理性检查不跨中断。 */
+			g_sprint_prev_forward_m = curr_pos.forward_m;
+			g_sprint_prev_pos = curr_pos;
+			g_sprint_prev_tick = now;
+		}
 	}
 	step_dx = curr_pos.forward_m - g_sprint_prev_pos.forward_m;
 	step_dy = curr_pos.lateral_m - g_sprint_prev_pos.lateral_m;
@@ -796,7 +836,9 @@ static void GPS_SprintProcess_Impl(const GPS_Data_t * data)
 									g_lap_count);
 		Dashboard_UI_SubmitLapDelta(g_lap_delta_ms / 10);
 		Dashboard_UI_SubmitSprintRemaining(0);
-		Dashboard_UI_PushAlert("75m run complete");
+		/* 途中有过数据中断：起点和终点插值都用的是中断前后的有效样本，但中间路径未被观测。 */
+		Dashboard_UI_PushAlert((g_sprint_gap_flag != 0U) ? "75m done (gps gap)" : "75m run complete");
+		g_sprint_gap_flag = 0U;
 		return;
 	}
 
@@ -835,12 +877,25 @@ static void GPS_LapProcess_Impl(const GPS_Data_t * data)
 
 	if(!g_start_set || !g_finish_set) return;
 	if(g_lap_analysis_enabled == 0U) return;
-	if(data == NULL || data->valid == 0U) return;
-	if(coord_valid(data->latitude, data->longitude) == 0U) return;
+	if(data == NULL) return;
+	if(data->valid == 0U || coord_valid(data->latitude, data->longitude) == 0U) {
+		/* 计时中定位失效或坐标非法：丢弃旧锚点，恢复后不跨这段插值，这一圈标记为不可信。 */
+		if(g_lap_active != 0U) {
+			g_lap_prev_valid = 0U;
+			g_lap_gap_flag = 1U;
+		}
+		return;
+	}
 
 	if(!g_lap_active) return;
 
 	now = HAL_GetTick();
+	if(data->continuity_seq != g_lap_seen_seq) {
+		/* 数据曾中断：旧锚点作废，本样本只重建锚点；这一圈的用时标记为不可信。 */
+		g_lap_seen_seq = data->continuity_seq;
+		g_lap_prev_valid = 0U;
+		g_lap_gap_flag = 1U;
+	}
 #if GPS_LAP_ENABLE_GEOMETRY == 0U
 	g_lap_current_ms = (int32_t)(now - g_lap_start_tick);
 	submit_lap_times_limited(now, 0U);
@@ -891,14 +946,21 @@ static void GPS_LapProcess_Impl(const GPS_Data_t * data)
 		add_current_sample(&cross_pos, cross_tick, g_lap_current_ms, 1U);
 
 		reference_lap_ms = g_lap_best_ms;
-		new_best_lap = (uint8_t)((reference_lap_ms == 0) ||
-								 (g_lap_current_ms < reference_lap_ms));
-		g_lap_delta_ms = (reference_lap_ms > 0) ?
+		/* 本圈内有过数据中断：过线可能发生在中断期间而被漏掉，这一圈的用时不可信，
+		 * 只显示为上一圈，不参与最快圈、参考轨迹和圈差。 */
+		new_best_lap = (uint8_t)((g_lap_gap_flag == 0U) &&
+								 ((reference_lap_ms == 0) ||
+								  (g_lap_current_ms < reference_lap_ms)));
+		g_lap_delta_ms = ((reference_lap_ms > 0) && (g_lap_gap_flag == 0U)) ?
 						 (g_lap_current_ms - reference_lap_ms) : 0;
 		g_lap_last_ms = g_lap_current_ms;
 		if(new_best_lap != 0U) {
 			g_lap_best_ms = g_lap_current_ms;
 			archive_current_samples();
+		}
+		if(g_lap_gap_flag != 0U) {
+			g_lap_gap_flag = 0U;
+			Dashboard_UI_PushAlert("lap time uncertain");
 		}
 
 		g_lap_count++;

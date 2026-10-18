@@ -5,15 +5,50 @@
 
 uint32_t test_tick=1000, test_primask, test_dma_ndtr=512;
 unsigned test_mutex_depth;
-UART_HandleTypeDef huart3;
+UART_HandleTypeDef huart3,huart6;
 DMA_HandleTypeDef hdma_usart3_rx;
+uint32_t SystemCoreClock=168000000U;
 CAN_HandleTypeDef hcan1={CAN1},hcan2={CAN2};
 volatile firmware_diag_t g_firmware_diag;
 void Firmware_Diag_RegisterTask(firmware_task_id_t id,void *h,const char *n,uint32_t size) {assert(h&&n&&size);(void)id;}
 void Firmware_Diag_LvglAssert(void) {fprintf(stderr,"LVGL allocation/assertion failed\n");abort();}
 void LED_Diag_SetBootStage(uint8_t stage) {(void)stage;}
 void Error_Handler(void) {abort();}
-int HAL_UART_Transmit(UART_HandleTypeDef *h,uint8_t *b,uint16_t n,uint32_t timeout) {(void)h;(void)b;(void)n;(void)timeout;return HAL_OK;}
+/* USART3 发往接收机的命令（去掉 CRLF）；hook 用来模拟接收机的回执。 */
+static char test_cmd_log[64][64];
+static unsigned test_cmd_count;
+static void (*test_tx_hook)(const char *command);
+int HAL_UART_Transmit(UART_HandleTypeDef *h,uint8_t *b,uint16_t n,uint32_t timeout)
+{
+    char command[64];unsigned len=0;
+    (void)h;(void)timeout;
+    while(len<n&&len<sizeof(command)-1&&b[len]!='\r'&&b[len]!='\n'){command[len]=(char)b[len];len++;}
+    command[len]=0;
+    if(test_cmd_count<64){strcpy(test_cmd_log[test_cmd_count],command);}
+    test_cmd_count++;
+    if(test_tx_hook)test_tx_hook(command);
+    return HAL_OK;
+}
+static unsigned test_rx_dma_starts,test_rx_it_arms,test_abort_calls;
+HAL_StatusTypeDef HAL_UART_Receive_DMA(UART_HandleTypeDef *h,uint8_t *p,uint16_t n)
+{
+    (void)p;(void)n;
+    if(h->RxState!=HAL_UART_STATE_READY)return 2;
+    h->RxState=HAL_UART_STATE_BUSY_RX;test_rx_dma_starts++;test_dma_ndtr=512;return HAL_OK;
+}
+HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *h,uint8_t *p,uint16_t n) {(void)h;(void)p;(void)n;test_rx_it_arms++;return HAL_OK;}
+HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *h) {h->RxState=HAL_UART_STATE_READY;test_abort_calls++;return HAL_OK;}
+/* USART6：一次只允许一段发送在途，和 HAL 一致；测试用 cli_tx_complete 模拟发送完成中断。 */
+static char test_cli_out[65536];
+static unsigned test_cli_len,test_cli_tx_pending;
+HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *h,uint8_t *p,uint16_t n)
+{
+    (void)h;
+    if(test_cli_tx_pending)return 2;
+    assert(test_cli_len+n<sizeof(test_cli_out));
+    memcpy(test_cli_out+test_cli_len,p,n);test_cli_len+=n;test_cli_out[test_cli_len]=0;
+    test_cli_tx_pending=n;return HAL_OK;
+}
 
 static CAN_RxHeaderTypeDef test_rx_header;
 static uint8_t test_rx_data[8];
@@ -73,7 +108,10 @@ HAL_StatusTypeDef HAL_FLASHEx_Erase(FLASH_EraseInitTypeDef *init,uint32_t *error
 #include "../../stm32_port/Core/Src/sop.c"
 #include "../../stm32_port/Core/Src/odometer_flash.c"
 #include "../../stm32_port/Core/Src/gps_lap.c"
+#include "../../stm32_port/Core/Src/gps_speed.c"
+#include "../../stm32_port/Core/Src/speed_trace.c"
 #include "../../stm32_port/Core/Src/gps.c"
+#include "../../stm32_port/Core/Src/diag_cli.c"
 #include "../../stm32_port/Core/lvgl/lvgl.h"
 #ifndef DASHBOARD_UI_SOURCE
 #define DASHBOARD_UI_SOURCE "../../stm32_port/Core/Src/dashboard_ui.c"
@@ -433,51 +471,635 @@ static void nmea(const char *payload)
     snprintf(line,sizeof(line),"$%s*%02X\r\n",payload,sum);
     for(const char *p=line;*p;p++)GPS_ProcessByte(*p);
 }
+static void utc_str(char *out,uint32_t ms)
+{
+    ms%=86400000UL;
+    snprintf(out,16,"%02u%02u%02u.%02u",(unsigned)(ms/3600000UL),(unsigned)((ms/60000UL)%60),(unsigned)((ms/1000UL)%60),(unsigned)((ms%1000UL)/10));
+}
+/* 构造一条 RMC：epoch_ms 为 UTC 当日毫秒，knots 为速度字段原文，空串表示字段缺失。 */
+static void rmc_full(uint32_t epoch_ms,char status,const char *knots,double lat,double lon)
+{
+    char utc[16],payload[160],latf[24],lonf[24];
+    double lat_deg=floor(lat),lon_deg=floor(lon);
+    utc_str(utc,epoch_ms);
+    snprintf(latf,sizeof(latf),"%02d%08.5f",(int)lat_deg,(lat-lat_deg)*60.0);
+    snprintf(lonf,sizeof(lonf),"%03d%08.5f",(int)lon_deg,(lon-lon_deg)*60.0);
+    snprintf(payload,sizeof(payload),"GNRMC,%s,%c,%s,N,%s,E,%s,90.0,181026,,,A,V",utc,status,latf,lonf,knots);
+    nmea(payload);
+}
+static void rmc(uint32_t epoch_ms,char status,const char *knots) {rmc_full(epoch_ms,status,knots,32.0,118.0);}
+static void inject_line(const char *text)
+{
+    for(const char *p=text;*p;p++)GPS_ProcessByte((uint8_t)*p);
+    GPS_ProcessByte('\r');GPS_ProcessByte('\n');
+}
+static void gps_test_reset(void)
+{
+    memset(&g_stats,0,sizeof(g_stats));memset(&g_cfg,0,sizeof(g_cfg));
+    GPS_Speed_Init(&g_gps_speed_st);gps_window_clear(test_tick);
+    g_stats.shown_speed_kmh=-1;g_stats.last_epoch_ms=GPS_CAPTURE_NO_EPOCH;g_ui_speed_shown=0;
+    memset(&g_gps_data,0,sizeof(g_gps_data));g_gps_track_tenths=0;
+    g_gga_tick=0;g_service_tick=0;g_odometer_seen_seq=0;g_odometer_anchor_valid=0;
+    g_gps_line_len=0;g_gps_line_active=0;g_gps_dma_restarted=0;g_gps_request=GPS_REQ_NONE;
+    g_capture_state=GPS_CAPTURE_IDLE;g_capture_count=0;g_raw_active=0;g_raw_count=0;
+    g_gps_can_last_tick=0;g_gps_can_slow_phase=0;g_gps_can_lap_count=0;
+    huart3.RxState=HAL_UART_STATE_BUSY_RX;test_dma_ndtr=512;g_gps_dma_last_pos=0;
+    g_gps_poll_tick=0;g_gps_poll_gap_max_ms=0;g_gps_dma_late_poll_count=0;
+}
+static int alert_pending(const char *text)
+{
+    for(unsigned i=0;i<g_pending_alert_count;i++)if(!strcmp((const char *)g_pending_alert_queue[i],text))return 1;
+    return 0;
+}
+
 static void test_gps(void)
 {
+    gps_test_reset();
     nmea("GPHPR,120000,123.4,0,0,4");assert(g_gps_data.heading_valid&&g_gps_data.heading_angle>123);
     nmea("GPHPR,120000,9999999999999999999999999999999999999999999999999999999999999,0,0,4");
     assert(!g_gps_data.heading_valid);
+    int32_t centi=-1;
     assert(nmea_field_atoi("$GPGGA,999999999999999",1)==0);
     assert(nmea_field_atoi_milli("$GPGGA,999999999999999999999999",1)==0);
-    assert(nmea_parse_speed_kmh_centi("$GPRMC,999999999999999999999999",1)==0);
+    assert(!nmea_parse_speed_kmh_centi("$GPRMC,999999999999999999999999",1,&centi)&&centi==-1);
     assert(nmea_parse_track_int("$GPRMC,999999999999999999999999",1)==0);
     assert(nmea_parse_coord_deg("$GPRMC,999999999999999999999999,N",1,2)==0);
     assert(gps_angle_to_cdeg(INFINITY)==0&&gps_angle_to_cdeg(-1)==0&&gps_angle_to_cdeg(360)==0);
+    /* 速度字段：空、非数字、负数都不是 0 km/h；合法数字按 1 kn = 1.852 km/h 换算并限幅。 */
+    assert(!nmea_parse_speed_kmh_centi("$GNRMC,,",1,&centi));
+    assert(!nmea_parse_speed_kmh_centi("$GNRMC,abc,",1,&centi));
+    assert(!nmea_parse_speed_kmh_centi("$GNRMC,-1.0,",1,&centi));
+    assert(!nmea_parse_speed_kmh_centi("$GNRMC,1.2.3,",1,&centi));
+    assert(nmea_parse_speed_kmh_centi("$GNRMC,0.000,",1,&centi)&&centi==0);
+    assert(nmea_parse_speed_kmh_centi("$GNRMC,38.88,",1,&centi)&&centi==7201);
+    assert(nmea_parse_speed_kmh_centi("$GNRMC,1000.0,",1,&centi)&&centi==30000);
+    uint32_t epoch=0;uint8_t fine=9;
+    assert(nmea_parse_utc_ms("$GNRMC,123456.78,",1,&epoch,&fine)&&epoch==45296780UL&&fine==1);
+    assert(nmea_parse_utc_ms("$GNRMC,235959,",1,&epoch,&fine)&&epoch==86399000UL&&fine==0);
+    assert(!nmea_parse_utc_ms("$GNRMC,246000.00,",1,&epoch,&fine)&&!nmea_parse_utc_ms("$GNRMC,,",1,&epoch,&fine));
     test_tick=UINT32_MAX-20;g_gps_poll_tick=test_tick;test_tick+=50;GPS_SentenceProcess();
     assert(g_gps_dma_late_poll_count==1&&g_gps_poll_gap_max_ms==50);
     test_tick=1000;g_gps_poll_tick=0;GPS_WaitAndDrain(500);
     assert(g_gps_poll_gap_max_ms==50&&g_gps_dma_late_poll_count==1);
-    test_tick=10000;g_gps_rmc_last_tick=test_tick;g_gps_rmc_valid=1;
-    g_gps_speed_kmh_centi=7200;g_gps_speed_kmh_int=72;g_gps_speed_ui_alive_tick=test_tick;
-    /* Speed, position and motion go out every 50 ms; odometer/status every
-     * 500 ms and lap timing every 200 ms (20-tick cycle = 20/20/2/5 frames). */
+
+    /* CAN 节拍：用真实 RMC 语句建立速度，再检查 50 ms 帧、500 ms 状态帧、200 ms 圈速帧。 */
+    test_tick=10000;rmc(43200000UL,'A',"38.88");
+    assert(g_stats.rmc_accepted==1&&g_pending_speed==72);
     unsigned sent=test_tx_count;
     memset(test_tx_id_count,0,sizeof(test_tx_id_count));
     g_gps_can_last_tick=0;g_gps_can_slow_phase=0;g_gps_can_lap_count=0;g_odometer_total_m=12345; /* 123 x 0.1 km */
     gps_can_speed_tick(test_tick);assert(test_can_speed_tenths==720);
     assert(test_tx_count==sent+5&&test_tx_id_count[0x7A0]==1&&test_tx_id_count[0x7A1]==1);
     assert(test_tx_id_data[0x7A0][0]==123&&test_tx_id_data[0x7A0][1]==0&&test_tx_id_data[0x7A0][2]==0);
+    assert((test_tx_id_data[0x068][6]&0x08)!=0);                       /* RMC_VALID */
     sent=test_tx_count;gps_can_speed_tick(test_tick+49);assert(test_tx_count==sent);
     for(unsigned tick=1;tick<20;tick++) {
-        g_gps_rmc_last_tick=test_tick+tick*50U;g_gps_rmc_valid=1;
-        gps_can_speed_tick(test_tick+tick*50U);
+        test_tick=10000+tick*50U;rmc(43200000UL+tick*50U,'A',"38.88");
+        gps_can_speed_tick(test_tick);
     }
     assert(test_tx_id_count[0x301]==20&&test_tx_id_count[0x067]==20&&test_tx_id_count[0x068]==20);
     assert(test_tx_id_count[0x7A0]==2&&test_tx_id_count[0x7A1]==5);
     /* A lap-count change sends status and lap timing at once, off the slow slots. */
     unsigned status=test_tx_id_count[0x7A0],lap=test_tx_id_count[0x7A1];
+    test_tick=10000;
     assert(g_gps_can_slow_phase==0);gps_can_speed_tick(test_tick+20U*50U);   /* slot 0: both due */
     assert(test_tx_id_count[0x7A0]==status+1&&test_tx_id_count[0x7A1]==lap+1);
     g_gps_can_lap_count=7;gps_can_speed_tick(test_tick+21U*50U);            /* slot 1: nothing due, lap changed */
     assert(test_tx_id_count[0x7A0]==status+2&&test_tx_id_count[0x7A1]==lap+2&&g_gps_can_lap_count==0);
     gps_can_speed_tick(test_tick+22U*50U);                                  /* slot 2: only the fast frames */
     assert(test_tx_id_count[0x7A0]==status+2&&test_tx_id_count[0x7A1]==lap+2);
-    g_gps_rmc_last_tick=test_tick;g_gps_rmc_valid=1;g_gps_speed_kmh_centi=7200;g_gps_speed_kmh_int=72;
-    g_gps_can_last_tick=test_tick+50;
-    gps_can_speed_tick(test_tick+501);assert(test_can_speed_tenths==0&&g_gps_speed_ui_alive_tick==test_tick);
-    gps_can_speed_tick(test_tick+3001);assert(g_gps_speed_ui_alive_tick==0&&g_pending_speed==0);
-    puts("GPS: fragmented NMEA, pathological heading, tick wrap, DMA polling and per-frame CAN periods passed");
+    /* 断流：CAN 车速 500 ms 后报 0 且 RMC_VALID 清零；本地门限 150 ms 先让界面显示 "--"。 */
+    test_tick=20000;rmc(44000000UL,'A',"38.88");
+    g_gps_can_last_tick=test_tick-50;gps_can_speed_tick(test_tick);assert(test_can_speed_tenths==720);
+    g_gps_can_last_tick=test_tick;gps_can_speed_tick(test_tick+400);assert(test_can_speed_tenths==720);
+    gps_can_speed_tick(test_tick+451);                                         /* 周期到，但还没过 500 ms */
+    assert(test_can_speed_tenths==720&&(test_tx_id_data[0x068][6]&0x08)!=0);
+    g_gps_can_last_tick=test_tick;gps_can_speed_tick(test_tick+501);
+    assert(test_can_speed_tenths==0&&(test_tx_id_data[0x068][6]&0x08)==0);
+    gps_speed_service(test_tick+100);assert(g_pending_speed==72);          /* 仍在 150 ms 内 */
+    gps_speed_service(test_tick+151);assert(g_pending_speed==-1&&g_stats.speed_invalid_events==1);
+    puts("GPS: fragmented NMEA, pathological heading, tick wrap, DMA polling, speed field parsing and per-frame CAN periods passed");
+}
+
+static gps_speed_view_t view_at(const gps_speed_state_t *st,uint32_t now) {gps_speed_view_t v;GPS_Speed_GetView(st,now,0,&v);return v;}
+static gps_rmc_sample_t sample(uint32_t epoch,int32_t centi)
+{
+    return (gps_rmc_sample_t){.fix_ok=1,.speed_present=1,.speed_centi=centi,.position_present=1,.epoch_present=1,.epoch_fine=1,.epoch_ms=epoch};
+}
+static void test_speed_module(void)
+{
+    gps_speed_state_t st;gps_speed_view_t v;uint8_t pos;gps_rmc_sample_t s;
+    GPS_Speed_Init(&st);
+    v=view_at(&st,1000);assert(!v.valid&&v.reason==GPS_SPEED_REASON_NO_DATA&&v.speed_centi==0);
+    assert(!GPS_Speed_PositionFresh(&st,1000)&&GPS_Speed_FreshLimit(&st)==150);
+    /* 新鲜度门限：3 个 20 Hz 周期 = 150 ms，门限时刻仍有效，过一毫秒失效；失效时速度为 0 但原因是 STALE。 */
+    s=sample(43200000UL,7201);
+    assert(GPS_Speed_OnRmc(&st,&s,1000,&pos)==GPS_RMC_ACCEPTED&&pos==1&&st.continuity_seq==1);
+    v=view_at(&st,1150);assert(v.valid&&v.speed_centi==7201&&v.age_ms==150&&v.limit_ms==150);
+    v=view_at(&st,1151);assert(!v.valid&&v.reason==GPS_SPEED_REASON_STALE&&v.speed_centi==0);
+    /* 持续到来的样本不改变连续性序号；断流后重新接受才加一。 */
+    s.epoch_ms+=50;assert(GPS_Speed_OnRmc(&st,&s,1050,&pos)==GPS_RMC_ACCEPTED);
+    assert(st.continuity_seq==1&&st.last_interval_ms==50&&st.last_epoch_delta_ms==50);
+    s.epoch_ms+=450;assert(GPS_Speed_OnRmc(&st,&s,1500,&pos)==GPS_RMC_ACCEPTED);
+    assert(st.continuity_seq==2&&st.last_interval_ms==450);
+    /* 状态 V：立即失效，原因 NO_FIX，位置同时失效；恢复后的第一条再次增加序号。 */
+    s.fix_ok=0;assert(GPS_Speed_OnRmc(&st,&s,1510,&pos)==GPS_RMC_NO_FIX&&pos==0);
+    v=view_at(&st,1510);assert(!v.valid&&v.reason==GPS_SPEED_REASON_NO_FIX&&v.speed_centi==0);
+    assert(!GPS_Speed_PositionFresh(&st,1510));
+    s.fix_ok=1;s.epoch_ms+=50;assert(GPS_Speed_OnRmc(&st,&s,1560,&pos)==GPS_RMC_ACCEPTED&&st.continuity_seq==3);
+    v=view_at(&st,1560);assert(v.valid&&GPS_Speed_PositionFresh(&st,1560));
+    /* 重复历元：不续期，也不刷新位置。 */
+    GPS_Speed_Init(&st);s=sample(50000000UL,1000);
+    assert(GPS_Speed_OnRmc(&st,&s,2000,&pos)==GPS_RMC_ACCEPTED);
+    assert(GPS_Speed_OnRmc(&st,&s,2050,&pos)==GPS_RMC_DUP_EPOCH&&pos==0&&st.last_reject==GPS_RMC_DUP_EPOCH);
+    v=view_at(&st,2100);assert(v.valid&&v.age_ms==100);
+    v=view_at(&st,2151);assert(!v.valid&&v.reason==GPS_SPEED_REASON_STALE);
+    /* 倒退历元：同样不续期。 */
+    GPS_Speed_Init(&st);s=sample(50000000UL,1000);
+    assert(GPS_Speed_OnRmc(&st,&s,3000,&pos)==GPS_RMC_ACCEPTED);
+    s.epoch_ms-=1000;assert(GPS_Speed_OnRmc(&st,&s,3050,&pos)==GPS_RMC_BACK_EPOCH&&pos==0);
+    assert(view_at(&st,3100).age_ms==100);
+    /* 速度字段缺失（状态 A）：不当作 0，不续期速度；位置仍可续期。 */
+    GPS_Speed_Init(&st);s=sample(50000000UL,1000);
+    assert(GPS_Speed_OnRmc(&st,&s,4000,&pos)==GPS_RMC_ACCEPTED);
+    s.epoch_ms+=50;s.speed_present=0;s.speed_centi=0;
+    assert(GPS_Speed_OnRmc(&st,&s,4050,&pos)==GPS_RMC_BAD_FIELD&&pos==1);
+    v=view_at(&st,4100);assert(v.valid&&v.speed_centi==1000&&v.age_ms==100);
+    assert(GPS_Speed_PositionFresh(&st,4200)&&!GPS_Speed_PositionFresh(&st,4201));
+    /* 跨午夜：23:59:59.95 → 00:00:00.00 是前进 50 ms，不是倒退。 */
+    GPS_Speed_Init(&st);s=sample(86399950UL,500);
+    assert(GPS_Speed_OnRmc(&st,&s,5000,&pos)==GPS_RMC_ACCEPTED);
+    s.epoch_ms=0;assert(GPS_Speed_OnRmc(&st,&s,5050,&pos)==GPS_RMC_ACCEPTED&&st.last_epoch_delta_ms==50);
+    s.epoch_ms=50;assert(GPS_Speed_OnRmc(&st,&s,5100,&pos)==GPS_RMC_ACCEPTED&&st.continuity_seq==1);
+    /* 只有整秒的时间字段无法区分同一秒内的多条：不做重复检查，也不丢弃数据。 */
+    GPS_Speed_Init(&st);s=sample(50000000UL,500);s.epoch_fine=0;
+    assert(GPS_Speed_OnRmc(&st,&s,6000,&pos)==GPS_RMC_ACCEPTED);
+    assert(GPS_Speed_OnRmc(&st,&s,6050,&pos)==GPS_RMC_ACCEPTED&&st.accepted==2);
+    /* 静默超过 1 s 后历元基准作废：之后即使历元更小也接受（接收机重启）。 */
+    GPS_Speed_Init(&st);s=sample(50000000UL,500);
+    assert(GPS_Speed_OnRmc(&st,&s,7000,&pos)==GPS_RMC_ACCEPTED);
+    s.epoch_ms=49000000UL;assert(GPS_Speed_OnRmc(&st,&s,8500,&pos)==GPS_RMC_ACCEPTED);
+    /* MCU 计时回绕：龄期按无符号差计算。 */
+    GPS_Speed_Init(&st);s=sample(50000000UL,500);
+    assert(GPS_Speed_OnRmc(&st,&s,UINT32_MAX-9U,&pos)==GPS_RMC_ACCEPTED);
+    v=view_at(&st,70);assert(v.valid&&v.age_ms==80);
+    s.epoch_ms+=50;assert(GPS_Speed_OnRmc(&st,&s,40,&pos)==GPS_RMC_ACCEPTED&&st.last_interval_ms==50&&st.continuity_seq==1);
+    assert(!view_at(&st,191).valid&&view_at(&st,190).valid);
+    /* 门限随实测输出率收敛：10 Hz → 约 300 ms；1 Hz → 上限 1500 ms；一次断流不会把门限拉高。 */
+    GPS_Speed_Init(&st);s=sample(10000000UL,500);
+    uint32_t t=1000;
+    for(unsigned i=0;i<60;i++,t+=100) {s.epoch_ms+=100;assert(GPS_Speed_OnRmc(&st,&s,t,&pos)==GPS_RMC_ACCEPTED);}
+    assert(GPS_Speed_FreshLimit(&st)>=285&&GPS_Speed_FreshLimit(&st)<=315);
+    GPS_Speed_Init(&st);s=sample(10000000UL,500);t=1000;
+    for(unsigned i=0;i<60;i++,t+=50) {s.epoch_ms+=50;assert(GPS_Speed_OnRmc(&st,&s,t,&pos)==GPS_RMC_ACCEPTED);}
+    t+=1450;s.epoch_ms+=1500;assert(GPS_Speed_OnRmc(&st,&s,t,&pos)==GPS_RMC_ACCEPTED);
+    assert(GPS_Speed_FreshLimit(&st)==150);                                    /* 偶发断流不抬高门限 */
+    s.epoch_ms+=50;t+=50;assert(GPS_Speed_OnRmc(&st,&s,t,&pos)==GPS_RMC_ACCEPTED&&GPS_Speed_FreshLimit(&st)==150);
+    for(unsigned i=0;i<2;i++){t+=400;s.epoch_ms+=400;(void)GPS_Speed_OnRmc(&st,&s,t,&pos);}
+    assert(GPS_Speed_FreshLimit(&st)==150);                                    /* 连续两次慢间隔仍按断流处理 */
+    GPS_Speed_Init(&st);s=sample(10000000UL,500);t=1000;
+    for(unsigned i=0;i<40;i++,t+=1000) {s.epoch_ms+=1000;(void)GPS_Speed_OnRmc(&st,&s,t,&pos);}
+    assert(GPS_Speed_FreshLimit(&st)==GPS_FRESH_MAX_MS);
+    /* 有效性切换记录。 */
+    GPS_Speed_Init(&st);s=sample(50000000UL,500);
+    assert(GPS_Speed_Poll(&st,1000)==0);
+    assert(GPS_Speed_OnRmc(&st,&s,1000,&pos)==GPS_RMC_ACCEPTED&&GPS_Speed_Poll(&st,1000)==1);
+    assert(GPS_Speed_Poll(&st,1100)==0&&GPS_Speed_Poll(&st,1151)==1&&GPS_Speed_Poll(&st,1200)==0);
+    assert(st.event_total==2&&st.events[0].valid==1&&st.events[1].valid==0&&
+           st.events[1].reason==GPS_SPEED_REASON_STALE&&st.events[1].age_ms==151);
+    puts("Speed validity: 150 ms freshness, V status, duplicate/backward epochs, bad field, midnight, tick wrap and adaptive limit passed");
+}
+
+static void test_gps_pipeline(void)
+{
+    GPS_Data_t d;
+    gps_test_reset();
+    g_pending_alert_count=0;
+    /* 上电后到首条可信 RMC 之前：没有可信速度，界面保持 "--"（-1），不是 0。 */
+    test_tick=30000;gps_service_once();
+    GPS_GetData(&d);assert(!d.speed_valid&&d.speed_reason==GPS_SPEED_REASON_NO_DATA&&d.speed_kmh==0.0f&&!d.valid);
+    rmc(43200000UL,'A',"38.88");
+    assert(g_stats.rmc_accepted==1&&g_pending_speed==72&&g_stats.shown_speed_kmh==72&&g_stats.raw_speed_centi==7201);
+    GPS_GetData(&d);assert(d.speed_valid&&d.speed_kmh>72.0f&&d.speed_kmh<72.02f&&d.speed_age_ms==0);
+    /* 20 Hz 连续 1 s：一直有效，没有失效事件。 */
+    for(unsigned i=1;i<=20;i++) {test_tick+=50;rmc(43200000UL+i*50U,'A',"38.88");gps_service_once();}
+    assert(g_stats.rmc_accepted==21&&g_stats.speed_invalid_events==0&&g_gps_speed_st.event_total==1);
+    assert(g_win.interval_min_ms==50&&g_win.interval_max_ms==50&&g_win.epoch_min_ms==50&&g_win.epoch_max_ms==50);
+    /* 重复与倒退的历元被拒绝，不续期。 */
+    rmc(43200000UL+20U*50U,'A',"38.88");assert(g_stats.rmc_dup_epoch==1&&g_stats.rmc_accepted==21);
+    rmc(43200000UL+10U*50U,'A',"38.88");assert(g_stats.rmc_back_epoch==1&&g_stats.rmc_accepted==21);
+    /* 状态 A 但速度为空：不当作 0 km/h，界面不变。 */
+    test_tick+=50;rmc(43200000UL+21U*50U,'A','\0'?"":"");
+    assert(g_stats.rmc_bad_field==1&&g_stats.rmc_accepted==21&&g_pending_speed==72);
+    /* 接收机对 GPRMC 命令的回执含 "RMC"，不能当作 RMC 语句解析成 V 而使车速失效。 */
+    unsigned no_fix=g_stats.rmc_no_fix;
+    nmea("command,GPRMC 0.05,response: OK");
+    assert(g_stats.n_reply==1&&g_stats.n_rmc==g_stats.rmc_accepted+g_stats.rmc_dup_epoch+g_stats.rmc_back_epoch+g_stats.rmc_bad_field+no_fix);
+    assert(g_stats.rmc_no_fix==no_fix);
+    gps_service_once();GPS_GetData(&d);assert(d.speed_valid);
+    /* 断流超过 150 ms：界面立即显示 "--"，速度为 0 但 speed_valid 为 0。 */
+    test_tick+=100;gps_service_once();assert(g_pending_speed==72);          /* 第 150 ms 仍有效（最后一条在 test_tick-150 前） */
+    test_tick+=60;gps_service_once();
+    assert(g_pending_speed==-1&&g_stats.shown_speed_kmh==-1&&g_stats.speed_invalid_events==1);
+    GPS_GetData(&d);assert(!d.speed_valid&&d.speed_reason==GPS_SPEED_REASON_STALE&&d.speed_kmh==0.0f&&d.speed_age_ms>150);
+    uint32_t seq=d.continuity_seq;
+    /* 恢复：第一条新数据立即生效，连续性序号加一。 */
+    test_tick+=50;rmc(44000000UL,'A',"38.88");
+    GPS_GetData(&d);assert(d.speed_valid&&g_pending_speed==72&&d.continuity_seq==seq+1);
+    /* 真实的 0 km/h 与"没有可信速度"不同：显示 0，speed_valid 为 1。 */
+    test_tick+=50;rmc(44000050UL,'A',"0.00");
+    GPS_GetData(&d);assert(d.speed_valid&&d.speed_kmh==0.0f&&g_pending_speed==0&&g_stats.shown_speed_kmh==0);
+    /* 状态 V：立即失效，不等门限。 */
+    test_tick+=50;rmc(44000100UL,'V',"0.00");gps_service_once();
+    GPS_GetData(&d);assert(!d.speed_valid&&d.speed_reason==GPS_SPEED_REASON_NO_FIX&&g_pending_speed==-1);
+    /* 校验和错误、行溢出、截断：只计数，不影响状态。 */
+    unsigned bad=g_stats.checksum_fail;
+    for(const char *p="$GNRMC,120000.00,A,3200.0,N,11800.0,E,1.0,0.0,181026,,,A,V*00\r\n";*p;p++)GPS_ProcessByte((uint8_t)*p);
+    assert(g_stats.checksum_fail==bad+1);
+    GPS_ProcessByte('$');for(unsigned i=0;i<200;i++)GPS_ProcessByte('A');assert(g_stats.line_overflow==1);
+    GPS_ProcessByte('$');GPS_ProcessByte('G');GPS_ProcessByte('$');assert(g_stats.line_truncated==1);
+    GPS_ProcessByte('\n');g_gps_line_active=0;g_gps_line_len=0;
+    /* 位置与定位质量各有自己的过期：GGA 3.5 s，位置跟随 RMC 的新鲜度。 */
+    test_tick+=50;rmc(44000150UL,'A',"1.00");
+    nmea("GNGGA,120000.00,3200.0000,N,11800.0000,E,1,12,0.8,50.0,M,0,M,,");
+    GPS_GetData(&d);assert(d.valid&&d.fix_quality==1&&d.satellites==12);
+    uint32_t limit=GPS_Speed_FreshLimit(&g_gps_speed_st);                      /* 状态 V 拉长过一次间隔，门限略高于 150 ms */
+    assert(limit>=150&&limit<=200);
+    test_tick+=limit;gps_service_once();GPS_GetData(&d);assert(d.valid);
+    test_tick+=1;gps_service_once();GPS_GetData(&d);assert(!d.valid&&d.fix_quality==1);   /* RMC 位置先过期 */
+    test_tick+=3400;gps_service_once();GPS_GetData(&d);assert(d.fix_quality==0&&d.satellites==0&&d.signal_level==GPS_SIG_LEVEL_NONE);
+    rmc(44000200UL,'A',"1.00");GPS_GetData(&d);assert(!d.valid);          /* GGA 过期后不会因 RMC 恢复而变回有定位 */
+    nmea("GNGGA,120001.00,3200.0000,N,11800.0000,E,4,12,0.8,50.0,M,0,M,,");
+    GPS_GetData(&d);assert(d.valid&&d.fix_quality==4);
+    /* 白名单之外的语句与 '#' 日志：计数；只有查询期间才保存原始行。 */
+    nmea("GNGSA,A,3,01,02,03,,,,,,,,,,1.0,1.0,1.0");assert(g_stats.n_other==1&&g_raw_count==0);
+    g_raw_active=1;inject_line("#VERSION,97,GPS,FINE,2326,378237000,0,0,18,155;UM982,R4.10");
+    nmea("GNGSA,A,3,04,05,06,,,,,,,,,,1.0,1.0,1.0");
+    assert(g_raw_count==2&&!strncmp(g_raw_lines[0],"#VERSION",8)&&!strncmp(g_raw_lines[1],"$GNGSA",6));
+    g_raw_active=0;inject_line("#MODE,81,GPS,FINE");assert(g_raw_count==2);
+    puts("GPS pipeline: freshness, '--' vs real zero, V status, duplicate/bad-field rejection, reply isolation, GGA expiry and counters passed");
+}
+
+static void test_continuity(void)
+{
+    GPS_Data_t d;
+    gps_test_reset();
+    /* 里程：20 Hz、36 km/h 向北行驶，断流 1 s（小于旧版的 2 s 间隔门限）期间多走 10 m，不能被累计。 */
+    g_odometer_initialized=0;gps_odometer_init();assert(g_odometer_initialized);
+    uint32_t base=g_odometer_total_m;
+    double lat=32.0,step=0.5/111195.0;
+    uint32_t epoch=43200000UL;
+    test_tick=100000;
+    for(unsigned i=0;i<100;i++) {
+        rmc_full(epoch,'A',"19.44",lat,118.0);gps_service_once();
+        epoch+=50;test_tick+=50;lat+=step;
+    }
+    uint32_t before_gap=g_odometer_total_m-base;
+    assert(before_gap>=47&&before_gap<=50);                                   /* 99 个间隔 × 0.5 m */
+    lat+=20*step;epoch+=1000;test_tick+=1000;                                /* 断流 1 s，车辆继续前进 10 m */
+    for(unsigned i=0;i<20;i++) {
+        rmc_full(epoch,'A',"19.44",lat,118.0);gps_service_once();
+        epoch+=50;test_tick+=50;lat+=step;
+    }
+    uint32_t total=g_odometer_total_m-base;
+    assert(total>=56&&total<=61);                                             /* 约 50 + 9.5 m，不含断流期间的 10 m */
+    /* 圈速与冲刺比较连续性序号；GPS_Data_t 由测试直接构造。 */
+    #define LAT_M(m) ((float)(32.0+(m)/111195.0))
+    GPS_Lap_Reset();GPS_Sprint_Reset();
+    GPS_Lap_SetStartLine(32.0f,118.0f,0.0f);GPS_Lap_SetFinishLine(32.0f,118.0f,0.0f);
+    memset(&d,0,sizeof(d));d.valid=1;d.latitude=LAT_M(0.0);d.longitude=118.0f;d.fix_quality=4;
+    d.speed_valid=0;d.speed_kmh=0.0f;d.continuity_seq=1;
+    /* 速度无效时的 0 不是停车：不允许进入冲刺准备。 */
+    assert(GPS_Sprint_StartAtCurrent(&d,0.0f)==0&&!GPS_Sprint_IsActive());
+    d.speed_valid=1;assert(GPS_Sprint_StartAtCurrent(&d,0.0f)==1&&GPS_Sprint_IsActive());
+    GPS_SprintProcess(&d);
+    /* 准备阶段中断，恢复后车辆已在运动：起步位置/时刻不可知，这次冲刺作废。 */
+    test_tick+=2000;d.continuity_seq=2;d.speed_kmh=8.0f;d.latitude=LAT_M(5.0);
+    g_pending_alert_count=0;GPS_SprintProcess(&d);
+    assert(!GPS_Sprint_IsActive()&&alert_pending("gps lost, run void"));
+    /* 准备阶段中断但车辆仍静止：只重建锚点，随后正常起步和完成；用时不受中断影响。 */
+    GPS_Sprint_Reset();d.speed_kmh=0.0f;d.latitude=LAT_M(0.0);d.continuity_seq=2;
+    assert(GPS_Sprint_StartAtCurrent(&d,0.0f)==1);
+    GPS_SprintProcess(&d);test_tick+=3000;d.continuity_seq=3;GPS_SprintProcess(&d);
+    assert(GPS_Sprint_IsActive()&&!g_sprint_started);
+    test_tick+=100;d.speed_kmh=3.0f;d.latitude=LAT_M(1.0);GPS_SprintProcess(&d);assert(g_sprint_started);
+    d.speed_kmh=40.0f;
+    for(int m=10;m<=30;m+=10) {test_tick+=500;d.latitude=LAT_M(m);GPS_SprintProcess(&d);}
+    assert(g_sprint_started&&g_sprint_gap_flag==0);
+    /* 进行中断流：恢复后的第一个样本重建锚点（位移检查不跨中断），结果标记 gps gap。 */
+    test_tick+=2000;d.continuity_seq=4;d.latitude=LAT_M(50.0);g_pending_alert_count=0;GPS_SprintProcess(&d);
+    assert(g_sprint_started&&g_sprint_gap_flag==1&&g_sprint_active);
+    for(int m=60;m<=70;m+=10) {test_tick+=500;d.latitude=LAT_M(m);GPS_SprintProcess(&d);}
+    test_tick+=250;d.latitude=LAT_M(78.0);GPS_SprintProcess(&d);
+    assert(!g_sprint_active&&g_lap_count==1&&alert_pending("75m done (gps gap)")&&g_sprint_gap_flag==0);
+    /* 终点在断流期间越过：不能用中断前的旧位置插值，作废。 */
+    GPS_Sprint_Reset();d.speed_kmh=0.0f;d.latitude=LAT_M(0.0);
+    assert(GPS_Sprint_StartAtCurrent(&d,0.0f)==1);GPS_SprintProcess(&d);
+    test_tick+=100;d.speed_kmh=3.0f;d.latitude=LAT_M(1.0);GPS_SprintProcess(&d);assert(g_sprint_started);
+    d.speed_kmh=40.0f;test_tick+=500;d.latitude=LAT_M(20.0);GPS_SprintProcess(&d);
+    test_tick+=2000;d.continuity_seq=5;d.latitude=LAT_M(90.0);g_pending_alert_count=0;GPS_SprintProcess(&d);
+    assert(!g_sprint_active&&g_lap_count==0&&alert_pending("gps lost, run void"));
+
+    /* 圈速：线在 lat=32.0，朝北。开始于线南 50 m。 */
+    GPS_Lap_Reset();GPS_Lap_SetStartLine(32.0f,118.0f,0.0f);GPS_Lap_SetFinishLine(32.0f,118.0f,0.0f);
+    d.speed_valid=1;d.speed_kmh=40.0f;d.continuity_seq=10;d.latitude=LAT_M(-50.0);
+    GPS_Lap_SetAnalysisActive(1);assert(GPS_Lap_StartAtCurrent(&d)==1);
+    test_tick+=500;d.latitude=LAT_M(-40.0);GPS_LapProcess(&d);
+    /* 过线发生在断流期间：第一个恢复样本只建锚点，不判定过线，也不统计圈数。 */
+    test_tick+=2000;d.continuity_seq=11;d.latitude=LAT_M(30.0);GPS_LapProcess(&d);
+    assert(g_lap_count==0&&g_lap_gap_flag==1&&g_lap_prev_valid==1);
+    /* 掉头后再次过线：这一圈用时不可信，只显示为上一圈，不成为最快圈。 */
+    test_tick+=500;d.latitude=LAT_M(10.0);GPS_LapProcess(&d);
+    test_tick+=500;d.latitude=LAT_M(-30.0);GPS_LapProcess(&d);
+    test_tick+=500;g_pending_alert_count=0;d.latitude=LAT_M(20.0);GPS_LapProcess(&d);
+    assert(g_lap_count==1&&g_lap_last_ms>0&&g_lap_best_ms==0&&g_lap_gap_flag==0&&alert_pending("lap time uncertain"));
+    /* 没有中断的一圈照常成为最快圈。 */
+    GPS_Lap_Reset();GPS_Lap_SetStartLine(32.0f,118.0f,0.0f);GPS_Lap_SetFinishLine(32.0f,118.0f,0.0f);
+    d.latitude=LAT_M(-50.0);assert(GPS_Lap_StartAtCurrent(&d)==1);
+    test_tick+=500;d.latitude=LAT_M(-20.0);GPS_LapProcess(&d);
+    test_tick+=500;d.latitude=LAT_M(20.0);GPS_LapProcess(&d);
+    assert(g_lap_count==1&&g_lap_best_ms>0&&g_lap_best_ms==g_lap_last_ms);
+    /* 计时中定位失效：旧锚点作废，恢复后不跨这段判定过线，这一圈同样标记。 */
+    d.latitude=LAT_M(-50.0);test_tick+=500;GPS_LapProcess(&d);
+    d.valid=0;test_tick+=500;GPS_LapProcess(&d);assert(g_lap_prev_valid==0&&g_lap_gap_flag==1);
+    GPS_Lap_SetAnalysisActive(0);GPS_Lap_Reset();GPS_Sprint_Reset();
+    #undef LAT_M
+    puts("Continuity: odometer, sprint READY/RUNNING gaps, void run, lap gap flag and position-loss anchors passed");
+}
+
+static void test_gps_link(void)
+{
+    gps_test_reset();
+    /* USART3 错误：HAL 已中止 DMA 接收；回调统计并重启，任务侧丢弃旧读位置并从下标 0 解析。 */
+    huart3.RxState=HAL_UART_STATE_READY;unsigned starts=test_rx_dma_starts;
+    GPS_UartErrorCallback(HAL_UART_ERROR_FE|HAL_UART_ERROR_ORE);
+    assert(g_stats.uart_err_fe==1&&g_stats.uart_err_ore==1&&g_stats.rx_restarts==1&&g_stats.rx_restart_fail==0);
+    assert(test_rx_dma_starts==starts+1&&huart3.RxState==HAL_UART_STATE_BUSY_RX&&g_gps_dma_restarted);
+    char line[160];unsigned sum=0;const char *body="GNRMC,130000.00,A,3200.0000,N,11800.0000,E,38.88,90.0,181026,,,A,V";
+    for(const char *p=body;*p;p++)sum^=(unsigned char)*p;
+    int n=snprintf(line,sizeof(line),"$%s*%02X\r\n",body,sum);
+    memcpy(g_gps_dma_buf,line,(size_t)n);g_gps_dma_last_pos=300;test_dma_ndtr=512-(unsigned)n;
+    test_tick=50000;GPS_SentenceProcess();
+    assert(g_stats.rmc_accepted==1&&g_gps_dma_last_pos==(unsigned)n&&!g_gps_dma_restarted);
+    assert(g_stats.dma_bytes==(unsigned)n&&g_stats.ring_pending_max==(unsigned)n);
+    /* 回调丢失或重启失败时，任务在轮询里补救。 */
+    huart3.RxState=HAL_UART_STATE_READY;starts=test_rx_dma_starts;test_tick+=10;GPS_SentenceProcess();
+    assert(test_rx_dma_starts==starts+1&&g_stats.rx_restarts==2&&huart3.RxState==HAL_UART_STATE_BUSY_RX);
+    /* 错误风暴：100 ms 内中断里最多重启 8 次，其余留给任务轮询。 */
+    GPS_UartErrorCallback(0);                                                    /* 重新计窗，下面 12 次集中在同一个 100 ms 内 */
+    test_tick+=1000;starts=test_rx_dma_starts;unsigned restarts=g_stats.rx_restarts;
+    for(unsigned i=0;i<12;i++){huart3.RxState=HAL_UART_STATE_READY;GPS_UartErrorCallback(HAL_UART_ERROR_FE);}
+    assert(test_rx_dma_starts==starts+8&&g_stats.rx_restarts==restarts+8&&g_stats.uart_err_fe>=12);
+    huart3.RxState=HAL_UART_STATE_READY;test_tick+=10;GPS_SentenceProcess();    /* 任务补救一次 */
+    assert(test_rx_dma_starts==starts+9&&huart3.RxState==HAL_UART_STATE_BUSY_RX);
+    test_tick+=200;huart3.RxState=HAL_UART_STATE_READY;GPS_UartErrorCallback(HAL_UART_ERROR_FE);   /* 新窗口恢复中断内重启 */
+    assert(test_rx_dma_starts==starts+10);
+    /* 接收仍在进行时不重复启动。 */
+    starts=test_rx_dma_starts;GPS_UartErrorCallback(HAL_UART_ERROR_PE|HAL_UART_ERROR_NE|HAL_UART_ERROR_DMA);
+    assert(test_rx_dma_starts==starts&&g_stats.uart_err_pe==1&&g_stats.uart_err_ne==1&&g_stats.uart_err_dma==1);
+    /* 一次在途窗口内的最大待读字节数与窗口极值。 */
+    GPS_WindowReset();g_gps_poll_tick=test_tick;test_tick+=10;test_dma_ndtr=512-200;g_gps_dma_last_pos=0;GPS_SentenceProcess();
+    GPS_Window_t w;GPS_GetWindow(&w);assert(w.ring_pending_max==200&&w.poll_gap_max_ms==10);
+    test_dma_ndtr=512;g_gps_dma_last_pos=0;
+    puts("GPS link: UART error recovery, DMA restart from ring start, task fallback and ring fill counters passed");
+}
+
+/* 模拟接收机：mode 0 按命令回 OK（查询命令另有 '#' 日志），1 不回，2 回错误。 */
+static int test_rx_mode;
+static void receiver_reply(const char *command)
+{
+    char body[120];
+    if(test_rx_mode==1)return;
+    if(!strcmp(command,"VERSION")) {inject_line("#VERSION,97,GPS,FINE,2326,378237000,0,0,18,155;UM982,R4.10Build11826,HRPT00-S10C-P*5A1B2C3D");return;}
+    if(!strcmp(command,"MODE")) {inject_line("#MODE,81,GPS,FINE,2230,547967000,0,0,18,518;MODE ROVER AUTOMOTIVE,*1B");return;}
+    snprintf(body,sizeof(body),"command,%s,response: %s",command,test_rx_mode==2?"PARSING FAILED NO MATCHING FUNC":"OK");
+    nmea(body);
+}
+static void test_gps_config(void)
+{
+    gps_test_reset();
+    test_tx_hook=receiver_reply;
+    /* 接收机正常回执：UNLOG 不要求确认，其余命令一次成功；启动时不再发 SAVECONFIG。 */
+    test_rx_mode=0;test_cmd_count=0;test_tick=60000;gps_cfg_run_boot();
+    assert(test_cmd_count==8&&!strcmp(test_cmd_log[0],"UNLOG")&&!strcmp(test_cmd_log[4],"GPRMC 0.05"));
+    for(unsigned i=0;i<test_cmd_count;i++)assert(strcmp(test_cmd_log[i],"SAVECONFIG")!=0);
+    assert(g_cfg.count==8&&g_cfg.ack_seen&&!g_cfg.ack_unsupported&&!g_cfg.running);
+    assert(g_cfg.item[0].state==GPS_CFG_UNCONFIRMED);
+    for(unsigned i=1;i<8;i++)assert(g_cfg.item[i].state==GPS_CFG_OK&&g_cfg.item[i].attempts==1&&!strcmp(g_cfg.item[i].reply,"OK"));
+    /* 接收机拒绝：记 REJECTED，不重发。 */
+    test_rx_mode=2;test_cmd_count=0;gps_test_reset();test_tx_hook=receiver_reply;gps_cfg_run_boot();
+    assert(g_cfg.item[1].state==GPS_CFG_REJECTED&&g_cfg.item[1].attempts==1&&strstr(g_cfg.item[1].reply,"PARSING FAILED"));
+    assert(test_cmd_count==8);
+    /* 无回执：每条重发两次（共 3 次）；连续两条无回执后放弃确认，其余命令只发一次、按固定时间等待。 */
+    test_rx_mode=1;test_cmd_count=0;gps_test_reset();test_tx_hook=receiver_reply;
+    uint32_t start=test_tick;gps_cfg_run_boot();
+    assert(g_cfg.item[1].state==GPS_CFG_NOACK&&g_cfg.item[1].attempts==3);
+    assert(g_cfg.item[2].state==GPS_CFG_NOACK&&g_cfg.item[2].attempts==3&&g_cfg.ack_unsupported&&!g_cfg.ack_seen);
+    for(unsigned i=3;i<8;i++)assert(g_cfg.item[i].state==GPS_CFG_UNCONFIRMED&&g_cfg.item[i].attempts==1);
+    assert(test_cmd_count==1+3+3+5);
+    assert((test_tick-start)<9000);                                           /* 启动配置最坏耗时有界 */
+    /* 迟到的上一条命令的回执不能算到当前命令上。 */
+    gps_test_reset();g_cfg_pending_cmd="GPGGA 1";g_cfg_ack=GPS_CFG_ACK_NONE;
+    nmea("command,GPRMC 0.05,response: OK");assert(g_cfg_ack==GPS_CFG_ACK_NONE);
+    nmea("command,gpgga 1,response: OK");assert(g_cfg_ack==GPS_CFG_ACK_OK);
+    g_cfg_pending_cmd=NULL;
+    /* CLI 请求：查询收集 '#' 日志；改速率/保存走同一套确认；同时只接受一个请求。 */
+    gps_test_reset();test_rx_mode=0;test_tx_hook=receiver_reply;test_cmd_count=0;
+    assert(GPS_Request(GPS_REQ_QUERY)==1&&GPS_Request(GPS_REQ_SAVE)==0&&GPS_RequestPending()==GPS_REQ_QUERY);
+    gps_request_service();
+    assert(GPS_RequestPending()==GPS_REQ_NONE&&test_cmd_count==4&&!strcmp(test_cmd_log[3],"UNILOGLIST"));
+    assert(g_raw_count>=2&&!strncmp(g_raw_lines[0],"#VERSION",8)&&!g_raw_active);
+    assert(GPS_Request(GPS_REQ_RATE_10HZ)==1);gps_request_service();
+    assert(g_cfg.request.state==GPS_CFG_OK&&!strcmp(g_cfg.request.cmd,"GPRMC 0.1"));
+    assert(GPS_Request(GPS_REQ_SAVE)==1);gps_request_service();
+    assert(g_cfg.request.state==GPS_CFG_OK&&!strcmp(g_cfg.request.cmd,"SAVECONFIG"));
+    test_tx_hook=NULL;
+    puts("GPS config: acknowledgements, rejection, no-ack fallback, late replies, bounded boot time and CLI requests passed");
+}
+
+/* ------------------------------------------------------------ CLI */
+static void cli_tx_complete(void) {if(test_cli_tx_pending){test_cli_tx_pending=0;Diag_CLI_UartTxDone();}}
+static void cli_out_clear(void) {test_cli_len=0;test_cli_out[0]=0;}
+static void cli_type(const char *text) {for(;*text;text++){g_rx_byte=(uint8_t)*text;Diag_CLI_UartRxCplt();}}
+static uint32_t cli_epoch;
+static void cli_feed_20hz(unsigned t_ms)
+{
+    if((t_ms%50U)==0U) {rmc(cli_epoch,'A',"38.88");cli_epoch+=50;}
+    gps_service_once();
+}
+static void cli_feed_silence(unsigned t_ms) {(void)t_ms;gps_service_once();}   /* 接收机断流，GPS 任务照常每 10 ms 检查 */
+static void cli_pump(unsigned ms,void (*feed)(unsigned))
+{
+    for(unsigned t=0;t<ms;t+=10) {
+        test_tick+=10;
+        if(feed)feed(t);
+        if(GPS_RequestPending()!=GPS_REQ_NONE)gps_request_service();
+        Diag_CLI_Step(test_tick);
+        cli_tx_complete();
+    }
+}
+static double find_num(const char *text,const char *key)
+{
+    const char *p=strstr(text,key);
+    return p?atof(p+strlen(key)):-1e9;
+}
+static unsigned count_char(const char *text,char c) {unsigned n=0;for(;*text;text++)n+=(*text==c);return n;}
+static void test_cli(void)
+{
+    gps_test_reset();test_tx_hook=receiver_reply;test_rx_mode=0;
+    Diag_CLI_Init();assert(test_rx_it_arms>0);
+    cli_out_clear();
+    /* 参数检查与行编辑。 */
+    cli_type("report abc\r");cli_pump(50,NULL);assert(strstr(test_cli_out,"error: seconds must be a number"));
+    cli_out_clear();cli_type("report 0\r");cli_pump(50,NULL);assert(strstr(test_cli_out,"seconds must be 1..60"));
+    cli_out_clear();cli_type("report 61\r");cli_pump(50,NULL);assert(strstr(test_cli_out,"seconds must be 1..60"));
+    cli_out_clear();cli_type("gps rate 15\r");cli_pump(50,NULL);assert(strstr(test_cli_out,"rate must be 10 or 20"));
+    cli_out_clear();cli_type("gps capture 99\r");cli_pump(50,NULL);assert(strstr(test_cli_out,"seconds must be 1..20"));
+    cli_out_clear();cli_type("bogus\r");cli_pump(50,NULL);assert(strstr(test_cli_out,"unknown command"));
+    cli_out_clear();cli_type("help a b c d e\r");cli_pump(50,NULL);assert(strstr(test_cli_out,"too many arguments"));
+    cli_out_clear();cli_type("gps\r");cli_pump(50,NULL);assert(strstr(test_cli_out,"usage: gps"));
+    cli_out_clear();cli_type("hexx\b\blp\r");cli_pump(100,NULL);                /* 退格后是 help，CRLF 只算一次 */
+    assert(strstr(test_cli_out,"report [N]")&&strstr(test_cli_out,"gps capture [N]"));
+    cli_out_clear();cli_type("version\r\n");cli_pump(50,NULL);
+    assert(strstr(test_cli_out,"hmi-display fw=")&&strstr(test_cli_out,"report_fmt=1")&&count_char(test_cli_out,'>')==1);
+    /* 过长的行不会越界。 */
+    cli_out_clear();for(unsigned i=0;i<10;i++)cli_type("0123456789");cli_type("\r");cli_pump(100,NULL);
+    assert(strstr(test_cli_out,"unknown command"));
+    /* gps status、sys status：瞬时输出。 */
+    cli_epoch=43200000UL;test_tick+=100;rmc(cli_epoch,'A',"38.88");cli_epoch+=50;
+    cli_out_clear();cli_type("gps status\r");cli_pump(100,NULL);
+    assert(strstr(test_cli_out,"gps.status speed_valid=1 reason=ok")&&strstr(test_cli_out,"gps.status.link"));
+    cli_out_clear();cli_type("sys status\r");cli_pump(100,NULL);
+    assert(strstr(test_cli_out,"HMI-DIAG SYS")&&strstr(test_cli_out,"sys.task name=")&&strstr(test_cli_out,"sys.io can_rx_drop=")&&strstr(test_cli_out,"sys.cli rx_drop="));
+    assert(count_char(test_cli_out,'\n')>=FW_DIAG_TASK_COUNT+5);
+
+    /* report：采样 3 s，期间 20 Hz 正常输出；窗口内统计和报告各节齐全。 */
+    cli_out_clear();test_tick+=100;rmc(cli_epoch,'A',"38.88");cli_epoch+=50;gps_service_once();
+    cli_type("report 3\r");cli_pump(20,cli_feed_20hz);assert(strstr(test_cli_out,"sampling 3 s"));
+    cli_out_clear();cli_type("help\r");cli_pump(20,cli_feed_20hz);assert(strstr(test_cli_out,"busy, type stop"));
+    cli_out_clear();cli_pump(3300,cli_feed_20hz);
+    assert(strstr(test_cli_out,"HMI-DIAG BEGIN fmt=1")&&strstr(test_cli_out,"HMI-DIAG END"));
+    const char *keys[]={"build fw=","window start_ms=","gps.rmc rmc_total=","gps.rmc.rejected no_fix=","gps.nmea bytes=","gps.speed valid_now=",
+        "gps.speed.value raw_kmh=","gps.link poll_gap_max_ms=","gps.uart pe=","gps.cfg ack_seen=","gps.event t_ms=","latency.submit_to_apply n=",
+        "latency.apply_to_frame_done n=","latency.display loop_max_ms=","sys uptime_ms=","sys.task name=","sys.io can_rx_drop=","sys.cli rx_drop="};
+    for(unsigned i=0;i<sizeof(keys)/sizeof(keys[0]);i++){if(!strstr(test_cli_out,keys[i])){fprintf(stderr,"missing report line: %s\n%s\n",keys[i],test_cli_out);abort();}}
+    double rate=find_num(test_cli_out,"rate_hz=");assert(rate>19.0&&rate<21.0);
+    assert(find_num(test_cli_out,"interval_ms_min=")>=20&&find_num(test_cli_out,"interval_ms_max=")<=60);
+    assert(find_num(test_cli_out,"utc_step_ms_min=")==50&&find_num(test_cli_out,"valid_pct=")>=95.0);
+    assert(find_num(test_cli_out,"dup_epoch=")==0&&find_num(test_cli_out,"back_epoch=")==0&&find_num(test_cli_out,"bad_field=")==0);
+    assert(strstr(test_cli_out,"raw_kmh=72.01 shown_kmh=72")&&strstr(test_cli_out,"reason=ok")&&g_job.kind==JOB_IDLE);
+    assert(find_num(test_cli_out,"limit_ms=")==150&&g_tx_drop_bytes==0);
+    assert(count_char(test_cli_out,'>')==1);                                   /* 结束后只有一个提示符 */
+
+    /* stop 和 Ctrl-C 终止采样；采样被中止后不输出报告。 */
+    cli_out_clear();cli_type("report 30\r");cli_pump(100,cli_feed_20hz);cli_type("stop\r");cli_pump(50,cli_feed_20hz);
+    assert(strstr(test_cli_out,"stopped")&&!strstr(test_cli_out,"HMI-DIAG BEGIN")&&g_job.kind==JOB_IDLE);
+    cli_out_clear();cli_type("report 30\r");cli_pump(100,cli_feed_20hz);cli_type("\x03");cli_pump(50,cli_feed_20hz);
+    assert(strstr(test_cli_out,"stopped")&&g_job.kind==JOB_IDLE);
+
+    /* 速度失效、重复历元、断流都会出现在报告里。 */
+    cli_out_clear();cli_type("report 3\r");cli_pump(500,cli_feed_20hz);
+    rmc(cli_epoch-50,'A',"38.88");                                              /* 重复历元 */
+    cli_pump(600,cli_feed_silence);                                             /* 断流 600 ms */
+    cli_pump(2300,cli_feed_20hz);
+    assert(find_num(test_cli_out,"dup_epoch=")==1&&strstr(test_cli_out,"gps.event t_ms="));
+    assert(strstr(test_cli_out,"to=invalid reason=stale")&&strstr(test_cli_out,"to=valid reason=ok"));
+    assert(find_num(test_cli_out,"invalid_events=")==1&&find_num(test_cli_out,"age_max_ms=")>=600);
+    assert(find_num(test_cli_out,"valid_pct=")<90.0);
+
+    /* gps capture：逐条 CSV，含重复历元和失效事件。 */
+    cli_out_clear();cli_type("gps capture 3\r");cli_pump(500,cli_feed_20hz);
+    rmc(cli_epoch-50,'A',"38.88");cli_pump(400,cli_feed_silence);cli_pump(2300,cli_feed_20hz);
+    assert(strstr(test_cli_out,"HMI-DIAG GPS-CAPTURE BEGIN")&&strstr(test_cli_out,"GPS-CAPTURE END")&&strstr(test_cli_out,"idx,tick_ms,utc_ms,raw_kmh,shown_kmh,verdict,valid"));
+    assert(strstr(test_cli_out,",dup_epoch,")&&strstr(test_cli_out,",invalid:stale,0")&&strstr(test_cli_out,",accepted,1"));
+    unsigned records=(unsigned)find_num(test_cli_out,"records=");
+    assert(records==GPS_CaptureCount()&&records>=50);
+    assert(count_char(test_cli_out,'\n')==records+6);                         /* 命令回显、提示行、BEGIN、列名、记录、END、结束空行 */
+
+    /* 发送拥堵：UART 不发送时 CLI 不丢内容、不阻塞；恢复后完整输出。 */
+    cli_out_clear();cli_type("help\r");
+    for(unsigned i=0;i<20;i++){test_tick+=10;Diag_CLI_Step(test_tick);}         /* 不调用 cli_tx_complete */
+    assert(strstr(test_cli_out,"help")&&!strstr(test_cli_out,"gps save"));
+    cli_pump(200,NULL);assert(strstr(test_cli_out,"gps save")&&strstr(test_cli_out,"stop   ")&&g_tx_drop_bytes==0);
+    /* 回显在发送环已满时丢弃并计数（命令输出不丢）。 */
+    unsigned dropped=g_tx_drop_bytes;
+    cli_out_clear();for(unsigned i=0;i<1100;i++)tx_put("x",1);assert(g_tx_drop_bytes>dropped);
+    cli_pump(500,NULL);
+
+    /* gps config / rate / save 经 GPS 任务执行；启动配置的回执结果也在其中。 */
+    gps_cfg_run_boot();
+    cli_out_clear();cli_type("gps config\r");cli_pump(200,cli_feed_20hz);cli_pump(600,NULL);
+    assert(strstr(test_cli_out,"HMI-DIAG GPS-CONFIG BEGIN")&&strstr(test_cli_out,"gps.cfg.cmd i=1 cmd=\"MODE ROVER AUTOMOTIVE\" state=ok"));
+    assert(strstr(test_cli_out,"gps.raw i=0 #VERSION")&&strstr(test_cli_out,"HMI-DIAG GPS-CONFIG END"));
+    cli_out_clear();cli_type("gps rate 10\r");cli_pump(600,NULL);
+    assert(strstr(test_cli_out,"gps.request cmd=\"GPRMC 0.1\" state=ok attempts=1 reply=\"OK\""));
+    cli_out_clear();cli_type("gps save\r");cli_pump(900,NULL);
+    assert(strstr(test_cli_out,"gps.request cmd=\"SAVECONFIG\" state=ok"));
+    cli_out_clear();cli_type("gps rate 20\r");cli_pump(600,NULL);assert(strstr(test_cli_out,"cmd=\"GPRMC 0.05\" state=ok"));
+    cli_out_clear();cli_type("gps smooth on\r");cli_pump(600,NULL);assert(strstr(test_cli_out,"cmd=\"CONFIG SMOOTH PSRVEL enable\" state=ok"));
+    cli_out_clear();cli_type("gps smooth off\r");cli_pump(600,NULL);assert(strstr(test_cli_out,"cmd=\"CONFIG SMOOTH PSRVEL disable\" state=ok"));
+    cli_out_clear();cli_type("gps smooth maybe\r");cli_pump(50,NULL);assert(strstr(test_cli_out,"smooth must be on or off"));
+
+    /* RX 线路噪声：连续错误过多时停止接收，1 s 后恢复，不长期占用 CPU。 */
+    unsigned arms=test_rx_it_arms,aborts=test_abort_calls;
+    for(unsigned i=0;i<70;i++)Diag_CLI_UartError(HAL_UART_ERROR_FE);
+    assert(g_rx_stalled&&test_abort_calls==aborts+1&&test_rx_it_arms==arms+64);
+    test_tick+=500;Diag_CLI_Step(test_tick);assert(g_rx_stalled);
+    test_tick+=600;Diag_CLI_Step(test_tick);assert(!g_rx_stalled&&test_rx_it_arms==arms+65);
+    g_rx_err_streak=0;
+    /* 接收环写满只丢字节并计数。 */
+    unsigned rx_drop=g_rx_drop;for(unsigned i=0;i<200;i++)cli_type("a");assert(g_rx_drop>rx_drop);
+    Diag_CLI_Step(test_tick+10);cli_type("\r");cli_pump(50,NULL);
+    test_tx_hook=NULL;
+    puts("CLI: argument checks, line editing, report/capture content, stop, busy, TX congestion, GPS requests and RX noise guard passed");
+}
+static void ui_pass(void) {test_tick+=20;Dashboard_UI_Process();lv_refr_now(NULL);}
+static void test_ui_speed(void)
+{
+    GPS_Data_t d;
+    /* 上电：没有可信速度时显示 "--"（不是 0）；真实的 0 km/h 与 "--" 是两种状态。 */
+    assert(g_speed==DASH_VIEW_INVALID);
+    Dashboard_UI_SubmitSpeed(0);ui_pass();
+    assert(g_speed==0&&Dashboard_UI_GetCurrentData()->speed==0);
+    Dashboard_UI_SubmitSpeedInvalid();ui_pass();
+    assert(g_speed==DASH_VIEW_INVALID&&Dashboard_UI_GetCurrentData()->speed==-1);
+    Dashboard_UI_SubmitSpeed(87);ui_pass();assert(g_speed==87);
+    /* 失效后重复提交失效不重绘；覆盖未应用的数值只计一次。 */
+    SpeedTrace_Reset();
+    Dashboard_UI_SubmitSpeed(88);Dashboard_UI_SubmitSpeed(89);ui_pass();
+    speed_trace_t trace;SpeedTrace_Get(&trace);
+    assert(g_speed==89&&trace.superseded==1&&trace.submit_to_apply.count==1&&trace.submit_to_apply.last_ms<=20);
+    SpeedTrace_FrameDone(test_tick+7);SpeedTrace_Get(&trace);
+    assert(trace.apply_to_frame.count==1&&trace.apply_to_frame.last_ms==7);
+    SpeedTrace_FrameDone(test_tick+9);SpeedTrace_Get(&trace);assert(trace.apply_to_frame.count==1);   /* 只计应用后的第一帧 */
+    Dashboard_UI_SubmitSpeed(89);ui_pass();SpeedTrace_Get(&trace);assert(trace.submit_to_apply.count==1);   /* 数值没变不统计 */
+
+    /* 速度过期但位置仍新鲜：不能当成停车来准备冲刺；没有双天线航向时圈速也需要可信速度。 */
+    gps_test_reset();g_pending_alert_count=0;
+    test_tick=200000;
+    nmea("GNGGA,120000.00,3200.0000,N,11800.0000,E,1,12,0.8,50.0,M,0,M,,");
+    for(unsigned i=0;i<10;i++) {rmc(43200000UL+i*50U,'A',"0.00");test_tick+=50;}
+    for(unsigned i=10;i<14;i++) {rmc(43200000UL+i*50U,'A',"");test_tick+=50;gps_service_once();}   /* 速度字段缺失，位置照常 */
+    GPS_GetData(&d);assert(d.valid&&!d.speed_valid&&d.speed_kmh==0.0f&&d.signal_level>GPS_SIG_LEVEL_NONE);
+    g_drive_mode=DRIVE_MODE_S;g_pending_alert_count=0;
+    dashboard_toggle_lap_analysis();
+    assert(alert_pending("gps speed invalid")&&!GPS_Sprint_IsActive());
+    g_drive_mode=DRIVE_MODE_Q;g_pending_alert_count=0;
+    dashboard_toggle_lap_analysis();
+    assert(alert_pending("gps speed invalid")&&!g_lap_analysis_active);
+    /* 双天线航向有效时圈速不需要速度，但 S 模式冲刺仍必须有可信速度。 */
+    nmea("GPHPR,120000,123.4,0,0,4");GPS_GetData(&d);assert(d.heading_valid);
+    g_drive_mode=DRIVE_MODE_S;g_pending_alert_count=0;
+    dashboard_toggle_lap_analysis();
+    assert(alert_pending("gps speed invalid")&&!GPS_Sprint_IsActive());
+    /* 速度恢复后可以准备冲刺。 */
+    rmc(43200000UL+14U*50U,'A',"0.00");
+    g_pending_alert_count=0;
+    dashboard_toggle_lap_analysis();
+    assert(GPS_Sprint_IsActive()&&!alert_pending("gps speed invalid"));
+    GPS_Sprint_Cancel();g_lap_analysis_active=0;g_pending_alert_count=0;
+    GPS_Lap_Reset();GPS_Sprint_Reset();
+    puts("UI speed: '--' vs real 0, invalid state, supersede/latency trace and sprint/lap start gating on speed validity passed");
 }
 /* Per-motor PK is the highest power since power-on: lifting off, zero torque or regen never clears it. */
 static void test_motor_peak(void)
@@ -503,6 +1125,8 @@ static void test_ui(void)
     flushes=0;Dash_View_SetBattery(d->soc,d->sum_voltage,d->sum_current);
     for(unsigned wheel=0;wheel<4;wheel++)Dash_View_SetTire(wheel,g_tire_temp[wheel]);
     lv_refr_now(NULL);assert(flushes==0);
+    /* 慢组每 200 ms 才应用一次：固定节拍相位，使最后一轮（i=399）恰落在应用时刻，断言不依赖之前用例推进了多少毫秒。 */
+    g_dashboard_slow_ui_last_tick=test_tick;g_dashboard_fast_ui_last_tick=test_tick;
     for(unsigned i=0;i<400;i++) {
         dashboard_data_t data=*Dashboard_UI_GetCurrentData();
         data.valid_mask=TEST_ALL_VALID;data.soc=i%101;data.sum_voltage=400;data.sum_current=i%100;
@@ -571,6 +1195,6 @@ int main(int argc,char **argv)
     if(argc==1) {assert(!Dashboard_UI_IsStartupComplete());receive(0x305,6,3);assert(g_can_rx_queue->count==0);}
     init_ui();assert(Dashboard_UI_IsStartupComplete());
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_can_decode();test_steering();test_odometer();test_gps();test_ui();test_motor_peak();return 0;
+    test_can();test_can_decode();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_ui();test_motor_peak();return 0;
 }
 /* USER CODE END Firmware_Regression */

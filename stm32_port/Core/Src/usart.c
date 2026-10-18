@@ -25,8 +25,10 @@
 #include <string.h>
 #include "gps.h"
 #include "dashboard_ui.h"
+#include "diag_cli.h"
 
 static uint8_t g_usart2_rx_byte;
+static volatile uint32_t g_usart2_error_count;
 static char g_usart2_line_buf[16];
 static uint8_t g_usart2_line_len;
 
@@ -112,6 +114,33 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     }
 
     USART2_RestartReceive();
+  }
+  else if(huart == &huart6) {
+    Diag_CLI_UartRxCplt();
+  }
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if(huart == &huart6) {
+    Diag_CLI_UartTxDone();
+  }
+}
+
+/* HAL 在 DMA 接收遇到任何串口错误、或单字节中断接收遇到溢出时会中止接收且不自动恢复，
+ * 没有这个回调重启就会永久丢失数据流（USART3 的 GNSS、USART2 的圈速差输入）。 */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if(huart == &huart3) {
+    GPS_UartErrorCallback(huart->ErrorCode);
+  }
+  else if(huart == &huart2) {
+    g_usart2_error_count++;
+    g_usart2_line_len = 0U;
+    USART2_RestartReceive();
+  }
+  else if(huart == &huart6) {
+    Diag_CLI_UartError(huart->ErrorCode);
   }
 }
 
@@ -439,13 +468,23 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     PC6     ------> USART6_TX
     PC7     ------> USART6_RX
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7;
+    GPIO_InitStruct.Pin = GPIO_PIN_6;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF8_USART6;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
+    GPIO_InitStruct.Pin = GPIO_PIN_7;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF8_USART6;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+    /* USART6 interrupt Init */
+    HAL_NVIC_SetPriority(USART6_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(USART6_IRQn);
   /* USER CODE BEGIN USART6_MspInit 1 */
 
   /* USER CODE END USART6_MspInit 1 */
@@ -537,6 +576,8 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
     */
     HAL_GPIO_DeInit(GPIOC, GPIO_PIN_6|GPIO_PIN_7);
 
+    /* USART6 interrupt Deinit */
+    HAL_NVIC_DisableIRQ(USART6_IRQn);
   /* USER CODE BEGIN USART6_MspDeInit 1 */
 
   /* USER CODE END USART6_MspDeInit 1 */

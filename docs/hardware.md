@@ -33,7 +33,7 @@
 | GNSS（UM982） | USART3：PB10（TX）、PB11（RX，上拉） | 115200 8N1，循环 DMA 接收 |
 | 圈速差输入 | USART2：PA2（TX）、PA3（RX） | 9600，行命令，见下 |
 | USART1 | PA9（TX）、PA10（RX，上拉） | 9600，已初始化，应用层未使用 |
-| USART6 | PC6（TX）、PC7（RX） | 115200，已初始化，应用层未使用 |
+| USART6 | PC6（TX）、PC7（RX，上拉） | 115200 8N1，诊断命令行，见 [串口诊断 CLI](diagnostics.md)；中断优先级 5，发送和接收均为中断方式；**PCB 引出、电平和接线未确认** |
 | 调试 | PA13（SWDIO）、PA14（SWCLK） | |
 | 未标注 | PC2（输入）、PC3（输出） | `.ioc` 无标签，`touch.c` 未引用，用途待查 |
 
@@ -88,7 +88,7 @@ SSD1963 自带 PWM 不用，背光由 PF9 控制。`gpio.c` 把 PF9 初始化为
 
 ## 串口 USART2 圈速差输入
 
-USART2 以单字节中断接收，行缓冲 16 字符。收到形如 `+1.23`、`-0.5` 的一行（以换行结束；除符号、数字和小数点外的字符被忽略，必须以 `+` 或 `-` 开头，最多保留两位小数）后，作为圈速差 ±秒 提交到界面（`usart.c`，`Dashboard_UI_SubmitLapDelta`）。发送方和使用场景未在仓库中记录。
+USART2 以单字节中断接收（接收出错后在 `HAL_UART_ErrorCallback` 里重启），行缓冲 16 字符。收到形如 `+1.23`、`-0.5` 的一行（以换行结束；除符号、数字和小数点外的字符被忽略，必须以 `+` 或 `-` 开头，最多保留两位小数）后，作为圈速差 ±秒 提交到界面（`usart.c`，`Dashboard_UI_SubmitLapDelta`）。发送方和使用场景未在仓库中记录。
 
 ## 与 `.ioc` 不一致的有意改动
 
@@ -101,6 +101,8 @@ USART2 以单字节中断接收，行缓冲 16 字符。收到形如 `+1.23`、`
 | 触摸 I²C | I2C1 外设（PB6/PB7） | 软件 I²C，`gt911.c` |
 | LVGL 内存池 | 无 | 固定在 CCM `0x10000000`，64 KiB 中 60 KiB，链接脚本 `Memory_Budget` 禁止其他数据占用 |
 | 程序区 | Flash 512 KiB | 链接脚本断言程序镜像不超过 384 KiB，最后一个扇区存里程，见 [里程存储](odometer_storage.md) |
+| UART 回调 | 无 | `usart.c` USER 区的 `HAL_UART_RxCpltCallback`、`HAL_UART_TxCpltCallback`、`HAL_UART_ErrorCallback`，分别转发给 USART2 圈速差、USART3 GNSS 错误恢复、USART6 诊断 CLI；重新生成后必须仍在，否则 GNSS 接收出错后不会恢复 |
+| USART6 | `.ioc` 已含 `NVIC.USART6_IRQn`（优先级 5）和 PC7 上拉 | `usart.c`、`stm32f4xx_it.c` 的 USART6 中断代码按 CubeMX 生成形式手写；本机没有 CubeMX，**未用 CubeMX 重新生成验证**，重新生成后应无差异 |
 
 ## 失败行为
 

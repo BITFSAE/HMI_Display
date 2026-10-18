@@ -32,7 +32,7 @@
 
 ![无数据](images/dashboard-nodata.png)
 
-无效数据：右栏、中栏踏板和底栏电机的 CAN 数值在上电后、源帧超时或自报无效时显示 `--`（灰色），踏板条清空，电机功率在扭矩或转速无效时为 `--`。各 setter 以 `DASH_VIEW_INVALID` 表示某个参数无效，电机列用 `dash_motor_t.invalid` 位；模拟器不使用这些值。有效位的来源、超时和各报文的取舍见 [CAN 接口](can_interface.md)。
+无效数据：车速在上电后到首条可信 RMC 之前、GNSS 数据超过新鲜度门限或状态为 V 时显示 `--`（真实的 0 km/h 显示 `0`，见 [GPS 与圈速](gps_lap.md)）；右栏、中栏踏板和底栏电机的 CAN 数值在上电后、源帧超时或自报无效时显示 `--`（灰色），踏板条清空，电机功率在扭矩或转速无效时为 `--`。各 setter 以 `DASH_VIEW_INVALID` 表示某个参数无效，电机列用 `dash_motor_t.invalid` 位；模拟器不使用这些值。有效位的来源、超时和各报文的取舍见 [CAN 接口](can_interface.md)。
 
 PWR 为放电功率 −V×I（BMS 电流充电为正、放电为负），充电和回收显示 0。
 

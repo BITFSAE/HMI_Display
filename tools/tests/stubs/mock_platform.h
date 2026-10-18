@@ -48,6 +48,7 @@ static inline BaseType_t xQueueSendFromISR(QueueHandle_t q,const void *item,Base
 static inline BaseType_t xQueueReceive(QueueHandle_t q,void *item,uint32_t timeout) {(void)timeout;if(!q->count)return pdFALSE;memcpy(item,q->data+q->head*q->size,q->size);q->head=(q->head+1)%q->capacity;q->count--;return pdPASS;}
 static inline UBaseType_t uxQueueMessagesWaitingFromISR(QueueHandle_t q) {return q->count;}
 #define osPriorityNormal 24
+#define osPriorityLow 8
 
 typedef struct {void *Instance;} CAN_HandleTypeDef;
 typedef struct {uint32_t StdId,ExtId,IDE,RTR,DLC,Timestamp,FilterMatchIndex;} CAN_RxHeaderTypeDef;
@@ -75,7 +76,20 @@ int HAL_CAN_GetRxMessage(CAN_HandleTypeDef *,uint32_t,CAN_RxHeaderTypeDef *,uint
 uint32_t HAL_CAN_GetTxMailboxesFreeLevel(CAN_HandleTypeDef *);
 int HAL_CAN_AddTxMessage(CAN_HandleTypeDef *,CAN_TxHeaderTypeDef *,uint8_t *,uint32_t *);
 void Error_Handler(void);
-typedef struct {int unused;} UART_HandleTypeDef, DMA_HandleTypeDef;
+typedef int HAL_StatusTypeDef;
+typedef enum {HAL_UART_STATE_RESET=0x00U,HAL_UART_STATE_READY=0x20U,HAL_UART_STATE_BUSY_RX=0x22U} HAL_UART_StateTypeDef;
+typedef struct {HAL_UART_StateTypeDef RxState;uint32_t ErrorCode;} UART_HandleTypeDef;
+typedef struct {int unused;} DMA_HandleTypeDef;
+#define HAL_UART_ERROR_PE  0x01U
+#define HAL_UART_ERROR_NE  0x02U
+#define HAL_UART_ERROR_FE  0x04U
+#define HAL_UART_ERROR_ORE 0x08U
+#define HAL_UART_ERROR_DMA 0x10U
+HAL_StatusTypeDef HAL_UART_Receive_DMA(UART_HandleTypeDef *,uint8_t *,uint16_t);
+HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *,uint8_t *,uint16_t);
+HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *,uint8_t *,uint16_t);
+HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *);
+extern uint32_t SystemCoreClock;
 #define __HAL_DMA_GET_COUNTER(handle) (test_dma_ndtr)
 int HAL_UART_Transmit(UART_HandleTypeDef *,uint8_t *,uint16_t,uint32_t);
 static inline uint32_t HAL_GetTick(void) {return test_tick;}

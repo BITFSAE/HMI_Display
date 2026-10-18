@@ -62,6 +62,7 @@ dash_zone_t Dash_View_HitTest(int32_t x, int32_t y);
 void Dash_View_Create(void);
 
 /* Wheel index everywhere: 0=FL 1=RL 2=FR 3=RR (dashboard_data_t order). */
+/* kmh == DASH_VIEW_INVALID shows "--" (no trusted speed); a real 0 km/h shows "0". */
 void Dash_View_SetSpeed(int32_t kmh);
 void Dash_View_SetMode(dash_mode_t mode);
 void Dash_View_SetSlip(int32_t level);

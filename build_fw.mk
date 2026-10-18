@@ -14,7 +14,7 @@ EXCL := $(shell grep -o 'excluding="[^"]*"' .cproject | head -1 | sed 's/^exclud
 SRCS := $(shell find Core Middlewares Drivers \( -name '*.c' -o -name '*.s' \) | grep -v -E '^Core/($(EXCL))(/|$$)' | sort)
 OBJS := $(addprefix $(OUT)/,$(addsuffix .o,$(basename $(SRCS))))
 
-INCS := Core/Inc Drivers/STM32F4xx_HAL_Driver/Inc Drivers/STM32F4xx_HAL_Driver/Inc/Legacy \
+INCS := $(OUT)/gen Core/Inc Drivers/STM32F4xx_HAL_Driver/Inc Drivers/STM32F4xx_HAL_Driver/Inc/Legacy \
         Drivers/CMSIS/Device/ST/STM32F4xx/Include Drivers/CMSIS/Include \
         Middlewares/Third_Party/FreeRTOS/Source/include \
         Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 \
@@ -39,6 +39,16 @@ $(OUT)/.flags: FORCE
 	@rm -f $@.tmp
 
 $(OBJS): $(OUT)/.flags
+
+# 固件版本号(git describe)写入生成头，CLI 的 version/report 引用；内容不变时不重写，
+# 因此只有提交或工作区变化才会重编引用它的 diag_cli.c。CubeIDE 构建没有这个头，显示 unknown。
+$(OUT)/gen/fw_version.h: FORCE
+	@mkdir -p $(dir $@)
+	@printf '#define FW_GIT_VERSION "%s"\n' "$$(git describe --always --dirty --tags 2>/dev/null || echo unknown)" > $@.tmp
+	@cmp -s $@.tmp $@ || mv $@.tmp $@
+	@rm -f $@.tmp
+
+$(OBJS): | $(OUT)/gen/fw_version.h
 
 $(OUT)/$(TARGET).bin: $(OUT)/$(TARGET).elf
 	@$(OBJCOPY) -O binary $< $@
