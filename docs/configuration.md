@@ -23,7 +23,7 @@
 | 里程存盘间隔 | 100 | `GPS_ODOMETER_SAVE_INTERVAL_M` | m | 每增加该距离写一条 Flash 记录；改小会缩短 Flash 寿命，见 [里程存储](odometer_storage.md) |
 | 接收机配置命令 | 见下 | `GPS_TaskFunc` | — | UM982 基线长度 `CONFIG HEADING LENGTH 111 10` 为 111 cm ±10 cm（两个参数单位均为 cm）；天线间距变化须修改 |
 
-UM982 启动时依次发送（每条后等待并继续读取 DMA）：`UNLOG ALL`、`MODE ROVER AUTOMOTIVE`、`CONFIG HEADING FIXLENGTH`、`CONFIG HEADING LENGTH 111 10`、`GPRMC 0.05`（20 Hz）、`GPGGA 1`（1 s）、`GPHPR 0.2`（5 Hz）、`GNGSV 5`（5 s，多星座合并）、`SAVECONFIG`。`UNLOG ALL` 清除接收端口上的出厂默认日志，只保留这四类解析所需语句，总负载约为 115200 baud 的 1/5，避免 GSV 突发冲垮 512 B 的 DMA 环。
+UM982 启动时依次发送（每条后等待并继续读取 DMA）：`UNLOG`、`MODE ROVER AUTOMOTIVE`、`CONFIG HEADING FIXLENGTH`、`CONFIG HEADING LENGTH 111 10`、`GPRMC 0.05`（20 Hz）、`GPGGA 1`（1 s）、`GPHPR 0.2`（5 Hz）、`GPGSV 5`（5 s）、`SAVECONFIG`。无参数的 `UNLOG` 停止接收端口上的全部输出（协议文档 §8.1），只保留这四类解析所需语句，总负载约为 115200 baud 的 1/5，避免 GSV 突发冲垮 512 B 的 DMA 环。请求统一用 GP 前缀（协议文档 §7.1：GBGSV、GLGSV 等为非法输入），返回语句的说话者（GN/GP/GB）由接收机按参与定位的系统决定，解析只按报文名匹配。
 
 ## 圈速与冲刺（`gps_lap.c`、`gps_lap.h`、`dashboard_ui.c`）
 

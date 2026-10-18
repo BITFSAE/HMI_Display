@@ -932,9 +932,11 @@ static void GPS_TaskFunc(void * argument)
 	 * (GGA/RMC/GSA/GSV/GST for all constellations at 1 Hz) would otherwise
 	 * keep flowing next to the whitelist below; the periodic GSV bursts then
 	 * overflow the 512-byte DMA ring, RMC frames get corrupted and the speed
-	 * drops to 0.  UNLOG ALL acts on the port that receives the command, so
-	 * it works no matter which UM982 COM port is wired to USART3. */
-	GPS_SendCmd("UNLOG ALL");
+	 * drops to 0.  Bare UNLOG stops all output on the port that receives it
+	 * (protocol manual 8.1); "UNLOG ALL" is not a documented form.  The
+	 * command carries no port name, so it works no matter which UM982 COM
+	 * port is wired to USART3. */
+	GPS_SendCmd("UNLOG");
 	GPS_WaitAndDrain(300U);
 	/* Vehicle dynamics profile: up to 100 m/s horizontal speed and lower
 	 * vertical dynamics than the UM982 default UAV profile. */
@@ -949,15 +951,18 @@ static void GPS_TaskFunc(void * argument)
 	/* Whitelist: only the four sentence families the parser consumes.  RMC at
 	 * 20 Hz drives speed/CAN/lap timing, GGA at 1 Hz fix quality and satellite
 	 * count, HPR at 5 Hz dual-antenna heading, and GSV every 5 s the signal
-	 * bar (GN merges all constellations into one set).  Total load is about
-	 * 2.2 kB/s, roughly a fifth of the 115200-baud link. */
+	 * bar.  Requests always carry the GP prefix (protocol manual 7.1 lists
+	 * GBGSV/GLGSV/... as invalid input); the talker of the returned sentences
+	 * -- GN when several constellations contribute -- is chosen by the
+	 * receiver, and the parser matches on the message name only.  Total load
+	 * is about 2.2 kB/s, roughly a fifth of the 115200-baud link. */
 	GPS_SendCmd("GPRMC 0.05");
 	GPS_WaitAndDrain(100U);
 	GPS_SendCmd("GPGGA 1");
 	GPS_WaitAndDrain(100U);
 	GPS_SendCmd("GPHPR 0.2");
 	GPS_WaitAndDrain(100U);
-	GPS_SendCmd("GNGSV 5");
+	GPS_SendCmd("GPGSV 5");
 	GPS_WaitAndDrain(200U);
 	GPS_SendCmd("SAVECONFIG");
 	GPS_WaitAndDrain(500U);
