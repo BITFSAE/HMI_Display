@@ -991,7 +991,7 @@ void Dash_View_SetMotor(uint32_t wheel, const dash_motor_t * motor)
         }
     }
     else if(motor->diag != 0U) {
-        lv_snprintf(buf, sizeof(buf), "E %04lX", (unsigned long)(motor->diag & 0xFFFFU));
+        lv_snprintf(buf, sizeof(buf), "E %04lu", (unsigned long)motor->diag);
         set_text(m->diag, buf);
         set_text_color(m->diag, C_TEXT);
         if(lv_obj_get_style_bg_opa(m->diag, 0) != LV_OPA_COVER) {
