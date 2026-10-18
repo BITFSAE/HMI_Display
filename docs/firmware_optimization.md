@@ -42,6 +42,7 @@ UI 跳过内容相同的标签和颜色更新，界面结构与绘制约束见 [
 | GPS | 25 | 12 KiB | 静态 |
 | Dashboard | 24 | 12 KiB | 静态 |
 | Touch | 24 | 4 KiB | 静态 |
+| CLI | 8（`osPriorityLow`） | 3 KiB | 静态，见 [串口诊断 CLI](diagnostics.md) |
 | Idle | 0 | 1 KiB | CMSIS 静态回调 |
 | Timer | 2 | 1 KiB | CMSIS 静态回调 |
 

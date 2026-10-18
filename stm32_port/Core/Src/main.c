@@ -34,6 +34,7 @@
 #include "dashboard_ui.h"
 #include "odometer_flash.h"
 #include "firmware_diag.h"
+#include "speed_trace.h"
 
 /* USER CODE END Includes */
 
@@ -246,6 +247,9 @@ static void lvgl_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t *
   LCD_WritePixels((const uint16_t *)px_map, width * height);
   g_lvgl_flush_count++;
   g_firmware_diag.flushed_pixels += width * height;
+  if(lv_display_flush_is_last(disp)) {
+    SpeedTrace_FrameDone(HAL_GetTick());   /* 一帧最后一块写完：车速可见延迟的终点 */
+  }
   uint32_t elapsed_cycles = DWT->CYCCNT - start_cycles;
   if(elapsed_cycles > g_firmware_diag.flush_max_cycles) {
     g_firmware_diag.flush_max_cycles = elapsed_cycles;

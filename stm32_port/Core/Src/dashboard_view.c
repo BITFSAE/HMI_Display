@@ -539,7 +539,7 @@ static void create_centre(lv_obj_t * scr)
     lv_obj_set_style_bg_opa(ui.timing_dot, LV_OPA_COVER, 0);
     lv_obj_add_flag(ui.timing_dot, LV_OBJ_FLAG_HIDDEN);
 
-    ui.speed = make_label(scr, &st_speed, 262, 166, 276, &st_center, "0");
+    ui.speed = make_label(scr, &st_speed, 262, 166, 276, &st_center, "--");
     make_label(scr, &st_unit, 262, 302, 276, &st_center, "km/h");
 
     {
@@ -674,7 +674,7 @@ void Dash_View_Create(void)
     Dash_View_SetMode(DASH_MODE_S);
     Dash_View_SetSlip(0);
     Dash_View_SetSignal(0);
-    Dash_View_SetSpeed(0);
+    Dash_View_SetSpeed(DASH_VIEW_INVALID);
     Dash_View_SetNight(0U);
     Dash_View_SetLapTimes(0, 0, 0);
     Dash_View_SetDelta(0);
@@ -697,6 +697,12 @@ void Dash_View_SetSpeed(int32_t kmh)
 {
     char buf[8];
 
+    if(kmh == DASH_VIEW_INVALID) {
+        if(s_speed == DASH_VIEW_INVALID) return;
+        s_speed = DASH_VIEW_INVALID;
+        set_text(ui.speed, "--");
+        return;
+    }
     if(kmh < 0) kmh = 0;
     if(kmh > 299) kmh = 299;
     if(kmh == s_speed) return;

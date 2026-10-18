@@ -31,7 +31,7 @@
 | CAN1（整车 CANB） | PB8（RX，上拉）、PB9（TX） | 500 kbit/s |
 | CAN2（方向盘） | PB12（RX，上拉）、PB13（TX，上拉） | 500 kbit/s，只收 |
 | GNSS（UM982） | USART3：PB10（TX）、PB11（RX，上拉） | 115200 8N1，循环 DMA 接收 |
-| 圈速差输入 | USART2：PA2（TX）、PA3（RX） | 9600，行命令，见下 |
+| 圈速差输入、诊断 CLI | USART2：PA2（TX）、PA3（RX） | 9600，行命令，见下；诊断命令行见 [串口诊断 CLI](diagnostics.md) |
 | USART1 | PA9（TX）、PA10（RX，上拉） | 9600，已初始化，应用层未使用 |
 | USART6 | PC6（TX）、PC7（RX） | 115200，已初始化，应用层未使用 |
 | 调试 | PA13（SWDIO）、PA14（SWCLK） | |
@@ -88,7 +88,7 @@ SSD1963 自带 PWM 不用，背光由 PF9 控制。`gpio.c` 把 PF9 初始化为
 
 ## 串口 USART2 圈速差输入
 
-USART2 以单字节中断接收，行缓冲 16 字符。收到形如 `+1.23`、`-0.5` 的一行（以换行结束；除符号、数字和小数点外的字符被忽略，必须以 `+` 或 `-` 开头，最多保留两位小数）后，作为圈速差 ±秒 提交到界面（`usart.c`，`Dashboard_UI_SubmitLapDelta`）。发送方和使用场景未在仓库中记录。
+USART2 以单字节中断接收（`diag_cli.c` 收成行，接收出错后在 `HAL_UART_ErrorCallback` 里重启），该串口同时是诊断命令行，首个词是命令的行归 CLI，其余非空行交给圈速差解析。收到形如 `+1.23`、`-0.5` 的一行（以换行结束；除符号、数字和小数点外的字符被忽略，必须以 `+` 或 `-` 开头，最多保留两位小数）后，作为圈速差 ±秒 提交到界面（`usart.c`，`Dashboard_UI_SubmitLapDelta`）。发送方和使用场景未在仓库中记录。
 
 ## 与 `.ioc` 不一致的有意改动
 
@@ -101,6 +101,7 @@ USART2 以单字节中断接收，行缓冲 16 字符。收到形如 `+1.23`、`
 | 触摸 I²C | I2C1 外设（PB6/PB7） | 软件 I²C，`gt911.c` |
 | LVGL 内存池 | 无 | 固定在 CCM `0x10000000`，64 KiB 中 60 KiB，链接脚本 `Memory_Budget` 禁止其他数据占用 |
 | 程序区 | Flash 512 KiB | 链接脚本断言程序镜像不超过 384 KiB，最后一个扇区存里程，见 [里程存储](odometer_storage.md) |
+| UART 回调 | 无 | `usart.c` USER 区的 `HAL_UART_RxCpltCallback`、`HAL_UART_TxCpltCallback`、`HAL_UART_ErrorCallback`，转发给 USART2 的诊断 CLI（收发与错误重启）和 USART3 的 GNSS 错误恢复；重新生成后必须仍在，否则 GNSS 接收出错后不会恢复 |
 
 ## 失败行为
 

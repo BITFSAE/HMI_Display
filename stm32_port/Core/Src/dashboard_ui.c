@@ -11,6 +11,7 @@
 #include "can.h"
 #include "gps.h"
 #include "gps_lap.h"
+#include "speed_trace.h"
 
 #include <string.h>
 
@@ -24,7 +25,8 @@ typedef enum {
 } drive_mode_t;
 
 static volatile drive_mode_t g_drive_mode = DRIVE_MODE_S;
-static int32_t g_speed = 0;
+/* 当前界面显示的车速；DASH_VIEW_INVALID 表示显示 "--"（没有可信速度）。 */
+static int32_t g_speed = DASH_VIEW_INVALID;
 static volatile int32_t g_mode_index = 0;
 static int32_t g_current_lap_time = 0;
 static int32_t g_last_lap_time = 0;
@@ -50,7 +52,9 @@ static volatile int32_t g_pending_tire_temp[4][4];
 static dashboard_data_t g_dashboard_data;
 static volatile dashboard_data_t g_pending_dashboard_data;
 static volatile uint32_t g_dashboard_dirty_mask = 0U;
-static volatile int32_t g_pending_speed = 0;
+/* g_pending_speed < 0 表示 "--"；提交时刻与数值同在一个关中断段内写入，供 speed_trace 计时。 */
+static volatile int32_t g_pending_speed = -1;
+static volatile uint32_t g_pending_speed_tick = 0U;
 static volatile uint8_t g_speed_dirty = 0U;
 static volatile int32_t g_pending_signal_level = 0;
 static volatile uint8_t g_signal_dirty = 0U;
@@ -395,6 +399,13 @@ static void dashboard_toggle_lap_analysis(void)
     }
     if(gps_data.signal_level <= GPS_SIG_LEVEL_NONE) {
         Dashboard_UI_PushAlert("gps no signal");
+        return;
+    }
+    /* 速度数据过期时 speed_kmh 为 0，但那不是停车：S 模式靠"车速 < 0.5 km/h"准备冲刺，
+     * 没有双天线航向时圈速也靠速度判断，两者都必须先有可信速度。 */
+    if((gps_data.speed_valid == 0U) &&
+       ((g_drive_mode == DRIVE_MODE_S) || (gps_data.heading_valid == 0U))) {
+        Dashboard_UI_PushAlert("gps speed invalid");
         return;
     }
     /* A valid dual-antenna heading is available even while stationary.  RMC
@@ -806,19 +817,32 @@ void Dashboard_UI_SubmitSignalLevel(int32_t level)
     __set_PRIMASK(primask);
 }
 
-void Dashboard_UI_SubmitSpeed(int32_t speed)
+static void dashboard_submit_speed(int32_t speed)
 {
     uint32_t primask = __get_PRIMASK();
+    uint32_t now = HAL_GetTick();
     __disable_irq();
-    if(speed < 0) speed = 0;
-    if(speed > 300) speed = 300;
     if((g_speed_dirty != 0U) && (g_pending_speed == speed)) {
         __set_PRIMASK(primask);
         return;
     }
+    if(g_speed_dirty != 0U) SpeedTrace_Superseded();
     g_pending_speed = speed;
+    g_pending_speed_tick = now;
     g_speed_dirty = 1U;
     __set_PRIMASK(primask);
+}
+
+void Dashboard_UI_SubmitSpeed(int32_t speed)
+{
+    if(speed < 0) speed = 0;
+    if(speed > 300) speed = 300;
+    dashboard_submit_speed(speed);
+}
+
+void Dashboard_UI_SubmitSpeedInvalid(void)
+{
+    dashboard_submit_speed(-1);
 }
 
 void Dashboard_UI_SubmitOdometer(int32_t odometer_tenths)
@@ -1269,22 +1293,33 @@ void Dashboard_UI_Process(void)
     }
 
     /* Speed is applied on every pass, not throttled: the GNSS delivers 20 Hz and
-     * Dash_View_SetSpeed() redraws only when the integer km/h actually changes. */
+     * Dash_View_SetSpeed() redraws only when the shown text actually changes.
+     * A negative pending value means "no trusted speed" and is shown as "--". */
     if(g_speed_dirty != 0U) {
+        uint32_t submit_tick;
+        int32_t shown;
+
         primask = __get_PRIMASK();
         __disable_irq();
         pending_speed = g_pending_speed;
+        submit_tick = g_pending_speed_tick;
         g_speed_dirty = 0U;
         if(primask == 0U) {
             __enable_irq();
         }
 
-        if(pending_speed < 0) pending_speed = 0;
-        if(pending_speed > SPEED_DISPLAY_MAX_KMH) pending_speed = SPEED_DISPLAY_MAX_KMH;
-        g_dashboard_data.speed = pending_speed;
-        if(pending_speed != g_speed) {
-            g_speed = pending_speed;
-            Dash_View_SetSpeed(pending_speed);
+        if(pending_speed < 0) {
+            shown = DASH_VIEW_INVALID;
+        }
+        else {
+            if(pending_speed > SPEED_DISPLAY_MAX_KMH) pending_speed = SPEED_DISPLAY_MAX_KMH;
+            shown = pending_speed;
+        }
+        g_dashboard_data.speed = (shown == DASH_VIEW_INVALID) ? -1 : shown;
+        if(shown != g_speed) {
+            g_speed = shown;
+            Dash_View_SetSpeed(shown);
+            SpeedTrace_Applied(submit_tick, HAL_GetTick());
         }
     }
 

@@ -1,29 +1,36 @@
 # 配置表
 
-常改参数的位置、单位和影响。所有项都是**编译期常量**，改动后需重新构建并烧录，没有运行时命令可以覆盖，也没有保存在 Flash 里的设置。唯一的持久数据是里程（内部 Flash 扇区 7，见 [里程存储](odometer_storage.md)）和 UM982 自身保存的配置（每次上电 `SAVECONFIG`，见 [GPS 与圈速](gps_lap.md)）。外设、时钟和引脚属于 `.ioc`，见 [硬件映射](hardware.md)。
+常改参数的位置、单位和影响。所有项都是**编译期常量**，改动后需重新构建并烧录，没有运行时命令可以覆盖，也没有保存在 Flash 里的设置。唯一的持久数据是里程（内部 Flash 扇区 7，见 [里程存储](odometer_storage.md)）和 UM982 自身保存的配置（只在 CLI 执行 `gps save` 时写入，见 [串口诊断 CLI](diagnostics.md)）。外设、时钟和引脚属于 `.ioc`，见 [硬件映射](hardware.md)。
 
 ## GNSS 与速度（`gps.c`、`gps.h`）
 
 | 设置 | 当前值 | 符号 | 单位/范围 | 影响与同步 |
 | --- | --- | --- | --- | --- |
-| 界面车速保持时间 | 3000 | `GPS_SPEED_UI_HOLD_MS` | ms | RMC 中断或状态为 V 后界面保持最后有效车速，超时清零；CAN 车速不受影响 |
-| CAN 车速过期 | 500 | `GPS_CAN_SPEED_STALE_MS` | ms | RMC 超过此时间未更新，`0x301` 车速报 0 |
+| 速度新鲜度门限 | 150（3 个周期） | `GPS_FRESH_PERIODS`、`GPS_FRESH_MIN_MS`、`GPS_FRESH_MAX_MS`（`gps_speed.h`） | 个、ms | 门限 = 3 × 实测 RMC 周期，夹在 150..1500 ms（20 Hz → 150，10 Hz → 300）。超过则界面显示 `--`、计时拒绝使用；状态 V 立即失效。具体值待实测收敛，见 [GPS 与圈速](gps_lap.md) |
+| RMC 额定周期 | 50 | `GPS_RMC_NOMINAL_PERIOD_MS`（`gps_speed.h`） | ms | 周期估计的初值，对应启动命令 `GPRMC 0.05`；改输出率时同步修改 |
+| 历元基准有效期 | 1000 | `GPS_EPOCH_BASELINE_MS`（`gps_speed.h`） | ms | 静默超过此时间后不再比较重复/倒退历元 |
+| 门限调整所需连续慢间隔 | 3 | `GPS_SLOW_STREAK_ADAPT`（`gps_speed.h`） | 次 | 连续这么多次间隔都超过门限才抬高门限 |
+| CAN 车速过期 | 500 | `GPS_CAN_SPEED_STALE_MS` | ms | 速度数据龄期超过此值，`0x301` 车速报 0 且 `RMC_VALID` 清零；改为与本地门限一致需先在中央库评审 |
+| GGA 过期 | 3500 | `GPS_GGA_EXPIRE_MS` | ms | 超时按无定位处理（质量、卫星数清零），不再沿用最后一条 |
 | GPS 帧发送节拍 | 50 | `GPS_CAN_SPEED_PERIOD_MS` | ms | `0x301/0x067/0x068` 周期；改动需同步中央库登记 |
 | `0x7A0` 周期 | 10 拍 = 500 ms | `GPS_CAN_STATUS_TICKS` | 节拍数 | 同上 |
 | `0x7A1` 周期 | 4 拍 = 200 ms | `GPS_CAN_LAP_TICKS` | 节拍数 | 同上；两周期的公倍数 `GPS_CAN_SLOW_CYCLE_TICKS` = 20 须随之调整 |
-| 航向过期 | 1500 | `GPS_HPR_EXPIRE_MS` | ms | 双天线航向超过此时间未更新则无效 |
+| 航向过期 | 1500 | `GPS_HPR_EXPIRE_MS` | ms | 双天线航向超过此时间未更新则无效；按 5 Hz 约 7.5 个周期，容忍输出率回落到 1 Hz，实测后可收紧 |
 | GSV 过期 | 12000 | `GPS_GSV_EXPIRE_MS` | ms | 信噪比过期后信号等级回落到卫星数估计或无信号 |
 | 航向安装偏置 | 0.0 | `GPS_HEADING_INSTALL_OFFSET_DEG` | 度，顺时针 | 从天线 1→2 基线到车头方向的夹角；影响圈速线和冲刺线方向。天线安装方向变化时必须修改 |
 | 信号等级阈值（平均信噪比） | 42 / 35 / 28 / 20 | `GPS_SNR_EXCELLENT/GOOD/FAIR/WEAK` | dB-Hz，≥ 判定 | 对应等级 4/3/2/1，低于 20 为 0 |
 | 信号等级回退（卫星数） | ≥16 / 12 / 8 / 4 | `gps_signal_level_from_sats` | 颗 | 仅在 GSV 缺失或过期时用 |
 | DMA 接收缓冲 | 512 | `GPS_DMA_BUF_SIZE` | B | 115200 baud 下约 44 ms 绕回一圈，GPS 任务须每 10 ms 内读取 |
 | 里程累加最小车速 | 100 | `GPS_ODOMETER_MIN_SPEED_CENTI` | 0.01 km/h（= 1.00 km/h） | 低于此速度不累加 |
-| 里程最大采样间隔 | 2000 | `GPS_ODOMETER_MAX_GAP_MS` | ms | 间隔更长的一步丢弃 |
+| 里程最大采样间隔 | 2000 | `GPS_ODOMETER_MAX_GAP_MS` | ms | 间隔更长的一步丢弃；速度失效后恢复时锚点另行重建 |
 | 里程单步上限 | 50 | `GPS_ODOMETER_MAX_STEP_M` | m | 另有「不超过按车速估算值 3 倍 + 3 m」的合理性检查 |
 | 里程存盘间隔 | 100 | `GPS_ODOMETER_SAVE_INTERVAL_M` | m | 每增加该距离写一条 Flash 记录；改小会缩短 Flash 寿命，见 [里程存储](odometer_storage.md) |
-| 接收机配置命令 | 见下 | `GPS_TaskFunc` | — | UM982 基线长度 `CONFIG HEADING LENGTH 111 10` 为 111 cm ±10 cm（两个参数单位均为 cm）；天线间距变化须修改 |
+| 接收机配置命令 | 见下 | `k_cfg_cmds`（`gps.c`） | — | UM982 基线长度 `CONFIG HEADING LENGTH 111 10` 为 111 cm ±10 cm（两个参数单位均为 cm）；天线间距变化须修改 |
+| 命令回执超时 | 400 | `GPS_CFG_ACK_TIMEOUT_MS` | ms | 每次尝试等待回执的时间 |
+| 命令重发次数 | 2 | `GPS_CFG_RETRIES` | 次 | 无回执时的额外发送次数；连续两条无回执后放弃确认 |
+| 诊断串口 | USART2，9600 | `huart2`（`.ioc`） | — | 与圈速差输入共用，见 [串口诊断 CLI](diagnostics.md) |
 
-UM982 启动时依次发送（每条后等待并继续读取 DMA）：`UNLOG`、`MODE ROVER AUTOMOTIVE`、`CONFIG HEADING FIXLENGTH`、`CONFIG HEADING LENGTH 111 10`、`GPRMC 0.05`（20 Hz）、`GPGGA 1`（1 s）、`GPHPR 0.2`（5 Hz）、`GPGSV 5`（5 s）、`SAVECONFIG`。无参数的 `UNLOG` 停止接收端口上的全部输出（协议文档 §8.1），只保留这四类解析所需语句，总负载约为 115200 baud 的 1/5，避免 GSV 突发冲垮 512 B 的 DMA 环。请求统一用 GP 前缀（协议文档 §7.1：GBGSV、GLGSV 等为非法输入），返回语句的说话者（GN/GP/GB）由接收机按参与定位的系统决定，解析只按报文名匹配。
+UM982 启动时依次发送（每条等待回执并继续读取 DMA，无回执则重发，见 [GPS 与圈速](gps_lap.md)）：`UNLOG`、`MODE ROVER AUTOMOTIVE`、`CONFIG HEADING FIXLENGTH`、`CONFIG HEADING LENGTH 111 10`、`GPRMC 0.05`（20 Hz）、`GPGGA 1`（1 s）、`GPHPR 0.2`（5 Hz）、`GPGSV 5`（5 s）。**不再每次上电 `SAVECONFIG`**：每次开机都重发这些命令，保存只是白写一次接收机非易失存储；需要持久保存时用 CLI 的 `gps save`。无参数的 `UNLOG` 停止接收端口上的全部输出（协议文档 §8.1），只保留这四类解析所需语句，总负载约为 115200 baud 的 1/5，避免 GSV 突发冲垮 512 B 的 DMA 环。请求统一用 GP 前缀（协议文档 §7.1：GBGSV、GLGSV 等为非法输入），返回语句的说话者（GN/GP/GB）由接收机按参与定位的系统决定，解析只按报文名匹配。
 
 ## 圈速与冲刺（`gps_lap.c`、`gps_lap.h`、`dashboard_ui.c`）
 
