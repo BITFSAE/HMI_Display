@@ -27,17 +27,11 @@
 #include "dashboard_ui.h"
 #include "diag_cli.h"
 
-static uint8_t g_usart2_rx_byte;
-static volatile uint32_t g_usart2_error_count;
-static char g_usart2_line_buf[16];
-static uint8_t g_usart2_line_len;
+/* USART2（PA2/PA3，9600）同时是诊断 CLI 和圈速差输入：字节由 diag_cli.c 收成行，
+ * 首个词是命令的行交给 CLI，其余行交给下面的圈速差解析（见 Diag_CLI_SetLineFallback）。 */
 
-static void USART2_RestartReceive(void)
-{
-  (void)HAL_UART_Receive_IT(&huart2, &g_usart2_rx_byte, 1U);
-}
-
-static void USART2_ProcessLine(const char * line)
+/* 解析一行圈速差，如 "+1.23"、"-0.5"；返回 1 表示这一行是合法的圈速差并已提交到界面。 */
+static uint8_t USART2_ProcessLine(const char * line)
 {
   char cleaned[16];
   uint8_t src_index = 0U;
@@ -50,7 +44,7 @@ static void USART2_ProcessLine(const char * line)
   int32_t delta_hundredths;
 
   if(line == NULL) {
-    return;
+    return 0U;
   }
 
   while((line[src_index] != '\0') && (dst_index < (uint8_t)(sizeof(cleaned) - 1U))) {
@@ -62,12 +56,12 @@ static void USART2_ProcessLine(const char * line)
   cleaned[dst_index] = '\0';
 
   if((dst_index < 2U) || ((cleaned[0] != '+') && (cleaned[0] != '-'))) {
-    return;
+    return 0U;
   }
 
   sign = cleaned[0] == '-' ? -1 : 1;
   if((cleaned[idx] < '0') || (cleaned[idx] > '9')) {
-    return;
+    return 0U;
   }
   while((cleaned[idx] >= '0') && (cleaned[idx] <= '9')) {
     whole = (whole * 10) + (int32_t)(cleaned[idx] - '0');
@@ -84,7 +78,7 @@ static void USART2_ProcessLine(const char * line)
       idx++;
     }
   }
-  if(cleaned[idx] != '\0') return;
+  if(cleaned[idx] != '\0') return 0U;
   while(frac_digits < 2U) {
     frac *= 10;
     frac_digits++;
@@ -92,54 +86,31 @@ static void USART2_ProcessLine(const char * line)
 
   delta_hundredths = sign * ((whole * 100) + frac);
   Dashboard_UI_SubmitLapDelta(delta_hundredths);
+  return 1U;
 }
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if(huart == &huart2) {
-    char ch = (char)g_usart2_rx_byte;
-
-    if((ch == '\r') || (ch == '\n')) {
-      if(g_usart2_line_len > 0U) {
-        g_usart2_line_buf[g_usart2_line_len] = '\0';
-        USART2_ProcessLine(g_usart2_line_buf);
-        g_usart2_line_len = 0U;
-      }
-    }
-    else if(g_usart2_line_len < (uint8_t)(sizeof(g_usart2_line_buf) - 1U)) {
-      g_usart2_line_buf[g_usart2_line_len++] = ch;
-    }
-    else {
-      g_usart2_line_len = 0U;
-    }
-
-    USART2_RestartReceive();
-  }
-  else if(huart == &huart6) {
     Diag_CLI_UartRxCplt();
   }
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-  if(huart == &huart6) {
+  if(huart == &huart2) {
     Diag_CLI_UartTxDone();
   }
 }
 
 /* HAL 在 DMA 接收遇到任何串口错误、或单字节中断接收遇到溢出时会中止接收且不自动恢复，
- * 没有这个回调重启就会永久丢失数据流（USART3 的 GNSS、USART2 的圈速差输入）。 */
+ * 没有这个回调重启就会永久丢失数据流（USART3 的 GNSS、USART2 的命令行和圈速差输入）。 */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   if(huart == &huart3) {
     GPS_UartErrorCallback(huart->ErrorCode);
   }
   else if(huart == &huart2) {
-    g_usart2_error_count++;
-    g_usart2_line_len = 0U;
-    USART2_RestartReceive();
-  }
-  else if(huart == &huart6) {
     Diag_CLI_UartError(huart->ErrorCode);
   }
 }
@@ -210,9 +181,8 @@ void MX_USART2_UART_Init(void)
   }
   /* USER CODE BEGIN USART2_Init 2 */
 
-  g_usart2_line_len = 0U;
-  memset(g_usart2_line_buf, 0, sizeof(g_usart2_line_buf));
-  USART2_RestartReceive();
+  /* 接收在 Diag_CLI_Init()（MX_FREERTOS_Init）里启动。 */
+  Diag_CLI_SetLineFallback(USART2_ProcessLine);
 
   /* USER CODE END USART2_Init 2 */
 
@@ -468,23 +438,13 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     PC6     ------> USART6_TX
     PC7     ------> USART6_RX
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_6;
+    GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF8_USART6;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-    GPIO_InitStruct.Pin = GPIO_PIN_7;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF8_USART6;
-    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-    /* USART6 interrupt Init */
-    HAL_NVIC_SetPriority(USART6_IRQn, 5, 0);
-    HAL_NVIC_EnableIRQ(USART6_IRQn);
   /* USER CODE BEGIN USART6_MspInit 1 */
 
   /* USER CODE END USART6_MspInit 1 */
@@ -576,8 +536,6 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
     */
     HAL_GPIO_DeInit(GPIOC, GPIO_PIN_6|GPIO_PIN_7);
 
-    /* USART6 interrupt Deinit */
-    HAL_NVIC_DisableIRQ(USART6_IRQn);
   /* USER CODE BEGIN USART6_MspDeInit 1 */
 
   /* USER CODE END USART6_MspDeInit 1 */

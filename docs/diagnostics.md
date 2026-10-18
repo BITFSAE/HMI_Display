@@ -1,16 +1,18 @@
 # 串口诊断 CLI
 
-USART6 上的命令行，用来采样 GNSS 的实际运行情况并导出可整段复制的文本报告。日常保持静默，只在收到命令时输出。实现在 `diag_cli.c`，速度有效性在 `gps_speed.c`，统计在 `gps.c`，延迟追踪在 `speed_trace.c`。
+USART2 上的命令行，用来采样 GNSS 的实际运行情况并导出可整段复制的文本报告。日常保持静默，只在收到命令时输出。实现在 `diag_cli.c`，速度有效性在 `gps_speed.c`，统计在 `gps.c`，延迟追踪在 `speed_trace.c`。
 
 ## 连接
 
 | 项 | 值 |
 | --- | --- |
-| 引脚 | PC6（TX）、PC7（RX，内部上拉），USART6，115200 8N1，无流控 |
+| 引脚 | PA2（TX）、PA3（RX），USART2，9600 8N1，无流控（`.ioc`/`usart.c` 现有配置，未改） |
 | 电平 | MCU 引脚电平（3.3 V TTL），需 USB 转 TTL 线，不是 RS-232 |
 | 终端 | 回车发 CR 或 CRLF 均可；设备回显，支持退格，`Ctrl-C` 等同 `stop` |
 
-**PCB 是否引出 PC6/PC7、接口电平和接线未经确认**（`.ioc` 只说明 USART6 已初始化）。未引出时改用 USART1（PA9/PA10，已初始化、9600，需改 `.ioc` 波特率和 `diag_cli.c` 的串口句柄）。USART3 专用于 GNSS，USART2 是圈速差输入。
+**与圈速差输入共用 USART2**：首个词是 `help`、`version`、`report`、`gps`、`sys`、`stop` 之一的行是命令；其余非空行交给原有的圈速差解析（`+1.23`、`-0.5`，规则不变，见 [硬件映射](hardware.md#串口-usart2-圈速差输入)），不被命令执行中的 `busy` 挡住；两者都不是则回复 `unknown command`。设备会回显收到的所有字符，圈速差发送方若接着 PA2，会收到回显和提示符 `> `。USART3 专用于 GNSS。
+
+**速率**：9600 baud 约 960 B/s，`report` 输出约 2.5 KB（约 3 s），`gps capture 15` 约 14 KB（约 15 s），`gps config` 约 1.5 KB。需要更快时改 `.ioc` 的 USART2 波特率并同步终端和圈速差发送方。
 
 ## 命令
 
@@ -77,7 +79,7 @@ USART6 上的命令行，用来采样 GNSS 的实际运行情况并导出可整�
 
 ## 对运行的影响
 
-- CLI 任务（优先级 `osPriorityLow`，栈 3 KiB，纳入栈水位监测）只在后台运行；USART6 中断只收发字节。输出由 CLI 任务按发送环空间逐行生成，发送环满时只让 CLI 任务等待，命令输出不丢；回显和提示符在环满时丢弃并计数（`sys.cli tx_drop_bytes`）。
+- CLI 任务（优先级 `osPriorityLow`，栈 3 KiB，纳入栈水位监测）只在后台运行；USART2 中断只收发字节。输出由 CLI 任务按发送环空间逐行生成，发送环满时只让 CLI 任务等待，命令输出不丢；回显和提示符在环满时丢弃并计数（`sys.cli tx_drop_bytes`）。
 - 采样只读统计，GPS 任务只增加计数和固定内存的记录（采集缓冲 6.7 KB、原始回复 1.5 KB），不做任何打印。
 - RX 引脚悬空或干扰会产生帧/噪声错误：连续 64 次错误后停止接收，1 s 后重新打开，错误中断不会长期占用 CPU。
 - 资源：Flash +约 14.9 KB，主 SRAM +约 16.2 KB（CCM 不变），数字见 [CHANGELOG](../CHANGELOG.md)。

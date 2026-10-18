@@ -34,21 +34,21 @@
 - 接收机命令确认：每条命令等 `$command,<命令>,response: OK` 回执（400 ms），无回执重发至多 2 次，非 OK 记 `rejected`；连续两条无回执后放弃确认、按原固定时间等待，启动配置最坏多耗约 2.4 s。**不再每次上电 `SAVECONFIG`**（每次开机都会重发这些命令，保存只是白写 UM982 非易失存储，解决"写入寿命未评估"待办）；需要时用 `gps save`。回执格式手册（V1 CH）没有记载，按已知的 UM98x 行为实现，需上板核对。
 - 新增 `docs/diagnostics.md`。
 
-**串口诊断 CLI**（USART6，PC6/PC7，115200 8N1；`diag_cli.c`）
+**串口诊断 CLI**（USART2，PA2/PA3，9600 8N1，与圈速差输入共用；`diag_cli.c`）
 - 命令：`help`、`version`、`report [N]`、`gps status|config|capture [N]|rate 10|20|smooth on|off|save`、`sys status`、`stop`。`report` 采样 N 秒后输出带格式版本（`fmt=1`）、Git 版本、运行时间、窗口起止和明确单位的报告：RMC 输出率与间隔、UTC 历元步长、拒绝原因、各类语句数（`other` 非零说明白名单没生效）、速度龄期/门限/有效占比/失效事件、串口与 DMA 错误和重启、迟读风险、配置回执、最近的有效性切换，以及速度"提交 → 界面应用 → 刷屏完成"的耗时（`speed_trace.c`，在 `lvgl_flush_cb` 一帧最后一块写完时取点；不等于屏幕可见，面板响应测不到）。`gps capture` 导出每条 RMC 的 CSV。
 - 低优先级任务（`osPriorityLow`，栈 3 KiB，纳入栈水位监测 `FW_TASK_CLI`）；中断只收发字节；发送环满时只让 CLI 任务等待，回显和提示符丢弃并计数；RX 线路连续出错 64 次后暂停接收 1 s。GPS 任务只增加计数和固定内存记录，不打印。
-- `.ioc`：增加 `NVIC.USART6_IRQn`（优先级 5）和 PC7 上拉；`usart.c`（MspInit、回调转发）、`stm32f4xx_it.c`（`USART6_IRQHandler`）、`stm32f4xx_it.h` 按 CubeMX 的生成形式手写，业务逻辑在独立模块，生成文件只在 USER CODE 区加转发回调。
+- **与圈速差输入共用 USART2**（实际接线在 PA2/PA3）：`diag_cli.c` 收成行，首个词是命令的行归 CLI，其余非空行经 `Diag_CLI_SetLineFallback` 交给原圈速差解析（`usart.c` 的 `USART2_ProcessLine`，规则不变，现返回是否合法），命令执行中也照常处理。USART2 波特率仍是 9600（`report` 约 3 s，`gps capture 15` 约 15 s）。回显会发到 PA2，圈速差发送方若接着 PA2 会收到。不改 `.ioc`、`stm32f4xx_it.c`：USART2 的中断和 NVIC 原本就已启用；`usart.c` 只在 USER CODE 区改回调转发，原来的行缓冲被 CLI 的行编辑取代。
 - `build_fw.mk` 生成 `build_vscode/gen/fw_version.h`（`git describe --always --dirty`），内容变化时才重编 `diag_cli.c`；CubeIDE 构建没有该头，版本显示 `unknown`。
 
 **验证**
-- `./build_fw.sh clean`：0 警告。Flash 259,068 B（+14,864）、主 SRAM 108,368 B（+16,248，余 22,704）、CCM 61,440 B 不变。
+- `./build_fw.sh clean`：0 警告。Flash 259,068 B（+14,864）、主 SRAM 108,344 B（+16,224，余 22,728）、CCM 61,440 B 不变。
 - `python3 tools/run_firmware_tests.py`（macOS，ASan/UBSan）通过，新增 7 组断言：速度有效性模块（门限边界、V、重复/倒退历元、缺失字段、跨午夜、计时回绕、门限收敛）、GPS 流水线（`--` 与真实 0、回执隔离、GGA 过期、计数）、断流下的里程/冲刺/圈速、串口错误恢复与风暴限流、配置回执/拒绝/无回执/迟到回执/CLI 请求、CLI 全部命令和异常输入/拥堵/噪声、界面 `--` 与启动门控。`test_ui` 的慢组节拍相位改为显式设置，不再依赖前面用例推进的毫秒数。`--png` 渲染七帧：第 6 帧（无数据）车速由 `0` 变为 `--`，`docs/images/dashboard-nodata.png` 已更新，其余帧不变。`./run_sim_mac.sh --build-only` 通过。
 - `tools/run_firmware_tests.py --compare-ref` 与本次提交之前的版本比较会因无数据帧车速改变（以及旧 `dashboard_ui.c` 没有新函数）而失败，之后以本提交为基线即可。
 
 **未验证 / 待办**
 - **全部只在主机上用模拟的串口、DMA、接收机验证，未上板**：USART3 错误恢复的真实 HAL 行为、`$command` 回执格式、`GPRMC 0.05` 与 `CONFIG SMOOTH PSRVEL` 是否被接受、150 ms 门限在实车上是否使 `--` 闪烁、CLI 开关前后 GPS/CAN/显示是否有差异。上板后运行 `report 10` 与 `gps capture 15` 对照。
-- **USART6 的 PCB 引出、接口电平和接线未确认**；PC7 悬空时靠内部上拉和错误限流兜底。未引出则改用 USART1（见 `docs/diagnostics.md`）。
-- **CubeIDE 完整构建与 CubeMX 重新生成未做**（本机没有 CubeIDE/CubeMX 可执行程序）：USART6 的 NVIC/上拉改动手写成生成形式，重新生成后应无差异，需核对。
+- USART2 的 PA3 为 `GPIO_NOPULL`（沿用原配置），RX 线悬空时靠错误限流兜底；圈速差发送方的实际型号和接线仍未在仓库中记录，其是否受 CLI 回显影响未确认。
+- **CubeIDE 完整构建未做**（本机没有 CubeIDE 可执行程序）；本次不再改 `.ioc` 和 CubeMX 生成部分，只改 `usart.c` USER CODE 区。
 - **待在 `vehicle-interfaces` 评审**：CAN 车速失效门限是否改为与本地一致；`0x7A0` 是否在有效性变化时立即补发；`POSITION_VALID` 位的新语义。
 - 新鲜度门限（150 ms）、GPHPR 过期（1.5 s）、周期估计的收敛参数都是初值，待实测收敛。速度平滑（`gps smooth`）和 10/20 Hz 对照实验未做。绝对 GNSS 延迟需要时间对齐或外部速度参考，CLI 只能测 MCU 内部各段和 UTC 历元是否按期推进。
 
@@ -59,7 +59,7 @@
 - **十进制故障码上板与 CubeIDE 验证（2026-10-14）**：未上板确认实际故障码和显示；本机未找到 CubeIDE 可执行程序，未运行 CubeIDE 完整构建。
 - **模拟器与真机配置不一致**：模拟器根目录 `lv_conf.h` 为 32 位色、LVGL 池 1 MB；真机为 RGB565、60 KiB（CCM）。界面已共用 `dashboard_view.c`，但内存预算仍无法在模拟器上验证。
 - **背光点亮时机**：代码上背光在 `Dashboard_UI_Init` 末尾由 TIM14 PWM 以 100% 点亮，早于随后 `lv_refr_now` 的首帧，而 `main.c` 原注释称「首帧后开背光」。上板确认开机是否闪现未刷新的 GRAM 内容，必要时把 PWM 启动移到首帧之后。
-- **未使用或用途不明的外设**：USART1 已初始化但应用层未使用（USART6 现为诊断 CLI）；PC2（输入）、PC3（输出）`.ioc` 无标签、代码未引用。确认后可从 `.ioc` 移除或补充标签。
+- **未使用或用途不明的外设**：USART1、USART6 已初始化但应用层未使用；PC2（输入）、PC3（输出）`.ioc` 无标签、代码未引用。确认后可从 `.ioc` 移除或补充标签。
 - **缺少自动化用例**：正常无中断时圈速过线、冲刺计时的几何判断（插值精度）仍没有回归用例；断流下的行为已有（见 2026-10-18 GPS 速度有效性条目）。
 - **体积较大的源文件**：`dashboard_ui.c`、`can.c`（CubeMX 生成文件的 USER 区内承载了解码、转发和 GPS 遥测）建议拆成独立模块。
 - **方向盘上电首帧丢失**：方向盘只在变化时发滑级和模式，车手屏界面初始化前收到的帧被丢弃。若车手屏比方向盘晚就绪，界面滑级为 0，且在电位器被拨动前，计时键或消错键触发的 `0x703` 带滑级 0。需方向盘周期重发当前状态，或车手屏在收到首个 `0x700` 前不发滑级（协议暂无“未知”编码，须先在中央库评审）。由代码推出，未上板验证。

@@ -30,6 +30,7 @@
 #define CLI_REPORT_MAX_S      60U
 #define CLI_CAPTURE_MAX_S     20U
 #define CLI_REQUEST_TIMEOUT_MS 8000U
+#define ARRAY_COUNT(a) ((uint32_t)(sizeof(a) / sizeof((a)[0])))
 #define CLI_RX_STALL_RETRY_MS 1000U
 #define CLI_RX_ERROR_STREAK     64U
 
@@ -65,12 +66,12 @@ static StackType_t g_cli_task_stack[CLI_STACK_WORDS];
 
 static void cli_hw_rx_arm(void)
 {
-	(void)HAL_UART_Receive_IT(&huart6, &g_rx_byte, 1U);
+	(void)HAL_UART_Receive_IT(&huart2, &g_rx_byte, 1U);
 }
 
 static HAL_StatusTypeDef cli_hw_tx(const uint8_t * data, uint16_t length)
 {
-	return HAL_UART_Transmit_IT(&huart6, (uint8_t *)data, length);
+	return HAL_UART_Transmit_IT(&huart2, (uint8_t *)data, length);
 }
 
 /* 调用者必须处在临界区或中断里。 */
@@ -126,7 +127,7 @@ void Diag_CLI_UartError(uint32_t error_code)
 	g_rx_err_streak++;
 	if(g_rx_err_streak > CLI_RX_ERROR_STREAK) {
 		if(g_rx_stalled == 0U) {
-			(void)HAL_UART_AbortReceive(&huart6);
+			(void)HAL_UART_AbortReceive(&huart2);
 			g_rx_stalled = 1U;
 			g_rx_stall_tick = HAL_GetTick();
 		}
@@ -324,6 +325,7 @@ static uint32_t g_line_len;
 static uint8_t g_last_was_cr;
 static uint32_t g_cli_commands;
 static uint32_t g_cli_rejected;
+static uint32_t g_cli_fallback_lines;
 
 static void cli_prompt(void)
 {
@@ -645,6 +647,7 @@ static uint32_t ln_sys(lb_t * b, uint32_t sub)
 	lb_ku(b, "tx_hw_err", g_tx_hw_errors);
 	lb_ku(b, "commands", g_cli_commands);
 	lb_ku(b, "rejected", g_cli_rejected);
+	lb_ku(b, "fallback_lines", g_cli_fallback_lines);
 	return 0U;
 }
 
@@ -876,8 +879,6 @@ static void job_end(void)
 	cli_prompt();
 }
 
-#define ARRAY_COUNT(a) ((uint32_t)(sizeof(a) / sizeof((a)[0])))
-
 static uint8_t job_emit_one(void)
 {
 	char text[CLI_OUT_LINE];
@@ -986,6 +987,30 @@ static void cmd_request(GPS_Request_t request, const cli_line_fn * fns, uint32_t
 	tx_puts("sent to receiver, waiting...\r\n");
 }
 
+/* CLI 的命令词。首个词不在表里的行不是命令。 */
+static const char * const k_command_words[] = { "help", "version", "report", "gps", "sys", "stop" };
+
+static uint8_t first_word_is_command(const char * line)
+{
+	uint32_t length = 0U;
+
+	while((*line == ' ') || (*line == '\t')) line++;
+	while((line[length] != '\0') && (line[length] != ' ') && (line[length] != '\t')) length++;
+	for(uint32_t i = 0U; i < ARRAY_COUNT(k_command_words); i++) {
+		if((strlen(k_command_words[i]) == length) && (strncmp(line, k_command_words[i], length) == 0)) {
+			return 1U;
+		}
+	}
+	return 0U;
+}
+
+static uint8_t (*g_line_fallback)(const char * line);
+
+void Diag_CLI_SetLineFallback(uint8_t (*handler)(const char * line))
+{
+	g_line_fallback = handler;
+}
+
 static void cli_execute(char * line, uint32_t now)
 {
 	char * argv[CLI_TOKENS];
@@ -994,6 +1019,22 @@ static void cli_execute(char * line, uint32_t now)
 	char * p = line;
 
 	g_cli_commands++;
+	/* 同一个串口上还有圈速差输入（"+1.23"）：首个词不是命令的非空行先交给它，命令执行中也照常处理。 */
+	if(first_word_is_command(line) == 0U) {
+		for(p = line; (*p == ' ') || (*p == '\t'); p++) { }
+		if(*p == '\0') {
+			cli_prompt();
+			return;
+		}
+		if((g_line_fallback != NULL) && (g_line_fallback(line) != 0U)) {
+			g_cli_fallback_lines++;
+			cli_prompt();
+			return;
+		}
+		cli_error("unknown command, type help");
+		return;
+	}
+	p = line;
 	while(*p != '\0') {
 		while(*p == ' ' || *p == '\t') *p++ = '\0';
 		if(*p == '\0') break;

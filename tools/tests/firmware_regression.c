@@ -5,7 +5,7 @@
 
 uint32_t test_tick=1000, test_primask, test_dma_ndtr=512;
 unsigned test_mutex_depth;
-UART_HandleTypeDef huart3,huart6;
+UART_HandleTypeDef huart2,huart3;
 DMA_HandleTypeDef hdma_usart3_rx;
 uint32_t SystemCoreClock=168000000U;
 CAN_HandleTypeDef hcan1={CAN1},hcan2={CAN2};
@@ -38,7 +38,7 @@ HAL_StatusTypeDef HAL_UART_Receive_DMA(UART_HandleTypeDef *h,uint8_t *p,uint16_t
 }
 HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *h,uint8_t *p,uint16_t n) {(void)h;(void)p;(void)n;test_rx_it_arms++;return HAL_OK;}
 HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *h) {h->RxState=HAL_UART_STATE_READY;test_abort_calls++;return HAL_OK;}
-/* USART6：一次只允许一段发送在途，和 HAL 一致；测试用 cli_tx_complete 模拟发送完成中断。 */
+/* USART2（命令行）：一次只允许一段发送在途，和 HAL 一致；测试用 cli_tx_complete 模拟发送完成中断。 */
 static char test_cli_out[65536];
 static unsigned test_cli_len,test_cli_tx_pending;
 HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef *h,uint8_t *p,uint16_t n)
@@ -944,10 +944,35 @@ static double find_num(const char *text,const char *key)
     return p?atof(p+strlen(key)):-1e9;
 }
 static unsigned count_char(const char *text,char c) {unsigned n=0;for(;*text;text++)n+=(*text==c);return n;}
+/* 模拟 usart.c 的圈速差解析：以 + 或 - 开头的行算合法。 */
+static char test_fallback_lines[8][64];
+static unsigned test_fallback_count;
+static uint8_t test_lap_delta_line(const char *line)
+{
+    while(*line==' ')line++;
+    if(test_fallback_count<8)strncpy(test_fallback_lines[test_fallback_count],line,63);
+    test_fallback_count++;
+    return (uint8_t)(*line=='+'||*line=='-');
+}
 static void test_cli(void)
 {
     gps_test_reset();test_tx_hook=receiver_reply;test_rx_mode=0;
     Diag_CLI_Init();assert(test_rx_it_arms>0);
+    cli_out_clear();
+    /* USART2 同时是圈速差输入：首个词不是命令的行交给回退处理；命令词（含 report -5 这类带负号的参数）只走 CLI。 */
+    cli_type("+1.23\r");cli_pump(50,NULL);
+    assert(test_fallback_count==0&&strstr(test_cli_out,"unknown command"));      /* 未注册回退时按未知命令处理 */
+    Diag_CLI_SetLineFallback(test_lap_delta_line);
+    cli_out_clear();cli_type("+1.23\r");cli_pump(50,NULL);
+    assert(test_fallback_count==1&&!strcmp(test_fallback_lines[0],"+1.23")&&!strstr(test_cli_out,"error")&&g_cli_fallback_lines==1);
+    cli_out_clear();cli_type("-0.5\r\n");cli_pump(50,NULL);
+    assert(test_fallback_count==2&&!strcmp(test_fallback_lines[1],"-0.5")&&!strstr(test_cli_out,"error"));
+    cli_out_clear();cli_type("reprot\r");cli_pump(50,NULL);                       /* 打错的命令：回退拒绝后提示 */
+    assert(test_fallback_count==3&&strstr(test_cli_out,"unknown command"));
+    cli_out_clear();cli_type("report -5\r");cli_pump(50,NULL);
+    assert(test_fallback_count==3&&strstr(test_cli_out,"seconds must be a number"));
+    cli_out_clear();cli_type("   \r");cli_pump(50,NULL);assert(test_fallback_count==3&&!strstr(test_cli_out,"error"));
+    cli_out_clear();cli_type("helpme\r");cli_pump(50,NULL);assert(test_fallback_count==4&&strstr(test_cli_out,"unknown command"));
     cli_out_clear();
     /* 参数检查与行编辑。 */
     cli_type("report abc\r");cli_pump(50,NULL);assert(strstr(test_cli_out,"error: seconds must be a number"));
@@ -996,6 +1021,12 @@ static void test_cli(void)
     assert(strstr(test_cli_out,"stopped")&&!strstr(test_cli_out,"HMI-DIAG BEGIN")&&g_job.kind==JOB_IDLE);
     cli_out_clear();cli_type("report 30\r");cli_pump(100,cli_feed_20hz);cli_type("\x03");cli_pump(50,cli_feed_20hz);
     assert(strstr(test_cli_out,"stopped")&&g_job.kind==JOB_IDLE);
+    /* 命令执行中圈速差输入照常处理，不被 busy 挡住。 */
+    cli_out_clear();cli_type("report 5\r");cli_pump(50,cli_feed_20hz);
+    unsigned fallback_before=test_fallback_count;
+    cli_type("+0.42\r");cli_pump(50,cli_feed_20hz);
+    assert(test_fallback_count==fallback_before+1&&!strstr(test_cli_out,"busy")&&g_job.kind==JOB_SAMPLE);
+    cli_type("stop\r");cli_pump(50,cli_feed_20hz);assert(g_job.kind==JOB_IDLE);
 
     /* 速度失效、重复历元、断流都会出现在报告里。 */
     cli_out_clear();cli_type("report 3\r");cli_pump(500,cli_feed_20hz);
@@ -1016,11 +1047,14 @@ static void test_cli(void)
     assert(records==GPS_CaptureCount()&&records>=50);
     assert(count_char(test_cli_out,'\n')==records+6);                         /* 命令回显、提示行、BEGIN、列名、记录、END、结束空行 */
 
-    /* 发送拥堵：UART 不发送时 CLI 不丢内容、不阻塞；恢复后完整输出。 */
-    cli_out_clear();cli_type("help\r");
-    for(unsigned i=0;i<20;i++){test_tick+=10;Diag_CLI_Step(test_tick);}         /* 不调用 cli_tx_complete */
-    assert(strstr(test_cli_out,"help")&&!strstr(test_cli_out,"gps save"));
-    cli_pump(200,NULL);assert(strstr(test_cli_out,"gps save")&&strstr(test_cli_out,"stop   ")&&g_tx_drop_bytes==0);
+    /* 发送拥堵：UART 不完成发送时 CLI 任务停在发送环满处，不丢内容、不阻塞其他任务；恢复后完整输出。 */
+    cli_out_clear();cli_type("report 1\r");
+    for(unsigned i=0;i<400&&!strstr(test_cli_out,"HMI-DIAG BEGIN");i++)cli_pump(10,cli_feed_20hz);
+    assert(strstr(test_cli_out,"HMI-DIAG BEGIN"));
+    for(unsigned i=0;i<50;i++){test_tick+=10;cli_feed_20hz(0);Diag_CLI_Step(test_tick);}   /* 不调用 cli_tx_complete */
+    assert(g_job.kind==JOB_PRINT&&!strstr(test_cli_out,"HMI-DIAG END")&&tx_free()<(CLI_OUT_LINE+4U));
+    cli_pump(2000,cli_feed_20hz);
+    assert(strstr(test_cli_out,"HMI-DIAG END")&&g_job.kind==JOB_IDLE&&g_tx_drop_bytes==0);
     /* 回显在发送环已满时丢弃并计数（命令输出不丢）。 */
     unsigned dropped=g_tx_drop_bytes;
     cli_out_clear();for(unsigned i=0;i<1100;i++)tx_put("x",1);assert(g_tx_drop_bytes>dropped);

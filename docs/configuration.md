@@ -28,7 +28,7 @@
 | 接收机配置命令 | 见下 | `k_cfg_cmds`（`gps.c`） | — | UM982 基线长度 `CONFIG HEADING LENGTH 111 10` 为 111 cm ±10 cm（两个参数单位均为 cm）；天线间距变化须修改 |
 | 命令回执超时 | 400 | `GPS_CFG_ACK_TIMEOUT_MS` | ms | 每次尝试等待回执的时间 |
 | 命令重发次数 | 2 | `GPS_CFG_RETRIES` | 次 | 无回执时的额外发送次数；连续两条无回执后放弃确认 |
-| 诊断串口 | USART6，115200 | `huart6`（`.ioc`） | — | 见 [串口诊断 CLI](diagnostics.md) |
+| 诊断串口 | USART2，9600 | `huart2`（`.ioc`） | — | 与圈速差输入共用，见 [串口诊断 CLI](diagnostics.md) |
 
 UM982 启动时依次发送（每条等待回执并继续读取 DMA，无回执则重发，见 [GPS 与圈速](gps_lap.md)）：`UNLOG`、`MODE ROVER AUTOMOTIVE`、`CONFIG HEADING FIXLENGTH`、`CONFIG HEADING LENGTH 111 10`、`GPRMC 0.05`（20 Hz）、`GPGGA 1`（1 s）、`GPHPR 0.2`（5 Hz）、`GPGSV 5`（5 s）。**不再每次上电 `SAVECONFIG`**：每次开机都重发这些命令，保存只是白写一次接收机非易失存储；需要持久保存时用 CLI 的 `gps save`。无参数的 `UNLOG` 停止接收端口上的全部输出（协议文档 §8.1），只保留这四类解析所需语句，总负载约为 115200 baud 的 1/5，避免 GSV 突发冲垮 512 B 的 DMA 环。请求统一用 GP 前缀（协议文档 §7.1：GBGSV、GLGSV 等为非法输入），返回语句的说话者（GN/GP/GB）由接收机按参与定位的系统决定，解析只按报文名匹配。
 

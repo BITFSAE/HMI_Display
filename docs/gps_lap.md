@@ -6,7 +6,7 @@
 | --- | --- |
 | `gps.c`、`gps.h` | 配置 UM982 并确认回执，解析 NMEA（RMC 速度/状态/位置、GGA 定位质量/卫星数、GSV 信噪比、GPHPR 双天线航向），估算信号等级，累加里程，按节拍发送 GPS CAN 帧，维护诊断统计 |
 | `gps_speed.c`、`gps_speed.h` | RMC 速度与位置的有效性：新鲜度门限、重复/倒退历元、失效原因、连续性序号；无硬件依赖，屏幕、CAN、计时和 CLI 共用这一份状态 |
-| `speed_trace.c`、`diag_cli.c` | 车速到屏幕的耗时追踪、USART6 诊断命令行，见 [串口诊断 CLI](diagnostics.md) |
+| `speed_trace.c`、`diag_cli.c` | 车速到屏幕的耗时追踪、USART2 诊断命令行，见 [串口诊断 CLI](diagnostics.md) |
 | `gps_lap.c`、`gps_lap.h` | 圈速（起终点线过线检测、圈差）与 S 模式 75 m 冲刺计时，不接触硬件 |
 | `dashboard_ui.c` | 触摸或 CAN 触发计时开始/停止，选线方向，模式锁，提交圈速到界面 |
 | `odometer_flash.c` | 里程的 Flash 存储，见 [里程存储](odometer_storage.md) |
@@ -17,7 +17,7 @@
 
 GPS 任务（优先级 25，栈 12 KiB）上电后等界面就绪，读出里程，等待首条 NMEA（最多 5 s，期间每 20 ms 处理一次 DMA），再依次发送接收机配置命令并确认回执（见下）。之后每 10 ms：处理 DMA 中新到的字符 → 行解析 → 位置与速度有效性检查 → 检查 GGA/GSV 过期 → 执行 CAN 发送节拍 → 处理 CLI 请求。配置命令发送期间同样每 10 ms 读取 DMA，512 字节缓冲区在 115200 baud 下约 44 ms 绕回，若一次读取间隔过长会记入 `g_gps_dma_late_poll_count` 并更新 `g_gps_poll_gap_max_ms`。不使用串口空闲中断，避免噪声把中断变成高频唤醒源。
 
-**串口错误恢复**：HAL 在 DMA 接收遇到任何串口错误（帧、噪声、校验、溢出）时会中止接收且不自动恢复，不重启则 GNSS 数据永久中断。`HAL_UART_ErrorCallback` 把错误转给 `GPS_UartErrorCallback`，按位计数并重启循环 DMA；任务在每次轮询时也检查接收状态作兜底。重启后环从下标 0 写起，任务丢弃旧读位置和半行数据。USART2（圈速差）的单字节中断接收同样在错误回调里重新启动。
+**串口错误恢复**：HAL 在 DMA 接收遇到任何串口错误（帧、噪声、校验、溢出）时会中止接收且不自动恢复，不重启则 GNSS 数据永久中断。`HAL_UART_ErrorCallback` 把错误转给 `GPS_UartErrorCallback`，按位计数并重启循环 DMA；任务在每次轮询时也检查接收状态作兜底。重启后环从下标 0 写起，任务丢弃旧读位置和半行数据。USART2（命令行与圈速差）的单字节中断接收同样在错误回调里重新启动。
 
 **语句分类**：按地址字段末三个字符识别 RMC/GGA/HPR/GSV（`$GNRMC`、`$GPRMC` 等），不在整行里搜索。接收机对 `GPRMC` 命令的回执 `$command,GPRMC 0.05,response: OK` 也含 "RMC"，按子串匹配会把它当成状态为 V 的 RMC 并使车速失效。
 
