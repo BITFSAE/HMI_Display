@@ -16,18 +16,19 @@ extern "C" {
 #define DASH_SCREEN_W 800
 #define DASH_SCREEN_H 480
 
-/* Drive modes, same numbering as DBC ModeFlag: 0=S 1=Q 2=C 3=E. */
+/* Drive modes, same numbering as DBC ModeFlag:
+ * 0=AC 1=AX 2=8 3=EN. */
 typedef enum {
-    DASH_MODE_S = 0,
-    DASH_MODE_Q,
-    DASH_MODE_C,
-    DASH_MODE_E
+    DASH_MODE_ACCELERATION = 0,
+    DASH_MODE_AUTOCROSS,
+    DASH_MODE_SKIDPAD,
+    DASH_MODE_ENDURANCE
 } dash_mode_t;
 
 typedef enum {
     DASH_ZONE_NONE = 0,
     DASH_ZONE_LAP,      /* top bar: start/stop lap or 75 m run timing */
-    DASH_ZONE_MODE,     /* mode tile: cycle S -> Q -> C -> E -> S */
+    DASH_ZONE_MODE,     /* mode tile: cycle AC -> AX -> 8 -> EN -> AC */
     DASH_ZONE_ALERT,    /* alert banner: dismiss the oldest alert */
     DASH_ZONE_NIGHT     /* night button: toggle backlight dimming */
 } dash_zone_t;
@@ -94,7 +95,7 @@ void Dash_View_SetMotor(uint32_t wheel, const dash_motor_t * motor);
 void Dash_View_SetTire(uint32_t wheel, const int32_t temps_centi[4]);
 /* Times in 0.01 s. */
 void Dash_View_SetLapTimes(int32_t current, int32_t last, int32_t best);
-/* Q/C/E: lap count and laps left; S: run count and metres remaining. */
+/* AX/8/EN: lap count and laps left; AC: run count and metres remaining. */
 void Dash_View_SetLapCounter(int32_t count, int32_t remaining);
 /* Lap delta in 0.01 s, negative = faster. */
 void Dash_View_SetDelta(int32_t delta);

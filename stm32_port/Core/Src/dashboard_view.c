@@ -23,7 +23,7 @@
 #include <string.h>
 
 LV_FONT_DECLARE(dash_font_speed)  /* Bold 180, digits */
-LV_FONT_DECLARE(dash_font_xl)     /* SemiBold 56, digits % - S Q C E */
+LV_FONT_DECLARE(dash_font_xl)     /* SemiBold 56, digits % - A C E N X */
 LV_FONT_DECLARE(dash_font_l)      /* SemiBold 36, digits : . + - */
 LV_FONT_DECLARE(dash_font_m)      /* SemiBold 22, ASCII */
 LV_FONT_DECLARE(dash_font_s)      /* Medium 18, ASCII + eye/bolt/warning */
@@ -76,8 +76,8 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 #define PEDAL_W      32
 #define PEDAL_H      162
 #define PEDAL_Y      156
-#define BRAKE_X      209
-#define REGEN_X      243
+#define REGEN_X      209
+#define MECH_X       243
 #define BRAKE_PEDAL_W 26
 #define THROTTLE_X   542
 
@@ -95,7 +95,7 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 
 /* SOP limits sit under the speed, to the right of the two brake bars and
  * left of the throttle readout. */
-#define SOP_X        338
+#define SOP_X        318
 #define SOP_Y        332
 #define SOP_ROW_H    22
 #define SOP_CAP_W    42
@@ -142,6 +142,7 @@ static struct {
     lv_obj_t * signal;
     lv_obj_t * mode_tile;
     lv_obj_t * mode_letter;
+    lv_obj_t * mode_name;
     lv_obj_t * slip_value;
     lv_obj_t * slip_meter;
     lv_obj_t * tires[4];
@@ -184,6 +185,7 @@ static lv_style_t st_aux_value; /* 14 px values for the compact brake bars */
 static lv_style_t st_value_m;   /* 22 px white values */
 static lv_style_t st_large;     /* 36 px */
 static lv_style_t st_xl;        /* 56 px */
+static lv_style_t st_mode_name; /* 14 px drive-mode name inside the tile */
 static lv_style_t st_speed;     /* 180 px digits */
 static lv_style_t st_unit;      /* 18 px grey units */
 static lv_style_t st_right;
@@ -198,7 +200,7 @@ static int32_t s_delta;
 static int32_t s_slip = -1;
 static int32_t s_signal = -1;
 static int32_t s_speed = -1;
-static dash_mode_t s_mode = DASH_MODE_S;
+static dash_mode_t s_mode = DASH_MODE_ACCELERATION;
 static uint8_t s_mode_valid;
 static int32_t s_lap_count = -1;
 static int32_t s_lap_remaining = -1;
@@ -498,8 +500,11 @@ static void create_left(lv_obj_t * scr)
     lv_obj_set_style_bg_opa(ui.mode_tile, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(ui.mode_tile, 1, 0);
     lv_obj_set_style_border_color(ui.mode_tile, lv_color_hex(C_LINE), 0);
-    ui.mode_letter = make_label(ui.mode_tile, &st_xl, 0, 0, 0, NULL, "S");
-    lv_obj_center(ui.mode_letter);
+    /* 56 px 字库的实际墨迹只有 39 px 高；两块一起下移并收紧间距，
+     * 让缩写与全称在 84 px 色块内上下留白接近。 */
+    ui.mode_letter = make_label(ui.mode_tile, &st_xl, 0, 11, MODE_W, &st_center, "AC");
+    ui.mode_name = make_label(ui.mode_tile, &st_mode_name, 0, 58, MODE_W, &st_center,
+                              "Acceleration");
 
     make_label(scr, &st_caption, 114, 66, 0, NULL, "SLIP");
     ui.slip_value = make_label(scr, &st_xl, 114, 92, 0, NULL, "0");
@@ -566,20 +571,21 @@ static void create_centre(lv_obj_t * scr)
         static const char * const sop_caption[2] = {"DISCH", "CHG"};
         for(uint32_t row = 0U; row < 2U; row++) {
             const int32_t y = SOP_Y + (int32_t)row * SOP_ROW_H;
-            make_label(scr, &st_caption, SOP_X, y + 4, SOP_CAP_W, NULL, sop_caption[row]);
+            make_label(scr, &st_caption, SOP_X, y + 4, SOP_CAP_W, &st_center,
+                       sop_caption[row]);
             ui.sop_power[row] = make_label(scr, &st_value, SOP_POWER_X, y, SOP_POWER_W,
-                                           &st_right, "");
+                                           &st_center, "");
             ui.sop_current[row] = make_label(scr, &st_value, SOP_CURRENT_X, y, SOP_CURRENT_W,
-                                             &st_right, "");
+                                             &st_center, "");
         }
     }
 
     /* 两条制动条放在车速数字左侧；三格车速的墨迹会伸到约 x268，
      * 条块一旦进入该范围就会压住数字。 */
-    ui.brake_bar = pedal(scr, BRAKE_X, BRAKE_PEDAL_W, &s_brake_bar, "MECH", C_RED,
-                         &st_aux_value, 200, 44, &ui.brake_pct);
     ui.regen_bar = pedal(scr, REGEN_X, BRAKE_PEDAL_W, &s_regen_bar, "REG", C_BLUE,
-                         &st_aux_value, 234, 44, &ui.regen_pct);
+                         &st_aux_value, 200, 44, &ui.regen_pct);
+    ui.brake_bar = pedal(scr, MECH_X, BRAKE_PEDAL_W, &s_brake_bar, "MECH", C_RED,
+                         &st_aux_value, 234, 44, &ui.brake_pct);
     ui.throttle_bar = pedal(scr, THROTTLE_X, PEDAL_W, &s_throttle_bar, "THROTTLE", C_GREEN,
                             &st_value, THROTTLE_X - 26, 84, &ui.throttle_pct);
 
@@ -682,6 +688,7 @@ void Dash_View_Create(void)
     init_style(&st_value_m, &dash_font_m, C_TEXT);
     init_style(&st_large, &dash_font_l, C_TEXT);
     init_style(&st_xl, &dash_font_xl, C_TEXT);
+    init_style(&st_mode_name, &dash_font_xs, C_TEXT);
     init_style(&st_speed, &dash_font_speed, C_TEXT);
     init_style(&st_unit, &dash_font_s, C_DIM);
     lv_style_init(&st_right);
@@ -698,7 +705,7 @@ void Dash_View_Create(void)
     create_right(scr);
     create_bottom(scr);
 
-    Dash_View_SetMode(DASH_MODE_S);
+    Dash_View_SetMode(DASH_MODE_ACCELERATION);
     Dash_View_SetSlip(0);
     Dash_View_SetSignal(0);
     Dash_View_SetSpeed(DASH_VIEW_INVALID);
@@ -742,20 +749,23 @@ void Dash_View_SetSpeed(int32_t kmh)
 
 void Dash_View_SetMode(dash_mode_t mode)
 {
-    static const char * const letters[4] = {"S", "Q", "C", "E"};
+    static const char * const letters[4] = {"AC", "AX", "8", "EN"};
+    static const char * const names[4] = {"Acceleration", "Autocross", "Skidpad", "Endurance"};
     static const uint32_t tile[4] = {C_RED, C_YELLOW, C_BLUE, C_GREEN};
     static const uint32_t text[4] = {C_TEXT, C_BG, C_TEXT, C_BG};
     uint8_t sprint;
 
-    if((uint32_t)mode > DASH_MODE_E) mode = DASH_MODE_S;
+    if((uint32_t)mode > DASH_MODE_ENDURANCE) mode = DASH_MODE_ACCELERATION;
     if((s_mode_valid != 0U) && (mode == s_mode)) return;
     s_mode = mode;
     s_mode_valid = 1U;
-    sprint = (mode == DASH_MODE_S) ? 1U : 0U;
+    sprint = (mode == DASH_MODE_ACCELERATION) ? 1U : 0U;
 
     set_bg_color(ui.mode_tile, tile[mode]);
     set_text(ui.mode_letter, letters[mode]);
     set_text_color(ui.mode_letter, text[mode]);
+    set_text(ui.mode_name, names[mode]);
+    set_text_color(ui.mode_name, text[mode]);
     lv_label_set_text_static(ui.lap_caption, sprint ? "RUN" : "LAP");
     lv_label_set_text_static(ui.left_caption, sprint ? "DIST M" : "LEFT");
     lv_label_set_text_static(ui.time_caption, sprint ? "RUN TIME" : "LAP TIME");

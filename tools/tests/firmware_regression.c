@@ -444,7 +444,7 @@ static void test_can_decode(void)
 static void test_steering(void)
 {
     unsigned invalid=g_can_rx_invalid_count,relayed,commands;
-    Dashboard_UI_SubmitDriveMode(0);test_tick+=300;Dashboard_UI_Process();assert(g_drive_mode==DRIVE_MODE_S);
+    Dashboard_UI_SubmitDriveMode(0);test_tick+=300;Dashboard_UI_Process();assert(g_drive_mode==DRIVE_MODE_ACCELERATION);
     /* 0x310: only ASCII '0'..'3' is relayed and shown. */
     relayed=test_tx_id_count[0x310];
     inject_wheel(0x310,8,0x35);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+1);
@@ -452,11 +452,11 @@ static void test_steering(void)
     inject_wheel(0x310,8,0x31);assert(test_tx_id_count[0x310]==relayed+1&&test_tx_id_data[0x310][0]==0x31);
     assert((g_dashboard_dirty_mask&DASH_DIRTY_MODE)!=0U&&g_pending_dashboard_data.mode_index==1);
     /* 计时锁生效：0x310 不转发，界面也不接受新模式，只请求 MODE LOCK 告警。 */
-    test_tick+=300;Dashboard_UI_Process();assert(g_drive_mode==DRIVE_MODE_Q);
+    test_tick+=300;Dashboard_UI_Process();assert(g_drive_mode==DRIVE_MODE_AUTOCROSS);
     g_lap_analysis_active=1U;
     relayed=test_tx_id_count[0x310];
     inject_wheel(0x310,8,'2');
-    assert(test_tx_id_count[0x310]==relayed&&g_drive_mode==DRIVE_MODE_Q&&g_pending_mode_lock_alert==1U);
+    assert(test_tx_id_count[0x310]==relayed&&g_drive_mode==DRIVE_MODE_AUTOCROSS&&g_pending_mode_lock_alert==1U);
     g_lap_analysis_active=0U;g_pending_mode_lock_alert=0U;
     /* 0x700: out-of-range level is dropped without a 0x703; a valid one is merged. */
     commands=test_tx_id_count[0x703];
@@ -1234,15 +1234,15 @@ static void test_ui_speed(void)
     for(unsigned i=0;i<10;i++) {rmc(43200000UL+i*50U,'A',"0.00");test_tick+=50;}
     for(unsigned i=10;i<14;i++) {rmc(43200000UL+i*50U,'A',"");test_tick+=50;gps_service_once();}   /* 速度字段缺失，位置照常 */
     GPS_GetData(&d);assert(d.valid&&!d.speed_valid&&d.speed_kmh==0.0f&&d.signal_level>GPS_SIG_LEVEL_NONE);
-    g_drive_mode=DRIVE_MODE_S;g_pending_alert_count=0;
+    g_drive_mode=DRIVE_MODE_ACCELERATION;g_pending_alert_count=0;
     dashboard_toggle_lap_analysis();
     assert(alert_pending("gps speed invalid")&&!GPS_Sprint_IsActive());
-    g_drive_mode=DRIVE_MODE_Q;g_pending_alert_count=0;
+    g_drive_mode=DRIVE_MODE_AUTOCROSS;g_pending_alert_count=0;
     dashboard_toggle_lap_analysis();
     assert(alert_pending("gps speed invalid")&&!g_lap_analysis_active);
-    /* 双天线航向有效时圈速不需要速度，但 S 模式冲刺仍必须有可信速度。 */
+    /* 双天线航向有效时圈速不需要速度，但 AC 模式冲刺仍必须有可信速度。 */
     nmea("GPHPR,120000,123.4,0,0,4");GPS_GetData(&d);assert(d.heading_valid);
-    g_drive_mode=DRIVE_MODE_S;g_pending_alert_count=0;
+    g_drive_mode=DRIVE_MODE_ACCELERATION;g_pending_alert_count=0;
     dashboard_toggle_lap_analysis();
     assert(alert_pending("gps speed invalid")&&!GPS_Sprint_IsActive());
     /* 速度恢复后可以准备冲刺。 */
@@ -1277,7 +1277,7 @@ static void test_mode_touch(void)
     Dashboard_UI_SubmitDriveMode(0);
     test_tick+=300;Dashboard_UI_Process();
     g_lap_analysis_active=0U;g_mode_lock_alert_last_tick=0U;
-    assert(g_drive_mode==DRIVE_MODE_S);
+    assert(g_drive_mode==DRIVE_MODE_ACCELERATION);
 
     mode_tx=test_tx_id_count[0x310];
     for(unsigned i=0;i<4;i++) {
@@ -1293,22 +1293,22 @@ static void test_mode_touch(void)
     Dashboard_UI_SubmitDriveMode(3);
     Dashboard_UI_SubmitDriveMode(0);
     test_tick+=300;Dashboard_UI_Process();
-    assert(g_drive_mode==DRIVE_MODE_E&&g_mode_index==3);
+    assert(g_drive_mode==DRIVE_MODE_ENDURANCE&&g_mode_index==3);
     Dashboard_UI_SubmitDriveMode(0);test_tick+=300;Dashboard_UI_Process();
-    assert(g_drive_mode==DRIVE_MODE_S&&g_mode_index==0);
+    assert(g_drive_mode==DRIVE_MODE_ACCELERATION&&g_mode_index==0);
 
     /* 方向盘连续转回旧档位时，最后一次用户请求仍要覆盖待应用的 E。 */
     Dashboard_UI_RequestDriveMode(3);
     Dashboard_UI_RequestDriveMode(0);
     test_tick+=300;Dashboard_UI_Process();
-    assert(g_drive_mode==DRIVE_MODE_S&&g_mode_index==0);
+    assert(g_drive_mode==DRIVE_MODE_ACCELERATION&&g_mode_index==0);
 
     /* 方向盘请求尚未应用时点击：按待应用的目标模式轮转，不能丢掉回绕到 S 的请求。 */
     Dashboard_UI_SubmitDriveMode(3);
     mode_tx=test_tx_id_count[0x310];
     tap_mode_tile();
     assert(test_tx_id_count[0x310]==mode_tx+1U&&test_tx_id_data[0x310][0]=='0');
-    assert(g_drive_mode==DRIVE_MODE_S&&g_mode_index==0);
+    assert(g_drive_mode==DRIVE_MODE_ACCELERATION&&g_mode_index==0);
 
     /* 200 ms 内的第二次按下不轮转，也不发 0x310。 */
     mode_tx=test_tx_id_count[0x310];
@@ -1318,9 +1318,9 @@ static void test_mode_touch(void)
     test_tick+=DASHBOARD_MODE_TOUCH_DEBOUNCE_MS;Dashboard_UI_SubmitTouchState(56,106,1);
     assert(g_pending_mode_cycle==1U);
     test_tick+=60;Dashboard_UI_Process();
-    assert(test_tx_id_count[0x310]==mode_tx+1U&&g_drive_mode==DRIVE_MODE_Q);
+    assert(test_tx_id_count[0x310]==mode_tx+1U&&g_drive_mode==DRIVE_MODE_AUTOCROSS);
 
-    /* 非 S 模式圈速分析进行中：拒绝轮转、不改界面、不发送并弹模式锁告警。 */
+    /* 非 AC 模式圈速分析进行中：拒绝轮转、不改界面、不发送并弹模式锁告警。 */
     Dashboard_UI_RequestAlertClear();test_tick+=300;Dashboard_UI_Process();
     Dashboard_UI_SubmitDriveMode(1);test_tick+=300;Dashboard_UI_Process();
     g_lap_analysis_active=1U;g_mode_lock_alert_last_tick=0U;
@@ -1328,14 +1328,14 @@ static void test_mode_touch(void)
     test_tick+=DASHBOARD_MODE_TOUCH_DEBOUNCE_MS+50U;Dashboard_UI_SubmitTouchState(56,106,1);
     mode_tx=test_tx_id_count[0x310];
     test_tick+=60;Dashboard_UI_Process();
-    assert(test_tx_id_count[0x310]==mode_tx&&g_drive_mode==DRIVE_MODE_Q);
+    assert(test_tx_id_count[0x310]==mode_tx&&g_drive_mode==DRIVE_MODE_AUTOCROSS);
     assert(g_alert_count>0U&&!strcmp(g_alert_queue[g_alert_count-1U],"MODE LOCK: TIMER ACTIVE"));
     g_lap_analysis_active=0U;
 
     /* 越界模式不能进入发送队列。 */
     mode_tx=test_tx_id_count[0x310];
     assert(CAN_SendDriveModeRequest(4U)==0U&&test_tx_id_count[0x310]==mode_tx);
-    puts("UI mode tile: hit zone, S/Q/C/E wrap, 0x310 payload, debounce, pending-request ordering and timing lock passed");
+    puts("UI mode tile: hit zone, AC/AX/8/EN wrap, 0x310 payload, debounce, pending-request ordering and timing lock passed");
 }
 /* Per-motor PK is the highest power since power-on: lifting off, zero torque or regen never clears it. */
 static void test_motor_peak(void)

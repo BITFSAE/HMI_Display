@@ -42,7 +42,7 @@ UM982 启动时依次发送（每条等待回执并继续读取 DMA，无回执�
 | 过线诊断保持 | 2000 | `GPS_LAP_DIAG_HOLD_MS` | ms | 漏门、反向、已过线状态的显示保持 |
 | 参考轨迹采样 | 最多 512 点；间距 ≥1 m 或间隔 ≤500 ms | `GPS_LAP_TRACK_SAMPLE_MAX`、`GPS_LAP_SAMPLE_MIN_DIST_M`、`GPS_LAP_SAMPLE_MAX_PERIOD_MS` | — | 实时圈差用；占 RAM |
 | 圈时界面刷新 | 200 | `GPS_LAP_UI_UPDATE_PERIOD_MS` | ms | |
-| 冲刺距离 | 75 | `GPS_SPRINT_DISTANCE_M` | m | S 模式直线计时长度；界面「LEFT」显示剩余整米 |
+| 冲刺距离 | 75 | `GPS_SPRINT_DISTANCE_M` | m | AC（Acceleration）直线计时长度；界面「DIST M」显示剩余整米 |
 | 冲刺起步车速 | 0.5 | `GPS_SPRINT_START_SPEED_KMH` | km/h | 准备时车速须低于此值，越过此值视为起步 |
 | 冲刺单步合理性 | 8 m + 3×估算 | `GPS_SPRINT_STEP_MARGIN_M`、`GPS_SPRINT_STEP_FACTOR` | — | 位置突跳超过此范围的采样被拒绝 |
 | 无航向时起线最低车速 | 5.0 | `LAP_START_MIN_SPEED_KMH`（`dashboard_ui.c`） | km/h | 双天线航向无效时改用 RMC 航迹，需达到此车速 |

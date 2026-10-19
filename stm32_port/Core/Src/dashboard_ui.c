@@ -18,13 +18,13 @@
 static volatile uint8_t g_dashboard_initialized;
 
 typedef enum {
-    DRIVE_MODE_S = 0,
-    DRIVE_MODE_Q,
-    DRIVE_MODE_C,
-    DRIVE_MODE_E
+    DRIVE_MODE_ACCELERATION = 0,
+    DRIVE_MODE_AUTOCROSS,
+    DRIVE_MODE_SKIDPAD,
+    DRIVE_MODE_ENDURANCE
 } drive_mode_t;
 
-static volatile drive_mode_t g_drive_mode = DRIVE_MODE_S;
+static volatile drive_mode_t g_drive_mode = DRIVE_MODE_ACCELERATION;
 /* 当前界面显示的车速；DASH_VIEW_INVALID 表示显示 "--"（没有可信速度）。 */
 static int32_t g_speed = DASH_VIEW_INVALID;
 static volatile int32_t g_mode_index = 0;
@@ -303,7 +303,7 @@ static void dashboard_reset_lap_ui(void)
     g_pending_lap_count = 0;
     g_lap_times_dirty = 0U;
     g_laps_current = 0;
-    g_laps_left = (g_drive_mode == DRIVE_MODE_S) ? 75 : 0;
+    g_laps_left = (g_drive_mode == DRIVE_MODE_ACCELERATION) ? 75 : 0;
     g_pending_sprint_remaining_m = g_laps_left;
     g_sprint_remaining_dirty = 0U;
 
@@ -339,7 +339,7 @@ static void update_lap_analysis_indicator(uint32_t now)
         return;
     }
 
-    if((g_drive_mode == DRIVE_MODE_S) &&
+    if((g_drive_mode == DRIVE_MODE_ACCELERATION) &&
        (g_lap_analysis_active != 0U) &&
        (GPS_Sprint_IsActive() == 0U)) {
         g_lap_analysis_active = 0U;
@@ -377,7 +377,7 @@ static void dashboard_toggle_lap_analysis(void)
     GPS_Data_t gps_data;
     float line_heading;
 
-    if((g_drive_mode == DRIVE_MODE_S) && (GPS_Sprint_IsActive() != 0U)) {
+    if((g_drive_mode == DRIVE_MODE_ACCELERATION) && (GPS_Sprint_IsActive() != 0U)) {
         GPS_Sprint_Cancel();
         g_lap_analysis_active = 0U;
         g_lap_analysis_blink_visible = 0U;
@@ -386,7 +386,7 @@ static void dashboard_toggle_lap_analysis(void)
         return;
     }
 
-    if((g_drive_mode != DRIVE_MODE_S) && (g_lap_analysis_active != 0U)) {
+    if((g_drive_mode != DRIVE_MODE_ACCELERATION) && (g_lap_analysis_active != 0U)) {
         g_lap_analysis_active = 0U;
         g_lap_analysis_blink_visible = 0U;
         GPS_Lap_SetAnalysisActive(0U);
@@ -403,10 +403,10 @@ static void dashboard_toggle_lap_analysis(void)
         Dashboard_UI_PushAlert("gps no signal");
         return;
     }
-    /* 速度数据过期时 speed_kmh 为 0，但那不是停车：S 模式靠"车速 < 0.5 km/h"准备冲刺，
+    /* 速度数据过期时 speed_kmh 为 0，但那不是停车：AC 模式靠"车速 < 0.5 km/h"准备冲刺，
      * 没有双天线航向时圈速也靠速度判断，两者都必须先有可信速度。 */
     if((gps_data.speed_valid == 0U) &&
-       ((g_drive_mode == DRIVE_MODE_S) || (gps_data.heading_valid == 0U))) {
+       ((g_drive_mode == DRIVE_MODE_ACCELERATION) || (gps_data.heading_valid == 0U))) {
         Dashboard_UI_PushAlert("gps speed invalid");
         return;
     }
@@ -425,7 +425,7 @@ static void dashboard_toggle_lap_analysis(void)
         line_heading = gps_data.track_angle;
     }
 
-    if(g_drive_mode == DRIVE_MODE_S) {
+    if(g_drive_mode == DRIVE_MODE_ACCELERATION) {
         if(gps_data.speed_kmh >= GPS_SPRINT_START_SPEED_KMH) {
             Dashboard_UI_PushAlert("stop before ready");
             return;
@@ -469,24 +469,24 @@ static void sync_mode_from_index(void)
 {
     switch(g_mode_index) {
         case 1:
-            g_drive_mode = DRIVE_MODE_Q;
+            g_drive_mode = DRIVE_MODE_AUTOCROSS;
             break;
         case 2:
-            g_drive_mode = DRIVE_MODE_C;
+            g_drive_mode = DRIVE_MODE_SKIDPAD;
             break;
         case 3:
-            g_drive_mode = DRIVE_MODE_E;
+            g_drive_mode = DRIVE_MODE_ENDURANCE;
             break;
         case 0:
         default:
-            g_drive_mode = DRIVE_MODE_S;
+            g_drive_mode = DRIVE_MODE_ACCELERATION;
             break;
     }
 }
 
 static uint8_t dashboard_timing_mode_locked(void)
 {
-    if(g_drive_mode == DRIVE_MODE_S) {
+    if(g_drive_mode == DRIVE_MODE_ACCELERATION) {
         return GPS_Sprint_IsActive();
     }
     return g_lap_analysis_active;
@@ -562,7 +562,8 @@ static void dashboard_cycle_drive_mode(void)
 
 static void dashboard_handle_timing_mode_change(drive_mode_t previous_mode)
 {
-    if((previous_mode != DRIVE_MODE_S) && (g_drive_mode != DRIVE_MODE_S)) {
+    if((previous_mode != DRIVE_MODE_ACCELERATION) &&
+       (g_drive_mode != DRIVE_MODE_ACCELERATION)) {
         apply_drive_mode_ui();
         return;
     }
@@ -570,7 +571,7 @@ static void dashboard_handle_timing_mode_change(drive_mode_t previous_mode)
     g_lap_analysis_blink_visible = 0U;
     GPS_Lap_SetAnalysisActive(0U);
     GPS_Sprint_Cancel();
-    if(g_drive_mode == DRIVE_MODE_S) {
+    if(g_drive_mode == DRIVE_MODE_ACCELERATION) {
         GPS_Sprint_Reset();
     }
     else {
@@ -1228,7 +1229,7 @@ void Dashboard_UI_Process(void)
         if(remaining_m < 0) remaining_m = 0;
         if(remaining_m > 75) remaining_m = 75;
         g_laps_left = remaining_m;
-        if(g_drive_mode == DRIVE_MODE_S) {
+        if(g_drive_mode == DRIVE_MODE_ACCELERATION) {
             Dash_View_SetLapCounter(g_laps_current, remaining_m);
         }
     }

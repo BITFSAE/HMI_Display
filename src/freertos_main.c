@@ -4,9 +4,9 @@
  *          (stm32_port/Core/Src/dashboard_view.c) with animated demo data.
  * @license MIT License
  *
- * Keys: Space cycle mode, S/Q/C/E select mode, 0-7 slip level, R lap timing,
+ * Keys: Space cycle mode, A/X/8/E select AC/AX/Skidpad/Endurance, 0-7 slip level, R lap timing,
  * N night mode, F push demo alert, Y READY banner, [ ] / G GPS signal,
- * Esc/X quit. Mouse: top bar = lap timing, mode tile = cycle driving mode,
+ * Esc quits. Mouse: top bar = lap timing, mode tile = cycle driving mode,
  * alert banner = dismiss, eye button = night mode (same zones as the touch panel).
  */
 
@@ -39,7 +39,7 @@
 static volatile bool g_simulator_exit_requested = false;
 static uint8_t g_night_mode = 0U;
 static lv_obj_t * g_night_mask;
-static int g_mode = DASH_MODE_S;
+static int g_mode = DASH_MODE_ACCELERATION;
 static int g_slip = 3;
 static int g_signal = 4;
 static bool g_timing_active = false;
@@ -87,7 +87,7 @@ static void reset_lap(void)
 {
     g_lap_time = g_last_lap = g_best_lap = g_lap_count = 0;
     Dash_View_SetLapTimes(0, 0, 0);
-    Dash_View_SetLapCounter(0, g_mode == DASH_MODE_S ? 75 : 12);
+    Dash_View_SetLapCounter(0, g_mode == DASH_MODE_ACCELERATION ? 75 : 12);
     Dash_View_SetDelta(0);
 }
 
@@ -178,7 +178,7 @@ static void demo_timer_cb(lv_timer_t * timer)
         }
         Dash_View_SetLapTimes(g_lap_time, g_last_lap, g_best_lap);
         Dash_View_SetLapCounter(g_lap_count,
-                                g_mode == DASH_MODE_S ? 75 - triangle(g_tick, 150U, 75)
+                                g_mode == DASH_MODE_ACCELERATION ? 75 - triangle(g_tick, 150U, 75)
                                                       : 12 - g_lap_count % 12);
         Dash_View_SetDelta(triangle(g_tick, 120U, 300) - 150);
         Dash_View_SetTimingDot((g_tick / 5U) % 2U, 0x20D050);
@@ -216,13 +216,12 @@ static void key_event_cb(lv_event_t * e)
 
     if(key >= 'a' && key <= 'z') key -= 'a' - 'A';
     switch(key) {
-        case LV_KEY_ESC:
-        case 'X': g_simulator_exit_requested = true; break;
+        case LV_KEY_ESC: g_simulator_exit_requested = true; break;
         case ' ': set_mode((g_mode + 1) % 4); break;
-        case 'S': set_mode(DASH_MODE_S); break;
-        case 'Q': set_mode(DASH_MODE_Q); break;
-        case 'C': set_mode(DASH_MODE_C); break;
-        case 'E': set_mode(DASH_MODE_E); break;
+        case 'A': set_mode(DASH_MODE_ACCELERATION); break;
+        case 'X': set_mode(DASH_MODE_AUTOCROSS); break;
+        case '8': set_mode(DASH_MODE_SKIDPAD); break;
+        case 'E': set_mode(DASH_MODE_ENDURANCE); break;
         case 'R':
             g_timing_active = !g_timing_active;
             if(!g_timing_active) Dash_View_SetTimingDot(0U, 0U);
@@ -267,7 +266,7 @@ static void create_simulator_ui(void)
 
     Dash_View_SetSlip(g_slip);
     Dash_View_SetSignal(g_signal);
-    set_mode(DASH_MODE_S);
+    set_mode(DASH_MODE_ACCELERATION);
     set_night(g_night_mode);
     demo_timer_cb(NULL);
     lv_timer_create(demo_timer_cb, SIM_DEMO_PERIOD_MS, NULL);
