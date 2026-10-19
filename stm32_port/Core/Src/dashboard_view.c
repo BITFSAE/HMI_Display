@@ -76,8 +76,9 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 #define PEDAL_W      32
 #define PEDAL_H      162
 #define PEDAL_Y      156
-#define BRAKE_X      230
-#define REGEN_X      290
+#define BRAKE_X      209
+#define REGEN_X      243
+#define BRAKE_PEDAL_W 26
 #define THROTTLE_X   542
 
 #define TIRE_W       40
@@ -179,6 +180,7 @@ static struct {
 
 static lv_style_t st_caption;   /* small grey uppercase captions */
 static lv_style_t st_value;     /* 18 px white values */
+static lv_style_t st_aux_value; /* 14 px values for the compact brake bars */
 static lv_style_t st_value_m;   /* 22 px white values */
 static lv_style_t st_large;     /* 36 px */
 static lv_style_t st_xl;        /* 56 px */
@@ -532,17 +534,17 @@ static void create_left(lv_obj_t * scr)
     make_line(scr, LEFT_W, MID_Y, 1, BOTTOM_Y - MID_Y);
 }
 
-static lv_obj_t * pedal(lv_obj_t * scr, int32_t x, dash_bar_t * bar, const char * caption,
-                        uint32_t color, int32_t label_w, lv_obj_t ** pct_out)
+static lv_obj_t * pedal(lv_obj_t * scr, int32_t x, int32_t width, dash_bar_t * bar,
+                        const char * caption, uint32_t color, lv_style_t *value_style,
+                        int32_t label_x, int32_t label_w, lv_obj_t ** pct_out)
 {
-    lv_obj_t * obj = make_box(scr, x, PEDAL_Y, PEDAL_W, PEDAL_H);
+    lv_obj_t * obj = make_box(scr, x, PEDAL_Y, width, PEDAL_H);
     lv_obj_add_event_cb(obj, bar_draw_cb, LV_EVENT_DRAW_MAIN, bar);
-    *pct_out = make_label(scr, &st_value, x - (label_w - PEDAL_W) / 2,
-                          PEDAL_Y + PEDAL_H + 6, label_w,
+    *pct_out = make_label(scr, value_style, label_x, PEDAL_Y + PEDAL_H + 6, label_w,
                           &st_center, "0%");
     lv_obj_set_style_text_color(*pct_out, lv_color_hex(color), 0);
-    make_label(scr, &st_caption, x - (label_w - PEDAL_W) / 2,
-               PEDAL_Y + PEDAL_H + 28, label_w, &st_center, caption);
+    make_label(scr, &st_caption, label_x, PEDAL_Y + PEDAL_H + 28, label_w,
+               &st_center, caption);
     return obj;
 }
 
@@ -555,8 +557,10 @@ static void create_centre(lv_obj_t * scr)
     lv_obj_set_style_bg_opa(ui.timing_dot, LV_OPA_COVER, 0);
     lv_obj_add_flag(ui.timing_dot, LV_OBJ_FLAG_HIDDEN);
 
-    ui.speed = make_label(scr, &st_speed, 262, 166, 276, &st_center, "--");
-    make_label(scr, &st_unit, 262, 302, 276, &st_center, "km/h");
+    /* 三格车速的墨迹约 263 px 宽；右移 6 px 后与左侧 REG 条和右侧
+     * THROTTLE 条各留约 5 px，不再因数字宽度变化压住竖条。 */
+    ui.speed = make_label(scr, &st_speed, 268, 166, 276, &st_center, "--");
+    make_label(scr, &st_unit, 268, 302, 276, &st_center, "km/h");
 
     {
         static const char * const sop_caption[2] = {"DISCH", "CHG"};
@@ -570,10 +574,14 @@ static void create_centre(lv_obj_t * scr)
         }
     }
 
-    ui.brake_bar = pedal(scr, BRAKE_X, &s_brake_bar, "BRAKE", C_RED, 58, &ui.brake_pct);
-    ui.regen_bar = pedal(scr, REGEN_X, &s_regen_bar, "REGEN", C_BLUE, 58, &ui.regen_pct);
-    ui.throttle_bar = pedal(scr, THROTTLE_X, &s_throttle_bar, "THROTTLE", C_GREEN, 84,
-                            &ui.throttle_pct);
+    /* 两条制动条放在车速数字左侧；三格车速的墨迹会伸到约 x268，
+     * 条块一旦进入该范围就会压住数字。 */
+    ui.brake_bar = pedal(scr, BRAKE_X, BRAKE_PEDAL_W, &s_brake_bar, "MECH", C_RED,
+                         &st_aux_value, 200, 44, &ui.brake_pct);
+    ui.regen_bar = pedal(scr, REGEN_X, BRAKE_PEDAL_W, &s_regen_bar, "REG", C_BLUE,
+                         &st_aux_value, 234, 44, &ui.regen_pct);
+    ui.throttle_bar = pedal(scr, THROTTLE_X, PEDAL_W, &s_throttle_bar, "THROTTLE", C_GREEN,
+                            &st_value, THROTTLE_X - 26, 84, &ui.throttle_pct);
 
     /* Created last so the banner paints over the lap-time row edges. */
     ui.alert_box = make_box(scr, ALERT_X, ALERT_Y, ALERT_W, ALERT_H);
@@ -670,6 +678,7 @@ void Dash_View_Create(void)
     init_style(&st_caption, &dash_font_xs, C_DIM);
     lv_style_set_text_letter_space(&st_caption, 1);
     init_style(&st_value, &dash_font_s, C_TEXT);
+    init_style(&st_aux_value, &dash_font_xs, C_TEXT);
     init_style(&st_value_m, &dash_font_m, C_TEXT);
     init_style(&st_large, &dash_font_l, C_TEXT);
     init_style(&st_xl, &dash_font_xl, C_TEXT);
