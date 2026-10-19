@@ -27,6 +27,7 @@ extern "C" {
 #define DASH_VALID_FAN         (1UL << 14)  /* 0x5A2 */
 #define DASH_VALID_SOP_POWER   (1UL << 15)  /* 0x4A0, LimitsValid=1 且 CRC/版本通过 */
 #define DASH_VALID_SOP_CURRENT (1UL << 16)  /* 0x4A3, 版本通过且 InputHealth bit7=1 */
+#define DASH_VALID_REGEN       (1UL << 17)  /* 0x001 踏板编码器位置帧，且已找到静止零点 */
 
 typedef struct {
 	/* Display speed in integer km/h; -1 = no trusted speed (shown as "--").
@@ -78,8 +79,10 @@ typedef struct {
 	uint8_t alert_active;
 	/* 非DBC: 里程(0.1km) */
 	int32_t odometer_tenths;
-	/* 刹车开度 %，0..100。临时由 0x305 油压推算：2.1 kPa→0%，4.9 kPa→90%（见 can.c） */
+	/* 机械制动开度 %，0..100。由 0x305 油压推算：2.1 kPa→0%，4.9 kPa→90%。 */
 	int32_t brake_pct;
+	/* 能量回收开度 %，0..100。踏板转角减在线静止零点后按 0.3° 死区、7° 满量程换算。 */
+	int32_t regen_pct;
 	/* Vehicle_CanB.dbc BO_1792: SlipLevel 0..7 */
 	int32_t slip_level;
 	/* DBC BO_1440 PDM_LowVoltageBus 0x5A0: BusVoltage (0.001V, Motorola int16) */

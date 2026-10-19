@@ -114,7 +114,7 @@ static uint32_t g_lap_analysis_blink_tick = 0U;
 #define DASH_VALID_BATTERY_GROUP (DASH_VALID_SOC | DASH_VALID_HV_V | DASH_VALID_HV_I | \
                                   DASH_VALID_MOTOR_TEMP | DASH_VALID_INV_TEMP | \
                                   DASH_VALID_IGBT_TEMP)
-#define DASH_VALID_PEDAL_GROUP   (DASH_VALID_APS | DASH_VALID_BRAKE)
+#define DASH_VALID_PEDAL_GROUP   (DASH_VALID_APS | DASH_VALID_BRAKE | DASH_VALID_REGEN)
 /* Wheel order 0=LF 1=LR 2=RF 3=RR: front wheels take 0x504 diagnostics,
  * rear wheels 0x503. */
 #define DASH_VALID_MOTOR_GROUP(wheel) \
@@ -677,7 +677,8 @@ static void dashboard_apply_data(uint32_t dirty_mask)
     }
     if((dirty_mask & DASH_DIRTY_PEDALS) != 0U) {
         Dash_View_SetPedals(((valid & DASH_VALID_APS) != 0U) ? g_dashboard_data.aps_open_pct : DASH_VIEW_INVALID,
-                            ((valid & DASH_VALID_BRAKE) != 0U) ? g_dashboard_data.brake_pct : DASH_VIEW_INVALID);
+                            ((valid & DASH_VALID_BRAKE) != 0U) ? g_dashboard_data.brake_pct : DASH_VIEW_INVALID,
+                            ((valid & DASH_VALID_REGEN) != 0U) ? g_dashboard_data.regen_pct : DASH_VIEW_INVALID);
     }
     if((dirty_mask & DASH_DIRTY_LOWVOLTAGE) != 0U) {
         /* DBC BO_1440 PDM_LowVoltageBus: mV/cA/dW raw engineering units */
@@ -744,6 +745,7 @@ void Dashboard_UI_SubmitData(const dashboard_data_t * data)
     }
     if((g_pending_dashboard_data.aps_open_pct != data->aps_open_pct) ||
        (g_pending_dashboard_data.brake_pct != data->brake_pct) ||
+       (g_pending_dashboard_data.regen_pct != data->regen_pct) ||
        ((valid_changed & DASH_VALID_PEDAL_GROUP) != 0U)) {
         dirty_mask |= DASH_DIRTY_PEDALS;
     }
@@ -817,6 +819,7 @@ void Dashboard_UI_SubmitData(const dashboard_data_t * data)
     }
     g_pending_dashboard_data.alert_active = data->alert_active;
     g_pending_dashboard_data.brake_pct = data->brake_pct;
+    g_pending_dashboard_data.regen_pct = data->regen_pct;
 
     g_dashboard_dirty_mask |= dirty_mask;
     __set_PRIMASK(primask);
@@ -1316,6 +1319,7 @@ void Dashboard_UI_Process(void)
         if((dashboard_mask & DASH_DIRTY_PEDALS) != 0U) {
             g_dashboard_data.aps_open_pct = g_pending_dashboard_data.aps_open_pct;
             g_dashboard_data.brake_pct = g_pending_dashboard_data.brake_pct;
+            g_dashboard_data.regen_pct = g_pending_dashboard_data.regen_pct;
             dashboard_copy_valid(DASH_VALID_PEDAL_GROUP);
         }
         if((dashboard_mask & DASH_DIRTY_LOWVOLTAGE) != 0U) {

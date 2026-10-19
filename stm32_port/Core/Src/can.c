@@ -28,6 +28,7 @@
 #include "queue.h"
 #include "firmware_diag.h"
 #include "sop.h"
+#include "brake_pedal.h"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN 0 */
@@ -49,6 +50,7 @@ static uint8_t g_can_rx_queue_storage[USER_CAN_RX_QUEUE_CAPACITY * sizeof(User_C
 static QueueHandle_t g_can_rx_queue;
 static StaticTask_t g_can_task_control;
 static StackType_t g_can_task_stack[1024U];
+static brake_pedal_t g_brake_pedal;
 volatile uint32_t g_can_rx_drop_count;
 volatile uint32_t g_can_rx_invalid_count;
 volatile uint32_t g_can_rx_queue_peak;
@@ -58,6 +60,7 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame);
 
 void CAN_StartServiceTask(void)
 {
+  BrakePedal_Init(&g_brake_pedal);
   g_can_rx_queue = xQueueCreateStatic(USER_CAN_RX_QUEUE_CAPACITY, sizeof(User_CAN_RxItem_t),
                                      g_can_rx_queue_storage, &g_can_rx_queue_control);
   configASSERT(g_can_rx_queue != NULL);
@@ -109,8 +112,8 @@ uint16_t CAN1_RX_MSG_ID_BANK1[4] = {0x506, 0x509, 0x508, 0x507};
 uint16_t CAN1_RX_MSG_ID_BANK2[4] = {0x503, 0x504, 0x5A0, 0x5A1};
 /* Bank3: BMS SOP V2 — BMS_SOPLimits(0x4A0 BO_1184), BMS_SOPStatus(0x4A3 BO_1187). 车手屏不收 ECU 的 0x4A4 确认 */
 uint16_t CAN1_RX_MSG_ID_BANK3[4] = {SOP_ID_POWER, SOP_ID_CURRENT, SOP_ID_POWER, SOP_ID_CURRENT};
-/* Bank4: FanController_Status(0x5A2 BO_1442)；中央库已删除 0x306，刹车暂由 0x305 油压推算 */
-uint16_t CAN1_RX_MSG_ID_BANK4[4] = {0x5A2, 0x5A2, 0x5A2, 0x5A2};
+/* Bank4: FanController_Status(0x5A2 BO_1442) 与 BRT 踏板编码器自动上报帧 0x001 */
+uint16_t CAN1_RX_MSG_ID_BANK4[4] = {0x5A2, 0x001, 0x5A2, 0x001};
 /* Bank5: Tire-temperature cells 1..16, four cells per frame. */
 uint16_t CAN1_RX_MSG_ID_BANK5[4] = {0x071, 0x072, 0x073, 0x074};
 /* Bank14: Vehicle_CanB.dbc steering wheel on CAN2 - DriveMode(0x310), SlipLevel(0x700), RecorderToggle(0x701, lap-timer toggle), ErrorClear(0x702) */
@@ -151,7 +154,8 @@ static const uint8_t k_can_dbc_to_dash[4] = {1U, 3U, 0U, 2U};
 typedef enum {
   CAN_SRC_BMS,
   CAN_SRC_APS,
-  CAN_SRC_BRAKE,
+  CAN_SRC_MECH_BRAKE,
+  CAN_SRC_BRAKE_ANGLE,
   CAN_SRC_TORQUE,
   CAN_SRC_RPM,
   CAN_SRC_MOTOR_TEMP,
@@ -176,7 +180,9 @@ typedef enum {
  * BMS 在自检、待机、预充、故障和充电时停发，此时界面显示 "--"。 */
 #define CAN_TIMEOUT_SOP_POWER_MS    300U
 #define CAN_TIMEOUT_SOP_CURRENT_MS  1500U
-#define CAN_TIMEOUT_POLL_MS 100U
+#define CAN_TIMEOUT_BRAKE_ANGLE_MS  BRAKE_PEDAL_ENCODER_TIMEOUT_MS
+/* 20 Hz 检查使 150 ms 的踏板编码器超时最迟约 200 ms 反映到界面。 */
+#define CAN_TIMEOUT_POLL_MS 50U
 
 static const struct {
   uint32_t valid_bits;
@@ -184,7 +190,8 @@ static const struct {
 } k_can_src[CAN_SRC_COUNT] = {
   [CAN_SRC_BMS]        = {DASH_VALID_SOC | DASH_VALID_HV_V | DASH_VALID_HV_I, CAN_TIMEOUT_BMS_MS},
   [CAN_SRC_APS]        = {DASH_VALID_APS,        CAN_TIMEOUT_ECU_MS},
-  [CAN_SRC_BRAKE]      = {DASH_VALID_BRAKE,      CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_MECH_BRAKE] = {DASH_VALID_BRAKE,      CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_BRAKE_ANGLE] = {DASH_VALID_REGEN,     CAN_TIMEOUT_BRAKE_ANGLE_MS},
   [CAN_SRC_TORQUE]     = {DASH_VALID_TORQUE,     CAN_TIMEOUT_ECU_MS},
   [CAN_SRC_RPM]        = {DASH_VALID_RPM,        CAN_TIMEOUT_ECU_MS},
   [CAN_SRC_MOTOR_TEMP] = {DASH_VALID_MOTOR_TEMP, CAN_TIMEOUT_ECU_MS},
@@ -264,22 +271,6 @@ static void User_CAN_ServiceTimeouts(uint32_t now)
 static uint16_t can_u16_le(const uint8_t * d, uint32_t i)
 {
   return (uint16_t)((uint16_t)d[i] | ((uint16_t)d[i + 1U] << 8));
-}
-
-/* 临时方案：刹车踏板传感器（原 0x306）尚无可用帧，刹车条改由 0x305 的油压推算。
- * 油压原始值为 0.001 kPa/LSB：2.1 kPa（2100）对应 0%，4.9 kPa（4900）对应 90%，
- * 线性换算并限幅到 0..100；低于 2.1 kPa 记 0%，超过约 5.2 kPa 记 100%。
- * 传感器就绪后改回真实刹车帧，并删除本换算。 */
-#define BRAKE_OIL_ZERO_RAW  2100U
-#define BRAKE_OIL_FULL_RAW  4900U
-#define BRAKE_OIL_FULL_PCT  90U
-
-static int32_t can_oil_to_brake_pct(uint16_t oil_raw)
-{
-  if(oil_raw <= BRAKE_OIL_ZERO_RAW) return 0;
-  uint32_t pct = ((uint32_t)oil_raw - BRAKE_OIL_ZERO_RAW) * BRAKE_OIL_FULL_PCT /
-                 (BRAKE_OIL_FULL_RAW - BRAKE_OIL_ZERO_RAW);
-  return (pct > 100U) ? 100 : (int32_t)pct;
 }
 
 static uint16_t can_u16_be(const uint8_t * d, uint32_t i)
@@ -581,7 +572,7 @@ void CAN1_Filter_Config(void)
 	CAN_FilterInitStructure.FilterMaskIdLow = CAN1_RX_MSG_ID_BANK3[3] << 5;
 	HAL_CAN_ConfigFilter(&hcan1, &CAN_FilterInitStructure);
 
-	/* Bank 4: FanController_Status(0x5A2 BO_1442), three fan RPM + two PWM duty */
+	/* Bank 4: FanController_Status(0x5A2 BO_1442) 与踏板编码器 0x001 */
 	CAN_FilterInitStructure.FilterBank = 0x04;
 	CAN_FilterInitStructure.FilterIdHigh = CAN1_RX_MSG_ID_BANK4[0] << 5;
 	CAN_FilterInitStructure.FilterIdLow = CAN1_RX_MSG_ID_BANK4[1] << 5;
@@ -741,7 +732,8 @@ void CAN_ServiceTask(void *argument)
  *   BO_1289 Debug9=0x509, BO_1288 Debug8=0x508, BO_1287 Debug7=0x507,
  *   BO_1286 Debug6=0x506, BO_1285 Debug5=0x505, BO_1282 Debug2=0x502,
  *   BO_1284 Debug4=0x504, BO_1283 Debug3=0x503,
- *   BO_773  DataLogger=0x305 (油门、油压；刹车条暂由油压推算，0x306 已被中央库删除),
+ *   BO_773  DataLogger=0x305 (油门、油压；机械制动条由油压推算),
+ *   BRT25 踏板编码器自动上报 0x001 (单圈绝对值，供能量回收条),
  *   BO_769 GPS_Speed=0x301(Display->ECU),
  *   BO_1440 PDM_LowVoltageBus=0x5A0, BO_1441 PDM_LowVoltageBattery=0x5A1,
  *   BO_1442 FanController_Status=0x5A2 (Fan1/2/3_RPM + PWM1/2_Duty),
@@ -911,6 +903,7 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
   uint32_t min_dlc = 8U;
   switch(frame->id) {
     case 0x4B0: min_dlc = 7U; break;
+    case 0x001: min_dlc = 4U; break;
     case 0x305: min_dlc = 6U; break;
     case 0x509: min_dlc = 5U; break;
     default: break;
@@ -920,6 +913,21 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
 
   switch(RxHeader.StdId)
   {
+    /* BRT25-C0M4096-RT1 自动上报：ID=0x001，DLC=7。
+     * DLC=4 的命令应答和其他 FUNC 不进入位置跟踪；编码器只收不发。 */
+    case 0x001:
+    {
+      uint16_t count;
+      int32_t regen_pct;
+      if(BrakePedal_DecodePosition(CAN_RxData, RxHeader.DLC, &count) == 0U) break;
+      User_CAN_NoteRx(CAN_SRC_BRAKE_ANGLE, now);
+      BrakePedal_OnEncoder(&g_brake_pedal, count, now);
+      regen_pct = BrakePedal_GetRegenPct(&g_brake_pedal, now);
+      g_can_dashboard_data.regen_pct = regen_pct;
+      User_CAN_SetValid(DASH_VALID_REGEN, (regen_pct >= 0) ? 1U : 0U);
+      break;
+    }
+
     /* Vehicle_CanB.dbc BO_113..116, cell order #1..#16.
      * Each pair is integer byte followed by hundredths byte. */
     case 0x071:
@@ -1010,11 +1018,12 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
       /* SG_ OilPressure_Kpa: 32|16@1+ (0.001,0) Kpa, raw count */
       const uint16_t oil_raw = can_u16_le(CAN_RxData, 4U);
       g_can_dashboard_data.oil_pressure = (int32_t)oil_raw;
+      BrakePedal_OnOil(&g_brake_pedal, oil_raw, now);
       User_CAN_NoteRx(CAN_SRC_APS, now);
       User_CAN_SetValid(DASH_VALID_APS, 1U);
-      /* 刹车条临时取油压推算值，与油门同帧同新鲜度（见 can_oil_to_brake_pct） */
-      g_can_dashboard_data.brake_pct = can_oil_to_brake_pct(oil_raw);
-      User_CAN_NoteRx(CAN_SRC_BRAKE, now);
+      /* 机械制动条继续由油压推算；与油门同帧同新鲜度。 */
+      g_can_dashboard_data.brake_pct = BrakePedal_GetMechanicalPct(&g_brake_pedal, now);
+      User_CAN_NoteRx(CAN_SRC_MECH_BRAKE, now);
       User_CAN_SetValid(DASH_VALID_BRAKE, 1U);
       break;
     }

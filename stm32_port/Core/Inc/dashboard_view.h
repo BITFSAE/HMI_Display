@@ -69,7 +69,9 @@ void Dash_View_SetMode(dash_mode_t mode);
 void Dash_View_SetSlip(int32_t level);
 /* The pedal, battery, power, max-temp, low-voltage and fan setters accept
  * DASH_VIEW_INVALID per argument and then show "--" (pedal bars empty). */
-void Dash_View_SetPedals(int32_t throttle_pct, int32_t brake_pct);
+/* 三条独立开度条：油门、机械制动（油压）、能量回收（踏板转角）。 */
+void Dash_View_SetPedals(int32_t throttle_pct, int32_t mechanical_brake_pct,
+                         int32_t regen_pct);
 void Dash_View_SetBattery(int32_t soc_pct, int32_t voltage_v, int32_t current_a);
 /* peak_kw: highest discharge power since power-on; DASH_VIEW_INVALID until
  * the first valid sample. */

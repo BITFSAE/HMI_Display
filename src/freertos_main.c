@@ -111,7 +111,7 @@ static int32_t triangle(uint32_t tick, uint32_t period, int32_t amplitude)
 static void demo_timer_cb(lv_timer_t * timer)
 {
     static const int8_t tread_offset[4][4] = {{-3, -1, 1, 3}, {-2, 0, 2, 4}, {-4, -2, 0, 2}, {-1, 1, 3, 5}};
-    int32_t speed, throttle, brake, fan_rpm[3], fan_duty[2];
+    int32_t speed, throttle, brake, regen, fan_rpm[3], fan_duty[2];
     int32_t soc, current, power;
 
     LV_UNUSED(timer);
@@ -121,8 +121,9 @@ static void demo_timer_cb(lv_timer_t * timer)
     speed = triangle(g_tick, 200U, 118);
     throttle = (g_tick % 200U) < 100U ? 40 + triangle(g_tick, 50U, 60) : 0;
     brake = (g_tick % 200U) >= 100U ? triangle(g_tick, 100U, 90) : 0;
+    regen = (g_tick % 200U) >= 100U ? triangle(g_tick, 100U, 100) : 0;
     Dash_View_SetSpeed(speed);
-    Dash_View_SetPedals(throttle, brake);
+    Dash_View_SetPedals(throttle, brake, regen);
 
     soc = 100 - (int32_t)((g_tick / 50U) % 100U);
     current = throttle * 3;

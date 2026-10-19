@@ -51,10 +51,16 @@ UM982 启动时依次发送（每条等待回执并继续读取 DMA，无回执�
 
 | 设置 | 当前值 | 符号 | 单位/范围 | 影响与同步 |
 | --- | --- | --- | --- | --- |
-| 接收超时 | BMS 2000；ECU 1000；PDM 1500；风扇 1500；SOP 功率 300；SOP 电流 1500 | `CAN_TIMEOUT_BMS_MS/ECU_MS/PDM_MS/FAN_MS/SOP_POWER_MS/SOP_CURRENT_MS` | ms | 超时后对应数值显示 `--`。ECU 周期在中央库仍为暂定值，取宽松门限；周期确定后应收紧 |
-| 超时检查间隔 | 100 | `CAN_TIMEOUT_POLL_MS` | ms | |
+| 接收超时 | BMS 2000；ECU 1000；PDM 1500；风扇 1500；SOP 功率 300；SOP 电流 1500；踏板编码器 150 | `CAN_TIMEOUT_BMS_MS/ECU_MS/PDM_MS/FAN_MS/SOP_POWER_MS/SOP_CURRENT_MS`、`CAN_TIMEOUT_BRAKE_ANGLE_MS` | ms | 超时后对应数值显示 `--`。ECU 周期在中央库仍为暂定值，取宽松门限；周期确定后应收紧 |
+| 超时检查间隔 | 50 | `CAN_TIMEOUT_POLL_MS` | ms | 编码器 150 ms 超时最多约晚一个检查周期反映到界面 |
 | 方向盘按键重复间隔 | 300 | `CAN_BUTTON_REPEAT_GAP_MS` | ms | 判定「新按下」；方向盘固件按代码每次按键只发一个 1 帧，故该值是两次按下的最小间隔，待抓包确认 |
-| 刹车条油压标定（临时） | 2100 → 0%；4900 → 90% | `BRAKE_OIL_ZERO_RAW`、`BRAKE_OIL_FULL_RAW`、`BRAKE_OIL_FULL_PCT` | 0.001 kPa（即 2.1 / 4.9 kPa）；百分比 | `0x305` 油压线性换算为刹车条，限幅 0..100。刹车传感器就绪后改回真实刹车帧并删除 |
+| 机械制动条油压标定 | 2100 → 0%；4900 → 90% | `BRAKE_OIL_ZERO_RAW`、`BRAKE_OIL_FULL_RAW`、`BRAKE_OIL_FULL_PCT`（`brake_pedal.h`） | 0.001 kPa（即 2.1 / 4.9 kPa）；百分比 | `0x305` 油压线性换算为机械制动条，限幅 0..100；静止油压 2135 显示 1% |
+| 能量回收满量程 | 7.0 | `BRAKE_PEDAL_REGEN_FULL_SCALE_MDEG` | 度 | 相对静止位达到 7° 即 100%，以上不再细分 |
+| 能量回收死区 | 0.3 | `BRAKE_PEDAL_REGEN_DEADBAND_MDEG` | 度 | 死区内显示 0%；静止窗口抖动约 2 count（0.18°） |
+| 踏板编码器超时 | 150 | `BRAKE_PEDAL_ENCODER_TIMEOUT_MS` | ms | 编码器约 10 ms 一帧；超时后回收条显示 `--` |
+| 静止位判定窗口 | 1500；峰峰值 ≤2 count | `BRAKE_PEDAL_REST_WINDOW_MS`、`BRAKE_PEDAL_REST_MAX_P2P_COUNTS` | ms；count | 窗口内转角抖动受限，且油压在静止值 ±10 count 内；零点取窗口内转角中位数 |
+| 更高静止位保持时间 | 5000 | `BRAKE_PEDAL_REST_RAISE_MS` | ms | 防止脚搭在踏板上不动被误认作新的零点；更低的静止位在 1.5 s 窗口满足后立即采用 |
+| 静止油压与容差 | 2135 ±10 | `BRAKE_PEDAL_OIL_REST_RAW`、`BRAKE_PEDAL_OIL_REST_TOLERANCE_RAW` | 0.001 kPa | 快速松开时最低实测约 2126，仍在容差内 |
 | 接收队列 / 发送队列 | 64 / 32 | `USER_CAN_RX_QUEUE_CAPACITY`、`USER_CAN_TX_QUEUE_CAPACITY` | 帧 | 满时丢新帧 |
 | 接收白名单 | 见 [CAN 接口](can_interface.md) | `CAN1_RX_MSG_ID_BANK*`、`CAN2_RX_MSG_ID_BANK0` | CAN ID | 新增接收 ID 必须同步修改，并更新 [CAN 接口](can_interface.md) |
 | GPS 帧 ID | `0x067/0x068/0x7A0/0x7A1`（另有 `0x301`） | `CAN_ID_GPS_*` | CAN ID | 对外帧，改动先走中央库评审 |

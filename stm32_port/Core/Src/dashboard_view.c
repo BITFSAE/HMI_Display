@@ -76,7 +76,8 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 #define PEDAL_W      32
 #define PEDAL_H      162
 #define PEDAL_Y      156
-#define BRAKE_X      226
+#define BRAKE_X      230
+#define REGEN_X      290
 #define THROTTLE_X   542
 
 #define TIRE_W       40
@@ -91,16 +92,16 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 #define NIGHT_W      40
 #define NIGHT_H      36
 
-/* SOP limits sit under the speed, between the two pedal readouts
- * (x 290..510 stays clear of their 84 px wide labels). */
-#define SOP_X        290
+/* SOP limits sit under the speed, to the right of the two brake bars and
+ * left of the throttle readout. */
+#define SOP_X        338
 #define SOP_Y        332
 #define SOP_ROW_H    22
-#define SOP_CAP_W    56
+#define SOP_CAP_W    42
 #define SOP_POWER_X  (SOP_X + SOP_CAP_W)
-#define SOP_POWER_W  86
+#define SOP_POWER_W  70
 #define SOP_CURRENT_X (SOP_POWER_X + SOP_POWER_W + 4)
-#define SOP_CURRENT_W 74
+#define SOP_CURRENT_W 60
 
 #define RIGHT_ROW_H  22   /* right-column row pitch; 24 would not fit the PK row */
 #define RIGHT_COL_X  614
@@ -154,6 +155,8 @@ static struct {
     lv_obj_t * speed;
     lv_obj_t * brake_bar;
     lv_obj_t * brake_pct;
+    lv_obj_t * regen_bar;
+    lv_obj_t * regen_pct;
     lv_obj_t * throttle_bar;
     lv_obj_t * throttle_pct;
     lv_obj_t * soc;
@@ -186,6 +189,7 @@ static lv_style_t st_center;
 static lv_style_t st_line;      /* 1 px divider */
 
 static dash_bar_t s_brake_bar = {0, 100, C_RED, 1, 1};
+static dash_bar_t s_regen_bar = {0, 100, C_BLUE, 1, 1};
 static dash_bar_t s_throttle_bar = {0, 100, C_GREEN, 1, 1};
 static dash_bar_t s_soc_bar = {0, 100, C_GREEN, 0, 0};
 static int32_t s_delta;
@@ -529,14 +533,16 @@ static void create_left(lv_obj_t * scr)
 }
 
 static lv_obj_t * pedal(lv_obj_t * scr, int32_t x, dash_bar_t * bar, const char * caption,
-                        uint32_t color, lv_obj_t ** pct_out)
+                        uint32_t color, int32_t label_w, lv_obj_t ** pct_out)
 {
     lv_obj_t * obj = make_box(scr, x, PEDAL_Y, PEDAL_W, PEDAL_H);
     lv_obj_add_event_cb(obj, bar_draw_cb, LV_EVENT_DRAW_MAIN, bar);
-    *pct_out = make_label(scr, &st_value, x - 26, PEDAL_Y + PEDAL_H + 6, PEDAL_W + 52,
+    *pct_out = make_label(scr, &st_value, x - (label_w - PEDAL_W) / 2,
+                          PEDAL_Y + PEDAL_H + 6, label_w,
                           &st_center, "0%");
     lv_obj_set_style_text_color(*pct_out, lv_color_hex(color), 0);
-    make_label(scr, &st_caption, x - 26, PEDAL_Y + PEDAL_H + 28, PEDAL_W + 52, &st_center, caption);
+    make_label(scr, &st_caption, x - (label_w - PEDAL_W) / 2,
+               PEDAL_Y + PEDAL_H + 28, label_w, &st_center, caption);
     return obj;
 }
 
@@ -553,7 +559,7 @@ static void create_centre(lv_obj_t * scr)
     make_label(scr, &st_unit, 262, 302, 276, &st_center, "km/h");
 
     {
-        static const char * const sop_caption[2] = {"DISCH", "REGEN"};
+        static const char * const sop_caption[2] = {"DISCH", "CHG"};
         for(uint32_t row = 0U; row < 2U; row++) {
             const int32_t y = SOP_Y + (int32_t)row * SOP_ROW_H;
             make_label(scr, &st_caption, SOP_X, y + 4, SOP_CAP_W, NULL, sop_caption[row]);
@@ -564,8 +570,10 @@ static void create_centre(lv_obj_t * scr)
         }
     }
 
-    ui.brake_bar = pedal(scr, BRAKE_X, &s_brake_bar, "BRAKE", C_RED, &ui.brake_pct);
-    ui.throttle_bar = pedal(scr, THROTTLE_X, &s_throttle_bar, "THROTTLE", C_GREEN, &ui.throttle_pct);
+    ui.brake_bar = pedal(scr, BRAKE_X, &s_brake_bar, "BRAKE", C_RED, 58, &ui.brake_pct);
+    ui.regen_bar = pedal(scr, REGEN_X, &s_regen_bar, "REGEN", C_BLUE, 58, &ui.regen_pct);
+    ui.throttle_bar = pedal(scr, THROTTLE_X, &s_throttle_bar, "THROTTLE", C_GREEN, 84,
+                            &ui.throttle_pct);
 
     /* Created last so the banner paints over the lap-time row edges. */
     ui.alert_box = make_box(scr, ALERT_X, ALERT_Y, ALERT_W, ALERT_H);
@@ -782,10 +790,12 @@ static void set_pedal(lv_obj_t * bar_obj, dash_bar_t * bar, lv_obj_t * label, in
     set_text(label, buf);
 }
 
-void Dash_View_SetPedals(int32_t throttle_pct, int32_t brake_pct)
+void Dash_View_SetPedals(int32_t throttle_pct, int32_t mechanical_brake_pct,
+                         int32_t regen_pct)
 {
     set_pedal(ui.throttle_bar, &s_throttle_bar, ui.throttle_pct, throttle_pct);
-    set_pedal(ui.brake_bar, &s_brake_bar, ui.brake_pct, brake_pct);
+    set_pedal(ui.brake_bar, &s_brake_bar, ui.brake_pct, mechanical_brake_pct);
+    set_pedal(ui.regen_bar, &s_regen_bar, ui.regen_pct, regen_pct);
 }
 
 void Dash_View_SetBattery(int32_t soc_pct, int32_t voltage_v, int32_t current_a)
@@ -1147,4 +1157,5 @@ void Dash_View_SetNight(uint8_t night)
     set_text(ui.night_icon, night ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
     set_text_color(ui.night_icon, night ? C_AMBER : C_DIM);
 }
+
 /* USER CODE END Dashboard_View */
