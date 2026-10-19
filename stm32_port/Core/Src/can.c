@@ -708,6 +708,17 @@ void User_CAN_Send_sq(uint32_t CAN_ID_NEW,uint8_t* CAN_TxData_NEW)
 	User_CAN_SendDlc(CAN_ID_NEW, CAN_TxData_NEW, 8U);
 }
 
+/* 0x310 DriveMode_Request: byte0 = ASCII '0'..'3'，byte1..7 为 0。
+ * DLC 8 与方向盘发送格式一致；返回 0 时不改界面，由调用方提示发送失败。 */
+uint8_t CAN_SendDriveModeRequest(uint8_t mode_index)
+{
+  uint8_t data[8] = {0U};
+
+  if(mode_index > 3U) return 0U;
+  data[0] = (uint8_t)('0' + mode_index);
+  return User_CAN_TxQueuePush(0x310U, data, 8U);
+}
+
 void CAN_ServiceTask(void *argument)
 {
   /* USER CODE BEGIN CAN_ServiceTask */
@@ -839,7 +850,7 @@ static void User_CAN_HandleSteeringWheel(const CAN_RxHeaderTypeDef * rx,
       if(Dashboard_UI_IsTimingModeLocked() == 0U) {
         User_CAN_SendDlc(rx->StdId, data, rx->DLC);
       }
-      Dashboard_UI_SubmitDriveMode((int32_t)data[0] - 48);
+      Dashboard_UI_RequestDriveMode((int32_t)data[0] - 48);
       break;
     }
 

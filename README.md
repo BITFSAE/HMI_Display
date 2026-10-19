@@ -1,6 +1,6 @@
-	# HMI_Display — BITFSAE 车手屏
+# HMI_Display — BITFSAE 车手屏
 
-车手屏固件（STM32F407ZET6，经 FSMC 驱动 SSD1963 800×480 IPS 屏，LVGL 9.5）和 PC/macOS 模拟器。固件接收 CANB、方向盘 CAN2 与 UM982 GNSS 数据并显示，同时向 CANB 发送 GPS、里程、圈速和方向盘合并指令。仪表盘界面 `stm32_port/Core/Src/dashboard_view.c` 由固件和模拟器共用。
+车手屏固件（STM32F407ZET6，经 FSMC 驱动 SSD1963 800×480 IPS 屏，LVGL 9.5）和 PC/macOS 模拟器。固件接收 CANB、方向盘 CAN2 与 UM982 GNSS 数据并显示，同时向 CANB 发送 GPS、里程、圈速、驾驶模式请求和方向盘合并指令。仪表盘界面 `stm32_port/Core/Src/dashboard_view.c` 由固件和模拟器共用。
 
 ## 仓库结构
 
@@ -106,7 +106,7 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 - 工具链优先取 STM32 VS Code 扩展 bundles 里的 GNU Tools for STM32，否则用 PATH 中的 `arm-none-eabi-gcc`（已验证 ARM 官方 15.2.rel1 同样可构建）。
 - VS Code 任务：`Build Firmware`、`Rebuild Firmware (clean)`（`Tasks: Run Task`），编译报错可点击跳转。
 - 模拟器与固件共用 `stm32_port/Core/Src/dashboard_view.c` 界面，只是数据换成动画演示，设计与约束见 [仪表盘界面](docs/dashboard_ui.md)。
-- 窗口内按键：空格循环模式，`S/Q/E/C` 选模式，`0`–`7` 滑移等级，`R` 圈速计时，`N` 夜间模式，`F` 推入演示告警，`Y` READY 横幅，`[` `]`/`G` 信号强度，`Esc`/`X` 退出。鼠标点击区域与触摸屏相同：顶栏开关计时，告警条消除一条，眼睛按钮切换夜间。
+- 窗口内按键：空格循环模式，`S/Q/E/C` 选模式，`0`–`7` 滑移等级，`R` 圈速计时，`N` 夜间模式，`F` 推入演示告警，`Y` READY 横幅，`[` `]`/`G` 信号强度，`Esc`/`X` 退出。鼠标点击区域与触摸屏相同：顶栏开关计时，驾驶模式色块轮转模式，告警条消除一条，眼睛按钮切换夜间。
 
 ### Visual Studio Code
 

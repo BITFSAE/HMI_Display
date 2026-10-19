@@ -65,6 +65,14 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 #define ALERT_W      372
 #define ALERT_H      38
 
+/* 触摸范围比 84x84 色块外扩 8 px，便于戴手套或行驶中点击；
+ * 仍与顶栏、SLIP 标签保持距离。 */
+#define MODE_X       14
+#define MODE_Y       64
+#define MODE_W       84
+#define MODE_H       84
+#define MODE_TOUCH_PAD 8
+
 #define PEDAL_W      32
 #define PEDAL_H      162
 #define PEDAL_Y      156
@@ -479,9 +487,11 @@ static void create_left(lv_obj_t * scr)
     static const int32_t tire_x[4] = {TIRE_LX, TIRE_LX, TIRE_RX, TIRE_RX};
     static const int32_t tire_y[4] = {TIRE_FY, TIRE_RY, TIRE_FY, TIRE_RY};
 
-    ui.mode_tile = make_box(scr, 14, 64, 84, 84);
+    ui.mode_tile = make_box(scr, MODE_X, MODE_Y, MODE_W, MODE_H);
     lv_obj_set_style_radius(ui.mode_tile, 8, 0);
     lv_obj_set_style_bg_opa(ui.mode_tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ui.mode_tile, 1, 0);
+    lv_obj_set_style_border_color(ui.mode_tile, lv_color_hex(C_LINE), 0);
     ui.mode_letter = make_label(ui.mode_tile, &st_xl, 0, 0, 0, NULL, "S");
     lv_obj_center(ui.mode_letter);
 
@@ -684,6 +694,8 @@ void Dash_View_Create(void)
 dash_zone_t Dash_View_HitTest(int32_t x, int32_t y)
 {
     if((y >= 0) && (y < TOP_H) && (x >= 0) && (x < DASH_SCREEN_W)) return DASH_ZONE_LAP;
+    if((x >= MODE_X - MODE_TOUCH_PAD) && (x < MODE_X + MODE_W + MODE_TOUCH_PAD) &&
+       (y >= MODE_Y - MODE_TOUCH_PAD) && (y < MODE_Y + MODE_H + MODE_TOUCH_PAD)) return DASH_ZONE_MODE;
     if((x >= ALERT_X - 8) && (x < ALERT_X + ALERT_W + 8) &&
        (y >= ALERT_Y - 8) && (y < ALERT_Y + ALERT_H + 8)) return DASH_ZONE_ALERT;
     if((x >= NIGHT_X - 10) && (x < NIGHT_X + NIGHT_W + 10) &&

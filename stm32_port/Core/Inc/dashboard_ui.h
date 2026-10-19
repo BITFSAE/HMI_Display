@@ -125,6 +125,12 @@ void Dashboard_UI_SubmitSpeed(int32_t speed);
 void Dashboard_UI_SubmitSpeedInvalid(void);
 void Dashboard_UI_SubmitOdometer(int32_t odometer_tenths);
 void Dashboard_UI_SubmitDriveMode(int32_t mode_index);
+/* 方向盘 0x310 的用户请求：即使用户转回当前显示档位，也要覆盖尚未应用的
+ * 其他请求；ECU 0x509 回报仍走 SubmitDriveMode，不撤销新请求。 */
+void Dashboard_UI_RequestDriveMode(int32_t mode_index);
+/* 请求将驾驶模式轮转一档 S -> Q -> C -> E -> S。CAN 任务或触摸任务只置位，
+ * 由 Dashboard 任务统一检查计时锁并通过 0x310 请求 ECU。 */
+void Dashboard_UI_RequestDriveModeCycle(void);
 /* Non-zero while a sprint/lap timing session is active: drive-mode changes
  * are rejected by the UI and must not be relayed to the ECU either. */
 uint8_t Dashboard_UI_IsTimingModeLocked(void);

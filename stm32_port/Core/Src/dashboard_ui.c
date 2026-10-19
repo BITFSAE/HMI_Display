@@ -79,6 +79,7 @@ static uint32_t g_lap_analysis_blink_tick = 0U;
 #define DASHBOARD_ALERT_TEXT_MAX 32U
 #define DASHBOARD_UI_FAST_PERIOD_MS 50U
 #define DASHBOARD_UI_SLOW_PERIOD_MS 200U
+#define DASHBOARD_MODE_TOUCH_DEBOUNCE_MS 200U
 #define LAP_START_MIN_SPEED_KMH     5.0f
 #define DELTA_TEXT_LIMIT_HUNDREDTHS 3000
 #define SPEED_DISPLAY_MAX_KMH       299
@@ -125,6 +126,7 @@ static char g_pending_alert_queue[DASHBOARD_ALERT_MAX][DASHBOARD_ALERT_TEXT_MAX]
 static volatile uint8_t g_pending_alert_count = 0U;
 static volatile uint8_t g_pending_alert_pop_count = 0U;
 static volatile uint8_t g_pending_lap_toggle = 0U;
+static volatile uint8_t g_pending_mode_cycle = 0U;
 static volatile uint8_t g_pending_alert_clear = 0U;
 static volatile uint8_t g_pending_mode_lock_alert = 0U;
 static volatile uint8_t g_pending_sprint_ready = 0U;
@@ -493,6 +495,69 @@ static uint8_t dashboard_timing_mode_locked(void)
 static void dashboard_request_mode_lock_alert(void)
 {
     g_pending_mode_lock_alert = 1U;
+}
+
+/* force=1 用于触摸轮转和方向盘 0x310 用户请求：目标可能正好等于已经显示的
+ * 旧档位，但待应用模式不同，此时仍必须改写 pending 模式。CAN 0x509 回报
+ * 走 force=0，重复的旧模式不会撤销刚收到的请求。 */
+static void dashboard_submit_drive_mode(int32_t mode_index, uint8_t force)
+{
+    uint32_t primask;
+
+    if((mode_index < 0) || (mode_index > 3)) return;
+    if((g_dashboard_data.mode_index == mode_index) &&
+       ((force == 0U) || ((g_dashboard_dirty_mask & DASH_DIRTY_MODE) == 0U) ||
+        (g_pending_dashboard_data.mode_index == mode_index))) return;
+    if(dashboard_timing_mode_locked() != 0U) {
+        dashboard_request_mode_lock_alert();
+        return;
+    }
+    primask = __get_PRIMASK();
+    __disable_irq();
+    if((g_dashboard_data.mode_index == mode_index) &&
+       ((force == 0U) || ((g_dashboard_dirty_mask & DASH_DIRTY_MODE) == 0U) ||
+        (g_pending_dashboard_data.mode_index == mode_index))) {
+        if(primask == 0U) __enable_irq();
+        return;
+    }
+    g_pending_dashboard_data.mode_index = mode_index;
+    g_dashboard_dirty_mask |= DASH_DIRTY_MODE;
+    if(primask == 0U) __enable_irq();
+}
+
+/* 触摸轮转要基于最新的目标模式，而不是尚未应用的显示值；
+ * 否则方向盘 0x310 刚提交、界面还没刷新时，点击会覆盖掉这次请求。 */
+static int32_t dashboard_effective_mode_index(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    int32_t mode_index;
+
+    __disable_irq();
+    mode_index = ((g_dashboard_dirty_mask & DASH_DIRTY_MODE) != 0U) ?
+                 g_pending_dashboard_data.mode_index : g_mode_index;
+    if(primask == 0U) {
+        __enable_irq();
+    }
+    return mode_index;
+}
+
+static void dashboard_cycle_drive_mode(void)
+{
+    int32_t next_mode;
+
+    if(dashboard_timing_mode_locked() != 0U) {
+        dashboard_request_mode_lock_alert();
+        return;
+    }
+
+    next_mode = (dashboard_effective_mode_index() + 1) & 3;
+    /* 只在请求已进入 CAN 发送队列后改界面；队列满时保留当前模式并提示。 */
+    if(CAN_SendDriveModeRequest(next_mode) != 0U) {
+        dashboard_submit_drive_mode(next_mode, 1U);
+    }
+    else {
+        dashboard_push_alert_local("MODE TX QUEUE FULL");
+    }
 }
 
 static void dashboard_handle_timing_mode_change(drive_mode_t previous_mode)
@@ -867,24 +932,23 @@ void Dashboard_UI_SubmitOdometer(int32_t odometer_tenths)
 
 void Dashboard_UI_SubmitDriveMode(int32_t mode_index)
 {
-    uint32_t primask;
+    dashboard_submit_drive_mode(mode_index, 0U);
+}
 
-    if((mode_index < 0) || (mode_index > 3)) return;
-    if(mode_index == g_mode_index) return;
-    if(dashboard_timing_mode_locked() != 0U) {
-        dashboard_request_mode_lock_alert();
-        return;
-    }
-    primask = __get_PRIMASK();
+void Dashboard_UI_RequestDriveMode(int32_t mode_index)
+{
+    dashboard_submit_drive_mode(mode_index, 1U);
+}
+
+void Dashboard_UI_RequestDriveModeCycle(void)
+{
+    uint32_t primask = __get_PRIMASK();
+
     __disable_irq();
-    if(((g_dashboard_dirty_mask & DASH_DIRTY_MODE) == 0U) &&
-       (g_dashboard_data.mode_index == mode_index)) {
-        if(primask == 0U) __enable_irq();
-        return;
+    g_pending_mode_cycle = 1U;
+    if(primask == 0U) {
+        __enable_irq();
     }
-    g_pending_dashboard_data.mode_index = mode_index;
-    g_dashboard_dirty_mask |= DASH_DIRTY_MODE;
-    if(primask == 0U) __enable_irq();
 }
 
 uint8_t Dashboard_UI_IsTimingModeLocked(void)
@@ -1060,7 +1124,8 @@ void Dashboard_UI_Process(void)
        (g_sprint_ready_dirty == 0U) &&
        (g_pending_alert_count == 0U) && (g_pending_alert_pop_count == 0U) &&
        (g_pending_lap_toggle == 0U) && (g_pending_night_toggle == 0U) &&
-       (g_pending_alert_clear == 0U) && (g_pending_mode_lock_alert == 0U)) {
+       (g_pending_alert_clear == 0U) && (g_pending_mode_cycle == 0U) &&
+       (g_pending_mode_lock_alert == 0U)) {
         return;
     }
 
@@ -1085,6 +1150,16 @@ void Dashboard_UI_Process(void)
             __enable_irq();
         }
         dashboard_clear_alerts();
+    }
+
+    if(g_pending_mode_cycle != 0U) {
+        primask = __get_PRIMASK();
+        __disable_irq();
+        g_pending_mode_cycle = 0U;
+        if(primask == 0U) {
+            __enable_irq();
+        }
+        dashboard_cycle_drive_mode();
     }
 
     if(g_pending_mode_lock_alert != 0U) {
@@ -1370,6 +1445,7 @@ void Dashboard_UI_SubmitTouchState(uint16_t x, uint16_t y, uint8_t pressed)
 {
     static uint8_t last_pressed = 0U;
     static uint32_t last_lap_toggle_tick = 0U;
+    static uint32_t last_mode_cycle_tick = 0U;
     static uint32_t last_alert_touch_tick = 0U;
     static uint32_t last_night_toggle_tick = 0U;
     uint32_t now = HAL_GetTick();
@@ -1380,6 +1456,12 @@ void Dashboard_UI_SubmitTouchState(uint16_t x, uint16_t y, uint8_t pressed)
                 if((now - last_lap_toggle_tick) >= 200U) {
                     last_lap_toggle_tick = now;
                     g_pending_lap_toggle = 1U;
+                }
+                break;
+            case DASH_ZONE_MODE:
+                if((now - last_mode_cycle_tick) >= DASHBOARD_MODE_TOUCH_DEBOUNCE_MS) {
+                    last_mode_cycle_tick = now;
+                    Dashboard_UI_RequestDriveModeCycle();
                 }
                 break;
             case DASH_ZONE_ALERT:

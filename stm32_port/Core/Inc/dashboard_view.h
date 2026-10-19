@@ -27,6 +27,7 @@ typedef enum {
 typedef enum {
     DASH_ZONE_NONE = 0,
     DASH_ZONE_LAP,      /* top bar: start/stop lap or 75 m run timing */
+    DASH_ZONE_MODE,     /* mode tile: cycle S -> Q -> C -> E -> S */
     DASH_ZONE_ALERT,    /* alert banner: dismiss the oldest alert */
     DASH_ZONE_NIGHT     /* night button: toggle backlight dimming */
 } dash_zone_t;

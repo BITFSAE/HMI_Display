@@ -61,7 +61,7 @@ GPS 任务（优先级 25，栈 12 KiB）上电后等界面就绪，读出里程
 
 ## 模式锁
 
-计时进行中（S 模式的冲刺进行中，或其他模式的圈速分析中）驱动模式被锁定：界面拒绝切换并弹出 MODE LOCK 告警，方向盘 `0x310` 也不再转发给 ECU（`Dashboard_UI_IsTimingModeLocked`），影响见 [方向盘与车手屏](steering_wheel.md#计时与模式锁)。冲刺准备（READY）阶段也算进行中。
+计时进行中（S 模式的冲刺进行中，或其他模式的圈速分析中）驱动模式被锁定：界面拒绝切换并弹出 MODE LOCK 告警，方向盘 `0x310` 不再转发，模式色块点击也不发送（`Dashboard_UI_IsTimingModeLocked`），影响见 [方向盘与车手屏](steering_wheel.md#计时与模式锁)。冲刺准备（READY）阶段也算进行中。
 
 ## 并发
 

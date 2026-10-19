@@ -6,8 +6,8 @@
  *
  * Keys: Space cycle mode, S/Q/C/E select mode, 0-7 slip level, R lap timing,
  * N night mode, F push demo alert, Y READY banner, [ ] / G GPS signal,
- * Esc/X quit. Mouse: top bar = lap timing, alert banner = dismiss,
- * eye button = night mode (same zones as the touch panel).
+ * Esc/X quit. Mouse: top bar = lap timing, mode tile = cycle driving mode,
+ * alert banner = dismiss, eye button = night mode (same zones as the touch panel).
  */
 
 #include "lvgl/lvgl.h"
@@ -194,6 +194,9 @@ static void screen_press_cb(lv_event_t * e)
         case DASH_ZONE_LAP:
             g_timing_active = !g_timing_active;
             if(!g_timing_active) Dash_View_SetTimingDot(0U, 0U);
+            break;
+        case DASH_ZONE_MODE:
+            set_mode((g_mode + 1) % 4);
             break;
         case DASH_ZONE_ALERT:
             pop_alert();

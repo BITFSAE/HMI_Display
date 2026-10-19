@@ -334,11 +334,20 @@ static void test_can_decode(void)
 static void test_steering(void)
 {
     unsigned invalid=g_can_rx_invalid_count,relayed,commands;
+    Dashboard_UI_SubmitDriveMode(0);test_tick+=300;Dashboard_UI_Process();assert(g_drive_mode==DRIVE_MODE_S);
     /* 0x310: only ASCII '0'..'3' is relayed and shown. */
     relayed=test_tx_id_count[0x310];
     inject_wheel(0x310,8,0x35);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+1);
     inject_wheel(0x310,8,0x2F);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+2);
     inject_wheel(0x310,8,0x31);assert(test_tx_id_count[0x310]==relayed+1&&test_tx_id_data[0x310][0]==0x31);
+    assert((g_dashboard_dirty_mask&DASH_DIRTY_MODE)!=0U&&g_pending_dashboard_data.mode_index==1);
+    /* 计时锁生效：0x310 不转发，界面也不接受新模式，只请求 MODE LOCK 告警。 */
+    test_tick+=300;Dashboard_UI_Process();assert(g_drive_mode==DRIVE_MODE_Q);
+    g_lap_analysis_active=1U;
+    relayed=test_tx_id_count[0x310];
+    inject_wheel(0x310,8,'2');
+    assert(test_tx_id_count[0x310]==relayed&&g_drive_mode==DRIVE_MODE_Q&&g_pending_mode_lock_alert==1U);
+    g_lap_analysis_active=0U;g_pending_mode_lock_alert=0U;
     /* 0x700: out-of-range level is dropped without a 0x703; a valid one is merged. */
     commands=test_tx_id_count[0x703];
     inject_wheel(0x700,1,9);assert(test_tx_id_count[0x703]==commands&&g_can_rx_invalid_count==invalid+3);
@@ -1135,6 +1144,89 @@ static void test_ui_speed(void)
     GPS_Lap_Reset();GPS_Sprint_Reset();
     puts("UI speed: '--' vs real 0, invalid state, supersede/latency trace and sprint/lap start gating on speed validity passed");
 }
+/* 驾驶模式色块：命中区、四档轮转、0x310 内容、200 ms 防抖和计时锁。 */
+static void tap_mode_tile(void)
+{
+    Dashboard_UI_SubmitTouchState(56,106,0);
+    test_tick+=DASHBOARD_MODE_TOUCH_DEBOUNCE_MS+50U;Dashboard_UI_SubmitTouchState(56,106,1);
+    test_tick+=60;Dashboard_UI_Process();
+    Dashboard_UI_SubmitTouchState(56,106,0);
+}
+
+static void test_mode_touch(void)
+{
+    static const uint8_t expected[4]={'1','2','3','0'};
+    unsigned mode_tx;
+
+    assert(Dash_View_HitTest(56,106)==DASH_ZONE_MODE);
+    assert(Dash_View_HitTest(6,56)==DASH_ZONE_MODE);       /* 外扩 8 px 的左上角 */
+    assert(Dash_View_HitTest(5,106)==DASH_ZONE_NONE);      /* 色块外 9 px */
+    assert(Dash_View_HitTest(56,55)==DASH_ZONE_NONE);      /* 顶栏与色块之间 */
+
+    Dashboard_UI_RequestAlertClear();
+    Dashboard_UI_SubmitDriveMode(0);
+    test_tick+=300;Dashboard_UI_Process();
+    g_lap_analysis_active=0U;g_mode_lock_alert_last_tick=0U;
+    assert(g_drive_mode==DRIVE_MODE_S);
+
+    mode_tx=test_tx_id_count[0x310];
+    for(unsigned i=0;i<4;i++) {
+        tap_mode_tile();
+        assert(g_drive_mode==(drive_mode_t)((i+1U)%4U));
+        assert(g_mode_index==(int32_t)((i+1U)%4U));
+        assert(test_tx_id_count[0x310]==++mode_tx);
+        assert(test_tx_id_data[0x310][0]==expected[i]);
+        assert(test_tx_id_data[0x310][1]==0U&&test_tx_header.DLC==8U);
+    }
+
+    /* 新的 0x310 尚未应用时，ECU 回报的旧模式不能撤销这次请求。 */
+    Dashboard_UI_SubmitDriveMode(3);
+    Dashboard_UI_SubmitDriveMode(0);
+    test_tick+=300;Dashboard_UI_Process();
+    assert(g_drive_mode==DRIVE_MODE_E&&g_mode_index==3);
+    Dashboard_UI_SubmitDriveMode(0);test_tick+=300;Dashboard_UI_Process();
+    assert(g_drive_mode==DRIVE_MODE_S&&g_mode_index==0);
+
+    /* 方向盘连续转回旧档位时，最后一次用户请求仍要覆盖待应用的 E。 */
+    Dashboard_UI_RequestDriveMode(3);
+    Dashboard_UI_RequestDriveMode(0);
+    test_tick+=300;Dashboard_UI_Process();
+    assert(g_drive_mode==DRIVE_MODE_S&&g_mode_index==0);
+
+    /* 方向盘请求尚未应用时点击：按待应用的目标模式轮转，不能丢掉回绕到 S 的请求。 */
+    Dashboard_UI_SubmitDriveMode(3);
+    mode_tx=test_tx_id_count[0x310];
+    tap_mode_tile();
+    assert(test_tx_id_count[0x310]==mode_tx+1U&&test_tx_id_data[0x310][0]=='0');
+    assert(g_drive_mode==DRIVE_MODE_S&&g_mode_index==0);
+
+    /* 200 ms 内的第二次按下不轮转，也不发 0x310。 */
+    mode_tx=test_tx_id_count[0x310];
+    test_tick+=50;Dashboard_UI_SubmitTouchState(56,106,1);
+    assert(g_pending_mode_cycle==0U);
+    Dashboard_UI_SubmitTouchState(56,106,0);
+    test_tick+=DASHBOARD_MODE_TOUCH_DEBOUNCE_MS;Dashboard_UI_SubmitTouchState(56,106,1);
+    assert(g_pending_mode_cycle==1U);
+    test_tick+=60;Dashboard_UI_Process();
+    assert(test_tx_id_count[0x310]==mode_tx+1U&&g_drive_mode==DRIVE_MODE_Q);
+
+    /* 非 S 模式圈速分析进行中：拒绝轮转、不改界面、不发送并弹模式锁告警。 */
+    Dashboard_UI_RequestAlertClear();test_tick+=300;Dashboard_UI_Process();
+    Dashboard_UI_SubmitDriveMode(1);test_tick+=300;Dashboard_UI_Process();
+    g_lap_analysis_active=1U;g_mode_lock_alert_last_tick=0U;
+    Dashboard_UI_SubmitTouchState(56,106,0);
+    test_tick+=DASHBOARD_MODE_TOUCH_DEBOUNCE_MS+50U;Dashboard_UI_SubmitTouchState(56,106,1);
+    mode_tx=test_tx_id_count[0x310];
+    test_tick+=60;Dashboard_UI_Process();
+    assert(test_tx_id_count[0x310]==mode_tx&&g_drive_mode==DRIVE_MODE_Q);
+    assert(g_alert_count>0U&&!strcmp(g_alert_queue[g_alert_count-1U],"MODE LOCK: TIMER ACTIVE"));
+    g_lap_analysis_active=0U;
+
+    /* 越界模式不能进入发送队列。 */
+    mode_tx=test_tx_id_count[0x310];
+    assert(CAN_SendDriveModeRequest(4U)==0U&&test_tx_id_count[0x310]==mode_tx);
+    puts("UI mode tile: hit zone, S/Q/C/E wrap, 0x310 payload, debounce, pending-request ordering and timing lock passed");
+}
 /* Per-motor PK is the highest power since power-on: lifting off, zero torque or regen never clears it. */
 static void test_motor_peak(void)
 {
@@ -1229,6 +1321,6 @@ int main(int argc,char **argv)
     if(argc==1) {assert(!Dashboard_UI_IsStartupComplete());receive(0x305,6,3);assert(g_can_rx_queue->count==0);}
     init_ui();assert(Dashboard_UI_IsStartupComplete());
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_can_decode();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_ui();test_motor_peak();return 0;
+    test_can();test_can_decode();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_ui();test_motor_peak();return 0;
 }
 /* USER CODE END Firmware_Regression */
