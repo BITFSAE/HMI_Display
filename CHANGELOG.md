@@ -2,6 +2,13 @@
 
 ## 未发布
 
+### 2026-10-21 ST-Link 烧写脚本与 VS Code 任务
+
+- 新增 `tools/flash_stlink.sh`：经 SWD、`mode=UR` 用 STM32CubeProgrammer 命令行烧写 `stm32_port/build_vscode/DATA_COLLECTION_INTEGRAL.hex`（或命令行指定的 `.hex/.elf`），烧后回读校验并复位。不做整片擦除，扇区 7 的里程记录保留。工具按 `STM32_PROGRAMMER_CLI`、PATH、STM32 VS Code 扩展 bundles、CubeProgrammer/CubeIDE 安装目录的顺序查找。参考 `BMS_MASTER_F405/Tools/flash_stlink.sh`。
+- 本机 `.vscode/tasks.json`（不入库）新增 `Flash Firmware (ST-Link)` 和 `Build & Flash Firmware (ST-Link)`，用法见 [README](README.md)。
+- 验证：`bash -n` 通过；`tools/flash_stlink.sh` 找到 `/Applications/.../STM32_Programmer_CLI` 并运行，无探头时报 `No debug probe detected`；文件不存在时退出码 1。
+- **未验证**：未接 ST-Link，没有实际烧写、回读校验和复位；正常下载后里程是否保留仍待上板确认（见 [里程存储](docs/odometer_storage.md)）。VS Code 任务未在 UI 中点击运行。
+
 ### 2026-10-19 制动双开度条与 BRT 踏板编码器
 
 - CAN1 新增接收 BRT25-C0M4096-RT1 的自动上报 `0x001`（标准帧、DLC 7），过滤器 bank4 增加该 ID。位置帧仅在 DLC=7、byte0=7、byte1/byte2=`0x01` 且小端计数小于 4096 时接受；DLC=4 应答和其他 FUNC 忽略。车手屏不向编码器发送命令。
