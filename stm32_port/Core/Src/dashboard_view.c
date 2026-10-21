@@ -60,6 +60,9 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 #define LEFT_W       200
 #define RIGHT_X      600
 
+/* 顶栏左端到分隔线（x=164）为 Logo 区：点它重放开屏动画，不触发计时。 */
+#define LOGO_ZONE_W  164
+
 #define ALERT_X      214
 #define ALERT_Y      110
 #define ALERT_W      372
@@ -717,7 +720,8 @@ void Dash_View_Create(void)
 
 dash_zone_t Dash_View_HitTest(int32_t x, int32_t y)
 {
-    if((y >= 0) && (y < TOP_H) && (x >= 0) && (x < DASH_SCREEN_W)) return DASH_ZONE_LAP;
+    if((y >= 0) && (y < TOP_H) && (x >= 0) && (x < LOGO_ZONE_W)) return DASH_ZONE_LOGO;
+    if((y >= 0) && (y < TOP_H) && (x >= LOGO_ZONE_W) && (x < DASH_SCREEN_W)) return DASH_ZONE_LAP;
     if((x >= MODE_X - MODE_TOUCH_PAD) && (x < MODE_X + MODE_W + MODE_TOUCH_PAD) &&
        (y >= MODE_Y - MODE_TOUCH_PAD) && (y < MODE_Y + MODE_H + MODE_TOUCH_PAD)) return DASH_ZONE_MODE;
     if((x >= ALERT_X - 8) && (x < ALERT_X + ALERT_W + 8) &&

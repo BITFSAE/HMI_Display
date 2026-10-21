@@ -6,7 +6,8 @@
  *
  * Keys: Space cycle mode, A/X/8/E select AC/AX/Skidpad/Endurance, 0-7 slip level, R lap timing,
  * N night mode, F push demo alert, Y READY banner, [ ] / G GPS signal,
- * Esc quits. Mouse: top bar = lap timing, mode tile = cycle driving mode,
+ * Esc quits. Mouse: top bar = lap timing, top-left logo = replay the splash animation
+ * (any click skips it while it plays), mode tile = cycle driving mode,
  * alert banner = dismiss, eye button = night mode (same zones as the touch panel).
  */
 
@@ -19,6 +20,7 @@
 
 #include "hal/hal.h"
 #include "../stm32_port/Core/Inc/dashboard_view.h"
+#include "../stm32_port/Core/Inc/splash_view.h"
 #include <stdio.h>
 #include <string.h>
 #include <SDL.h>
@@ -185,13 +187,26 @@ static void demo_timer_cb(lv_timer_t * timer)
     }
 }
 
+static void splash_timer_cb(lv_timer_t * timer)
+{
+    LV_UNUSED(timer);
+    Splash_View_Step(lv_tick_get());
+}
+
 static void screen_press_cb(lv_event_t * e)
 {
     lv_point_t point;
 
     LV_UNUSED(e);
+    if(Splash_View_IsActive()) {      /* 开屏中任意点击只用来跳过动画 */
+        Splash_View_Skip();
+        return;
+    }
     lv_indev_get_point(lv_indev_active(), &point);
     switch(Dash_View_HitTest(point.x, point.y)) {
+        case DASH_ZONE_LOGO:
+            Splash_View_Start(SPLASH_REPLAY);
+            break;
         case DASH_ZONE_LAP:
             g_timing_active = !g_timing_active;
             if(!g_timing_active) Dash_View_SetTimingDot(0U, 0U);
@@ -270,6 +285,8 @@ static void create_simulator_ui(void)
     set_night(g_night_mode);
     demo_timer_cb(NULL);
     lv_timer_create(demo_timer_cb, SIM_DEMO_PERIOD_MS, NULL);
+    Splash_View_Start(SPLASH_BOOT);
+    lv_timer_create(splash_timer_cb, 16, NULL);
 }
 
 void vApplicationMallocFailedHook(void)

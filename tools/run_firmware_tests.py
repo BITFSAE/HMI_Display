@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run actual firmware application/LVGL code with mocked hardware under ASan/UBSan.
 
---png DIR        also render the dashboard (4 drive modes, alert, READY, no data) to PNG
+--png DIR        also render the dashboard (4 drive modes, alert, READY, no data) and the splash animation
+                 (6 boot frames + 1 replay frame) to PNG
 --compare-ref R  require the rendered frames to match git ref R pixel for pixel
                  (R must already contain dashboard_view.c)
 """
@@ -19,6 +20,7 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAMES = 7
+SPLASH_FRAMES = 7
 
 
 def run(*args):
@@ -90,12 +92,14 @@ def main():
             directory.mkdir(exist_ok=True)
             cmake = work / ('cmake-' + label)
             cmake.mkdir(exist_ok=True)
+            # 开屏动画模块在对比基线里不存在：基线只编译仪表本身。
+            splash = [core / 'Src/splash_view.c', core / 'Src/dash_splash_data.c'] if (core / 'Src/splash_view.c').exists() else []
             sources = [ROOT / 'tools/tests/firmware_regression.c', core / 'Src/dashboard_view.c', core / 'Src/dash_logo.c',
-                       *sorted((core / 'Src/fonts').glob('*.c')), *lvgl_sources]
+                       *splash, *sorted((core / 'Src/fonts').glob('*.c')), *lvgl_sources]
             content = 'cmake_minimum_required(VERSION 3.16)\nproject(hmi_regression C)\n'
             content += 'add_executable(regression\n' + '\n'.join('"' + str(p) + '"' for p in sources) + '\n)\n'
             content += 'target_include_directories(regression PRIVATE "' + str(ROOT / 'tools/tests/stubs') + '" "' + str(work) + '" "' + str(core / 'Inc') + '" "' + str(ROOT / 'stm32_port/Core/Inc') + '")\n'
-            content += 'target_compile_definitions(regression PRIVATE LV_CONF_PATH="' + str(conf) + '" DASHBOARD_UI_SOURCE="' + str(core / 'Src/dashboard_ui.c') + '")\n'
+            content += 'target_compile_definitions(regression PRIVATE LV_CONF_PATH="' + str(conf) + '" DASHBOARD_UI_SOURCE="' + str(core / 'Src/dashboard_ui.c') + '"' + (' HAS_SPLASH=1' if splash else '') + ')\n'
             content += 'target_compile_options(regression PRIVATE -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wno-unused-function -Wno-unused-parameter)\n'
             content += 'target_link_options(regression PRIVATE -fsanitize=address,undefined)\ntarget_link_libraries(regression PRIVATE m)\n'
             write_changed(cmake / 'CMakeLists.txt', content)
@@ -110,7 +114,9 @@ def main():
             args.png.mkdir(parents=True, exist_ok=True)
             for frame in range(FRAMES):
                 rgb565_to_png(work / f'current/mode-{frame}.rgb565', args.png / f'dashboard-{frame}.png')
-            print(f'Rendered {FRAMES} frames to {args.png}')
+            for frame in range(SPLASH_FRAMES):
+                rgb565_to_png(work / f'current/splash-{frame}.rgb565', args.png / f'splash-{frame}.png')
+            print(f'Rendered {FRAMES} dashboard + {SPLASH_FRAMES} splash frames to {args.png}')
         if args.compare_ref:
             for frame in range(FRAMES):
                 assert (work / f'current/mode-{frame}.rgb565').read_bytes() == (work / f'baseline/mode-{frame}.rgb565').read_bytes(), f'Frame {frame}: rendered pixels changed'

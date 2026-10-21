@@ -14,6 +14,8 @@
 | `stm32_port/Core/Src/dashboard_ui.c` | 控制器：各任务/中断提交数据的缓冲与脏标记、圈速/冲刺控制、告警队列、背光 PWM |
 | `stm32_port/Core/Src/fonts/dash_font_*.c` | 由 `tools/gen_dash_fonts.sh` 生成的字库，勿手改 |
 | `stm32_port/Core/Src/dash_logo.c` | 由 `tools/gen_dash_logo.sh` 从 `tools/assets/BITFSAE.svg` 生成的 A8 标识，勿手改 |
+| `stm32_port/Core/Src/splash_view.c`、`Inc/splash_view.h` | 开屏动画：纯 LVGL，时间表与绘制，不含 HAL/RTOS，固件与模拟器共用；由 `Dashboard_UI_Process()` 步进 |
+| `stm32_port/Core/Src/dash_splash_data.c` | 由 `tools/gen_dash_splash.sh` 生成的开屏位图（A8 条带），勿手改；类型见 `Inc/dash_splash_data.h` |
 | `src/freertos_main.c` | 模拟器：编译同一份视图，以动画演示数据驱动 |
 
 `Dash_View_*` 只能在 LVGL 线程（Dashboard 任务）调用；`Dash_View_HitTest` 是纯函数，触摸任务可直接调用。轮序沿用 `dashboard_data_t`：0=FL、1=RL、2=FR、3=RR。
@@ -28,7 +30,7 @@
 | 右栏 | x 600–800 | SOC 与电量条、HV 电压/电流、PWR 实时功率、PK（功率峰值与放电电流峰值）、TMAX、LV 电压/电流/功率、三路风扇；行距 22 px |
 | 底栏 | y 376–480 | FL/FR/RL/RR 电机：使能（闪电黄=使能）、故障码（红底 `E xxxx`，十进制，不足四位补零）、TQ (Nm)/RPM、功率 kW 与 PK（功率峰值）、MOT/INV 温度 |
 
-触摸区域：顶栏开始/停止计时（AC 模式为 75 m 冲刺）；驾驶模式色块按 AC→AX→8→EN→AC 轮转一档；告警横幅消除最早一条；夜间按钮把背光降到 45%。模式色块点击通过 CANB 发送既有 `0x310` 请求（byte0 为 ASCII `0`..`3`，DLC 8），界面在入队成功后立即显示新模式，ECU 的 `0x509` 回报会再校正显示。圈速/冲刺计时进行中模式被锁定，点击不发送、不换档，并提示 `MODE LOCK: TIMER ACTIVE`。方向盘的圈速计时键与触摸顶栏等效，消错键清除全部告警，见 [方向盘与车手屏](steering_wheel.md)。告警文字转大写，`+N` 表示还有 N 条排队。
+触摸区域：顶栏 x ≥ 164 开始/停止计时（AC 模式为 75 m 冲刺），顶栏左端 Logo 区（x < 164）重放开屏动画；驾驶模式色块按 AC→AX→8→EN→AC 轮转一档；告警横幅消除最早一条；夜间按钮把背光降到 45%。模式色块点击通过 CANB 发送既有 `0x310` 请求（byte0 为 ASCII `0`..`3`，DLC 8），界面在入队成功后立即显示新模式，ECU 的 `0x509` 回报会再校正显示。圈速/冲刺计时进行中模式被锁定，点击不发送、不换档，并提示 `MODE LOCK: TIMER ACTIVE`。方向盘的圈速计时键与触摸顶栏等效，消错键清除全部告警，见 [方向盘与车手屏](steering_wheel.md)。告警文字转大写，`+N` 表示还有 N 条排队。
 
 ![无数据](images/dashboard-nodata.png)
 
@@ -59,18 +61,38 @@ SOP 来自 BMS 的 `0x4A0`（功率，kW）和 `0x4A3`（电流，A），接收�
 
 改版后（对比 `5860890`）：Flash 254,144 B（+27 KB：速度字库约 22 KB，标识 4 KB），主 SRAM 不变；主机 64 位回归测得 LVGL 池峰值 55.2 KB（原 61.6 KB）。目标机余量以 `g_firmware_diag.lvgl_*` 为准。
 
+加入开屏动画后（对比 `67a5b20`）：Flash +32,756 B（261,184 → 293,940，其中位图 28,675 B、`splash_view.c` 3,788 B），主 SRAM +24 B，CCM 不变；主机回归的池峰值 59,192 → 59,240 B（开屏阶段本身的峰值低于后面的遥测用例）。
+
 加入 SOP 与 PK 行后（对比 `dff4403`）：Flash +1,076 B，主 SRAM +96 B，CCM 不变；主机回归池峰值 54,864 → 57,576 B。目标机指针为 32 位，预计低于主机值，余量未上板实测。
 
 ## 标识
 
 `tools/assets/BITFSAE.svg` 离线栅格化为 140×29 的 A8 透明度图（4,060 B Flash），由绘制回调 `lv_draw_image` 以白色着色。A8 在 LVGL 软件渲染中直接以 Flash 数据为遮罩混合，不经解码缓冲，不占 RAM，也无需开启 `LV_USE_IMAGE` 控件；只在顶栏重绘时参与绘制。SVG 运行时渲染需 ThorVG（C++、数十 KB Flash 与较大内存），不采用。更换标识或尺寸：替换 SVG 后运行 `tools/gen_dash_logo.sh [高度]`，必要时调整 `create_top()` 中各块的 x 坐标。
 
+## 开屏动画
+
+上电后先播放约 2.6 s 的开屏，最后一条斜边扫屏露出仪表。点击左上角 Logo 区随时重放，行驶中也允许；重放比上电多一段 0.3 s 的入场扫屏，先把仪表盖住。开屏进行中点击任意位置（包括各触摸区）只跳到退场扫屏，不触发其他操作。动画期间 CAN/GPS 数据照常写入仪表，扫屏露出时已是最新值；计时、告警和模式请求不受影响。
+
+画面：鲨鱼（`tools/assets/silver-shark-sky.svg`）自右向左冲入并由亮白降温成 `#0EA5E9`，`BITFSAE.svg` 的七个字母自左向右依次冲入（最右的先发，飞行中互不穿插），方格旗擦出，高光自左向右扫过，退场的斜边与字标斜体同角。时间表是 `splash_view.c` 里的常量。浏览器原型 `tools/splash_preview/splash.html` 可调速度、步进帧率并显示每步重绘面积，缓动与固件略有出入，以固件为准。
+
+实现与代价：
+
+- 整段动画只有一个 LVGL 对象和一个 `DRAW_POST` 回调（挂在仪表屏最上层，结束即删除），不为元素建对象，不用 `lv_anim`。主机回归测得占 LVGL 池 280 B（64 位指针，目标机更小）。
+- 元素的位置、颜色、可见性都是时间的纯函数（Q10 定点，无浮点），重绘和失效计算共用同一份，任何时刻重绘同一区域结果一致。
+- 按 33 ms 步进，每步只失效变化的区域：速度线、方格旗各一块，鲨鱼与字母各合并一块，扫屏每 4 行一块。一步不超过十几个区域，远低于 LVGL 失效缓冲（32 个，溢出后整屏重绘）。入场匀速、退场轻微加速，避免首尾几步面积激增。
+- 全黑阶段覆盖层用不透明黑底，LVGL 据此跳过其下的仪表控件；扫屏阶段改为透明，切换时关闭失效（前后像素相同）。结束删除覆盖层同样关闭失效，避免整屏重绘。
+- 只用实色：高光和降温用颜色档位，扫屏边缘是三条实色带。
+- 位图仍是 A8（直接从 Flash 做遮罩，不占 RAM），每个精灵再切成水平条带，条带只存各自的有效列范围；斜体字母的包围盒近一半是空的。9 个精灵共 63 个条带，A8 数据 26,515 B + 描述符 1,764 B = 28,279 B，整块包围盒需要 47,646 B。更换素材或尺寸：`tools/gen_dash_splash.sh [字标宽度px，默认 420] [鲨鱼高度px，默认 120]`，位置自动水平居中。字标的 13 个子路径按序号分给 7 个字母和方格旗（写在脚本的 `GROUPS`），换 SVG 后要核对。
+
+主机回归（30 fps 步进，每步写屏像素占整屏的比例）：上电 80 步，峰值 15.9%、均值 5.9%；重放 88 步，峰值 17.5%、均值 6.8%。每一步的增量帧都与整屏重绘逐像素一致，结束后的画面与开屏前的仪表逐像素相同。目标机上实际的渲染与 FSMC 写屏耗时、33 ms 步进是否流畅尚未实测，见 [更新记录](../CHANGELOG.md)。
+
 ## 验证
 
 ```bash
-python3 tools/run_firmware_tests.py --png /tmp/dash   # 编译固件 UI 与 LVGL，跑回归并输出七帧截图（四种模式、告警、READY、无数据）
+python3 tools/run_firmware_tests.py --png /tmp/dash   # 编译固件 UI 与 LVGL，跑回归并输出七帧仪表截图（四种模式、告警、READY、无数据）和七帧开屏截图
 ./build_fw.sh                                         # ARM 构建与内存报告
 ./run_sim_mac.sh                                      # 模拟器
 ./tools/gen_dash_fonts.sh                             # 改字号/字符集后重新生成字库（需 Node.js）
 ./tools/gen_dash_logo.sh                              # 重新生成标识位图（需 Node.js）
+./tools/gen_dash_splash.sh                            # 重新生成开屏位图（需 Node.js）
 ```

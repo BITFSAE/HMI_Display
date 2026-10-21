@@ -9,7 +9,7 @@
 | `stm32_port/` | **车手屏固件**，CubeIDE 工程名仍沿用旧名 `DATA_COLLECTION_INTEGRAL`。外设配置源是 `DATA_COLLECTION_INTEGRAL.ioc`（本仓库的车手屏 `.ioc` 只有这一个），应用代码在 `Core/Src`，`Core/lvgl` 是固件用的 LVGL 副本 |
 | `src/`、`CMakeLists.txt`、`config/`、`lv_conf.h`、`run_sim_mac.sh` | PC/macOS 模拟器（SDL2 + FreeRTOS） |
 | `build_fw.sh`、`build_fw.mk` | 固件命令行构建 |
-| `tools/` | 字体和 Logo 生成、固件内存报告、固件回归测试、GPS 测试数据生成（`gen_nmea.py`，输出 UM982 NMEA 测试语句）、ST-Link 烧写（`flash_stlink.sh`） |
+| `tools/` | 字体、Logo 和开屏位图生成（`gen_dash_splash.sh`）、开屏动画浏览器原型（`splash_preview/`）、固件内存报告、固件回归测试、GPS 测试数据生成（`gen_nmea.py`，输出 UM982 NMEA 测试语句）、ST-Link 烧写（`flash_stlink.sh`） |
 | `docs/` | 设计与参考文档，索引见下节 |
 | `legacy/` | 不参与构建的遗留与参考资料，含旧版 F103 板（另一个 `.ioc`），见 [legacy/README.md](legacy/README.md) |
 | `lvgl/`、`FreeRTOS/`、`SDL2-2.32.10/` | 第三方源码，见下节 |
@@ -107,7 +107,7 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 - VS Code 任务：`Build Firmware`、`Rebuild Firmware (clean)`（`Tasks: Run Task`），编译报错可点击跳转。
 - ST-Link 烧写：`tools/flash_stlink.sh [文件]` 用 STM32CubeProgrammer 命令行经 SWD 烧写 `build_vscode/DATA_COLLECTION_INTEGRAL.hex` 并回读校验、复位运行；只擦程序用到的扇区，里程记录保留。找工具的顺序见脚本头注释，也可用 `STM32_PROGRAMMER_CLI` 指定路径。VS Code 任务 `Flash Firmware (ST-Link)`、`Build & Flash Firmware (ST-Link)`（先 `Build Firmware` 再烧写）需在本机 `.vscode/tasks.json` 中配置。
 - 模拟器与固件共用 `stm32_port/Core/Src/dashboard_view.c` 界面，只是数据换成动画演示，设计与约束见 [仪表盘界面](docs/dashboard_ui.md)。
-- 窗口内按键：空格循环模式，`A/X/8/E` 选 Acceleration/Autocross/Skidpad/Endurance，`0`–`7` 滑移等级，`R` 圈速计时，`N` 夜间模式，`F` 推入演示告警，`Y` READY 横幅，`[` `]`/`G` 信号强度，`Esc` 退出。鼠标点击区域与触摸屏相同：顶栏开关计时，驾驶模式色块轮转模式，告警条消除一条，眼睛按钮切换夜间。
+- 窗口内按键：空格循环模式，`A/X/8/E` 选 Acceleration/Autocross/Skidpad/Endurance，`0`–`7` 滑移等级，`R` 圈速计时，`N` 夜间模式，`F` 推入演示告警，`Y` READY 横幅，`[` `]`/`G` 信号强度，`Esc` 退出。鼠标点击区域与触摸屏相同：顶栏开关计时，左上 Logo 重放开屏动画（开屏中点任意处跳过），驾驶模式色块轮转模式，告警条消除一条，眼睛按钮切换夜间。
 
 ### Visual Studio Code
 

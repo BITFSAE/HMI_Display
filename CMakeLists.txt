@@ -107,7 +107,9 @@ set(MAIN_SOURCES src/mouse_cursor_icon.c src/hal/hal.c)
 # 这些文件以 LV_LVGL_H_INCLUDE_SIMPLE 引用模拟器自身的 lvgl.h。
 file(GLOB DASH_FONT_SOURCES ${PROJECT_SOURCE_DIR}/stm32_port/Core/Src/fonts/*.c)
 set(DASH_VIEW_SOURCES ${PROJECT_SOURCE_DIR}/stm32_port/Core/Src/dashboard_view.c
-    ${PROJECT_SOURCE_DIR}/stm32_port/Core/Src/dash_logo.c ${DASH_FONT_SOURCES})
+    ${PROJECT_SOURCE_DIR}/stm32_port/Core/Src/dash_logo.c
+    ${PROJECT_SOURCE_DIR}/stm32_port/Core/Src/splash_view.c
+    ${PROJECT_SOURCE_DIR}/stm32_port/Core/Src/dash_splash_data.c ${DASH_FONT_SOURCES})
 # 仅对这些文件加 Core/Inc: 该目录的 FreeRTOSConfig.h 不能遮蔽模拟器的 config/。
 set_source_files_properties(${DASH_VIEW_SOURCES} PROPERTIES
     COMPILE_DEFINITIONS LV_LVGL_H_INCLUDE_SIMPLE

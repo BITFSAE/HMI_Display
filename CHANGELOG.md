@@ -2,6 +2,15 @@
 
 ## 未发布
 
+### 2026-10-21 开屏动画
+
+- 上电先播放约 2.6 s 开屏（鲨鱼冲入、七个字母依次冲入、方格旗、高光，最后斜边扫屏露出仪表）；点击左上角 Logo 区重放，行驶中也允许，重放多一段 0.3 s 入场扫屏。开屏中点击任意位置只跳到退场扫屏，不触发其他触摸区。素材为 `tools/assets/BITFSAE.svg` 和新增的 `silver-shark-sky.svg`，设计与实现细节见 [仪表盘界面](docs/dashboard_ui.md)。
+- 新增 `splash_view.c/.h`（纯 LVGL，固件与模拟器共用）和 `dash_splash_data.c/.h`，位图由新增的 `tools/gen_dash_splash.sh` 生成。整段动画只有一个 LVGL 对象 + 一个绘制回调，元素位置是时间的纯函数（Q10 定点），按 33 ms 步进、只失效变化区域；全黑阶段用不透明底色让 LVGL 跳过其下的仪表。位图仍是 A8（Flash 直读，不占 RAM），再按有效列范围切成条带：9 个精灵 63 个条带共 28,279 B，整块包围盒需要 47,646 B。
+- 顶栏触摸区调整：x < 164（Logo 到分隔线）为新增的 `DASH_ZONE_LOGO`，只重放开屏；x ≥ 164 仍是开始/停止计时。`dashboard_ui.c` 在 `Dashboard_UI_Process()` 里先于"无待处理项"检查步进开屏；触摸只置位标志。模拟器同步：点 Logo 重放，开屏中点击跳过。
+- 浏览器原型 `tools/splash_preview/splash.html` 保留，用于调时间表、看每步重绘面积。
+- 验证：`./build_fw.sh clean` 无警告，Flash 293,940 B（+32,756，74.8%，剩余 99,276 B）、主 SRAM 109,624 B（+24）、CCM 61,440 B（不变）。`python3 tools/run_firmware_tests.py` 通过，新增用例覆盖：上电与重放每一步的增量帧都与整屏重绘逐像素一致、开屏结束后的画面与开屏前的仪表逐像素相同、全黑阶段不绘制仪表控件、覆盖层只占 LVGL 池 280 B（主机）、Logo 区/计时区命中范围、开屏中点击只跳过（不触发模式色块）、入场与中途跳过。`--compare-ref HEAD` 的 7 帧仪表截图与改动前逐像素一致。每步写屏面积（30 fps）：上电峰值 15.9%、均值 5.9%，重放峰值 17.5%、均值 6.8%。`./run_sim_mac.sh --build-only` 通过（仅有原有的重复库链接警告），模拟器启动 7 s 无断言。
+- **未验证**：未上板。目标机上的渲染与 FSMC 写屏耗时（可看 `g_firmware_diag.flush_max_cycles`）、33 ms 步进是否流畅、开屏期间 CAN/GPS 任务是否受影响均未实测；LVGL 池在目标机上的实际余量未测（主机池峰值 59,192 → 59,240 B）。CubeIDE 完整构建未运行（新增的 `.c` 在 `Core/Src` 下，应由工程自动收录）。行驶中重放会盖住仪表约 3 s，按需求允许，未加车速限制。
+
 ### 2026-10-21 ST-Link 烧写脚本与 VS Code 任务
 
 - 新增 `tools/flash_stlink.sh`：经 SWD、`mode=UR` 用 STM32CubeProgrammer 命令行烧写 `stm32_port/build_vscode/DATA_COLLECTION_INTEGRAL.hex`（或命令行指定的 `.hex/.elf`），烧后回读校验并复位。不做整片擦除，扇区 7 的里程记录保留。工具按 `STM32_PROGRAMMER_CLI`、PATH、STM32 VS Code 扩展 bundles、CubeProgrammer/CubeIDE 安装目录的顺序查找。参考 `BMS_MASTER_F405/Tools/flash_stlink.sh`。

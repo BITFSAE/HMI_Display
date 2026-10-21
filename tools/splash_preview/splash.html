@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>开屏动画原型</title>
+<!--
+  车手屏开屏动画原型（仅用于评审，不是固件代码）。固件实现见 stm32_port/Core/Src/splash_view.c，
+  时间表一致；固件用 Q10 定点，扫屏缓动以固件为准，位图按条带切分后体积约为下面整块估算的 60%。
+  素材：BITFSAE.svg（字标 + 方格旗）、silver-shark-sky.svg（鲨鱼标志，#0EA5E9），路径数据已内嵌。
+  按固件约束模拟：纯黑底、实色填充（颜色用档位替代透明度）、整数坐标、固定步进、
+  只重绘脏区；字形按 A8 遮罩（与 dash_logo 同方案）计 Flash。
+  背景界面取 ../../docs/images/dashboard.png，缺失时退化为占位底。
+-->
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121923; --line:#223044; --text:#d7e2ee; --dim:#7f93a8;
+    --sky:#0ea5e9; --sky-l:#7dd3fc; --warn:#f59e0b; --ok:#22c55e;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+  header{padding:20px 24px 8px}
+  h1{margin:0;font-size:20px;font-weight:600;letter-spacing:.02em}
+  .sub{margin:4px 0 0;color:var(--dim);font-size:13px}
+  main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;padding:12px 24px 32px;align-items:start}
+  @media (max-width:1000px){main{grid-template-columns:minmax(0,1fr)}}
+  .stage-wrap{min-width:0}
+  .stage{position:relative;width:800px;max-width:100%;margin:0 auto;border:1px solid var(--line);background:#000;
+    line-height:0;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+  .stage canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
+  .stage .ov{position:absolute;left:0;top:0;pointer-events:none}
+  #hit{position:absolute;left:0.5%;top:0.6%;width:19.5%;height:9.4%;border:1px dashed var(--sky-l);
+    opacity:0;pointer-events:none;transition:opacity .12s}
+  .stage.canreplay:hover #hit.on{opacity:.9}
+  .stage.canreplay{cursor:default}
+  .stage.canreplay.overhit{cursor:pointer}
+  .bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:12px auto 0;width:800px;max-width:100%}
+  button{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);
+    padding:6px 14px;border-radius:6px;cursor:pointer}
+  button:hover{border-color:var(--sky)}
+  button.primary{background:var(--sky);border-color:var(--sky);color:#04202e;font-weight:600}
+  .clock{margin-left:auto;color:var(--dim);font-variant-numeric:tabular-nums}
+  .hint{margin:8px auto 0;width:800px;max-width:100%;color:var(--dim);font-size:12.5px}
+  .chartbox{margin:14px auto 0;width:800px;max-width:100%}
+  .chartbox .cap{display:flex;justify-content:space-between;color:var(--dim);font-size:12.5px;margin-bottom:4px}
+  #chart{width:100%;height:84px;display:block;background:var(--panel);border:1px solid var(--line)}
+  aside{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+  aside h2{margin:0 0 8px;font-size:13px;font-weight:600;color:var(--sky-l);letter-spacing:.04em}
+  aside section+section{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:7px 0}
+  .row label{color:var(--text)}
+  .row output{color:var(--dim);font-variant-numeric:tabular-nums;min-width:3.2em;text-align:right}
+  select,input[type=range]{accent-color:var(--sky)}
+  select{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:5px;padding:3px 6px;font:inherit}
+  input[type=range]{width:150px}
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  td{padding:2px 0}
+  td:last-child{text-align:right;color:var(--text)}
+  td:first-child{color:var(--dim)}
+  tr.total td{border-top:1px solid var(--line);padding-top:5px;color:var(--text)}
+  .meter{height:6px;background:var(--bg);border-radius:3px;margin-top:6px;overflow:hidden}
+  .meter i{display:block;height:100%;background:var(--sky);width:0}
+  .note{margin:6px 0 0;color:var(--dim);font-size:12.5px}
+  ul.n{margin:0;padding-left:1.1em;color:var(--dim);font-size:12.5px}
+  ul.n li{margin:3px 0}
+  .warn{color:var(--warn)}
+</style>
+</head>
+<body>
+<header>
+  <h1>开屏动画原型</h1>
+  <p class="sub">800×480 · 按固件约束模拟：实色填充、整数坐标、固定步进、只重绘脏区</p>
+</header>
+
+<main>
+  <div class="stage-wrap">
+    <div class="stage" id="stage">
+      <canvas id="cv" width="800" height="480"></canvas>
+      <canvas id="dv" class="ov" width="800" height="480"></canvas>
+      <div id="hit"></div>
+    </div>
+    <div class="bar">
+      <button class="primary" id="btnBoot">▶ 上电开屏</button>
+      <button id="btnReplay">↻ 模拟点击 Logo 重放</button>
+      <span class="clock" id="clock">t = 0.00 s</span>
+    </div>
+    <p class="hint">动画结束后，点击左上角 Logo（虚线框）重放；开屏进行中点击任意处跳过。快捷键：空格 = 重放，D = 显示/隐藏脏区。</p>
+
+    <div class="chartbox">
+      <div class="cap"><span>每个步进需重绘的屏幕面积（0–50%）</span><span id="chartCap"></span></div>
+      <canvas id="chart" width="800" height="84"></canvas>
+    </div>
+  </div>
+
+  <aside>
+    <section>
+      <h2>播放</h2>
+      <div class="row"><label for="selFps">步进帧率</label>
+        <select id="selFps"><option value="60">60 fps</option><option value="30" selected>30 fps</option><option value="20">20 fps</option></select></div>
+      <div class="row"><label for="selSpeed">播放速度</label>
+        <select id="selSpeed"><option value="1" selected>1×</option><option value="0.5">0.5×</option><option value="0.25">0.25×</option></select></div>
+      <div class="row"><label for="chkDirty">显示脏区（红）</label><input type="checkbox" id="chkDirty"></div>
+    </section>
+
+    <section>
+      <h2>尺寸（影响 Flash）</h2>
+      <div class="row"><label for="rngWm">字标宽度</label><input type="range" id="rngWm" min="320" max="640" step="10" value="420"><output id="outWm"></output></div>
+      <div class="row"><label for="rngSh">鲨鱼高度</label><input type="range" id="rngSh" min="90" max="220" step="10" value="120"><output id="outSh"></output></div>
+    </section>
+
+    <section>
+      <h2>A8 位图 Flash 估算</h2>
+      <table id="flashTbl"></table>
+      <div class="meter"><i id="flashBar"></i></div>
+      <p class="note" id="flashNote"></p>
+    </section>
+
+    <section>
+      <h2>本次播放的重绘负载</h2>
+      <table>
+        <tr><td>本步</td><td id="stCur">–</td></tr>
+        <tr><td>峰值</td><td id="stPeak">–</td></tr>
+        <tr><td>均值</td><td id="stAvg">–</td></tr>
+        <tr><td>超过 25% 的步数</td><td id="stOver">–</td></tr>
+        <tr><td>总时长</td><td id="stDur">–</td></tr>
+      </table>
+      <p class="note">面积按 2×2 px 格取整，偏保守；渲染与 FSMC 传输的实际耗时需上板测。</p>
+    </section>
+
+    <section>
+      <h2>落到固件时的做法</h2>
+      <ul class="n">
+        <li>整段动画用<b>一个 LVGL 对象 + 绘制回调</b>，按时间表画实色矩形和 A8 遮罩，不建每个元素的对象（LVGL 池 60 KiB，主机回归峰值已约 57.6 KB，目标机未实测）。</li>
+        <li>没有透明度渐变：“淡入/高光”用颜色档位，扫屏边缘用实色条。</li>
+        <li>每步只对变化区域调用 invalidate；条纹和字母的时间表是常量表，不用随机数。</li>
+        <li>点 Logo 重放会盖住仪表，行驶中是否允许需单独决定。</li>
+      </ul>
+    </section>
+  </aside>
+</main>
+
+<script>
+'use strict';
+
+/* ───────── 素材（来自 SVG 源文件，viewBox 坐标） ───────── */
+const WM_VB = {w: 2327, h: 482};          // 字标：<g transform="matrix(.1 0 0 -.1 0 482)">
+const WM_D = [
+  "m19280 4741c-83-12-128-30-148-59-16-23-277-527-369-712-52-106-54-103 62-118 536-68 1031-143 1212-182l52-11-34-62c-18-34-119-226-225-427-105-201-195-369-200-374-6-6-125 7-302 32-285 41-550 73-888 108-91 9-166 17-168 19s83 179 310 645c82 167 121 257 114 262-14 8-714 27-1119 29-193 2-210 0-227-17-17-18-393-886-406-939-6-23-4-25 22-20 53 8 157 15 329 23 216 9 941 9 950 0 4-4-90-208-209-454-118-246-214-450-211-454 2-4 66-10 142-13 414-20 1173-94 1196-116 7-7-92-196-345-654-60-109-107-201-104-204s99-23 213-44c827-151 1150-210 1164-215 13-3 39 33 107 148 192 327 372 653 372 676 0 22-815 201-1280 282-36 6-73 13-82 16-14 4 20 79 205 444 170 337 226 438 237 434 19-8 1282-290 1338-299 23-4 42-9 42-12s-8-17-18-31c-11-15-67-121-127-237-59-115-150-291-201-391-52-99-94-185-94-191 0-18 349-108 660-172 163-33 420-76 558-94 33-4 34-3 82 93 27 54 89 182 138 286 50 104 125 261 167 349 109 226 136 287 130 293-3 3-125 7-271 9-360 3-712 34-926 80-64 13-78 20-78 35 0 11 99 216 220 455 121 240 220 442 220 448 0 7-71 22-177 39-436 68-1203 214-1203 230 0 2 69 132 148 279 184 339 322 598 322 606 0 12-1 12-330 66-736 119-848 133-970 116z",
+  "m1713 4508c-54-93-273-583-319-715-10-29-15-56-10-60 15-16 178-20 776-22 381-1 619-5 643-12 21-6 54-25 74-42 67-62 59-118-51-382l-55-130-839-3-838-2-92-198c-103-224-207-449-247-537-25-55-237-516-377-820-33-71-121-263-195-425-75-162-146-316-158-342-17-35-20-50-12-55 19-12 1793-15 2072-4 409 17 556 59 709 202 85 79 166 194 221 314 105 229 306 669 334 733 35 80 61 184 61 247 0 54-24 144-55 205-43 86-38 94 82 131 92 29 118 43 180 101 67 64 85 97 247 450 382 836 387 847 389 963 3 199-98 332-306 402l-82 28-1066 3-1067 3zm467-2199c20-5 51-25 70-44 32-33 35-41 35-98s-9-82-104-297c-58-132-114-245-128-257-24-23-29-23-251-22-125 1-238 4-252 8-51 14-41 50 101 361 152 334 161 347 264 362 37 6 230-3 265-13z",
+  "m21964 4339c-26-34-464-918-457-922 22-14 165-19 928-33l351-7 27 24c17 15 75 126 158 299 72 151 160 336 196 410 102 211 98 198 65 204-15 2-162 8-327 12-165 3-322 8-350 9-27 2-169 6-315 10-219 6-268 5-276-6z",
+  "m12190 3617c-19-10-49-69-142-282-65-149-118-277-118-286s8-20 18-24c9-4 204-9 432-12 234-3 429-9 448-15 42-13 56-40 49-97-3-25-69-248-147-496-243-774-270-854-290-865s-385-12-435-1c-25 5-31 12-33 38-3 34-27 1 455 635 217 285 279 378 269 403-5 13-60 15-380 15-271 0-382-3-401-12-15-7-120-124-233-262-114-137-277-333-362-436-819-988-817-985-803-993 19-10 211-12 1345-12 1194 0 1208 0 1227 20 11 12 42 102 76 215 409 1400 579 1990 596 2065 50 217-22 368-191 404-77 17-1347 15-1380-2z",
+  "m4528 3588c-45-9-60-32-143-215-40-87-123-270-185-408-160-354-575-1270-752-1660-128-281-178-396-178-410 0-8 151-15 424-19 315-5 340-2 378 40 14 16 658 1426 1030 2254 113 250 175 406 166 415-7 7-705 10-740 3z",
+  "m5516 3589c-21-3-47-15-57-26-19-18-96-182-203-428-68-155-70-142 21-152 43-4 506-8 1030-8 936 0 952 0 978 20 34 26 38 33 144 272 90 202 129 308 119 318-7 8-1986 11-2032 4z",
+  "m7767 3578c-25-19-276-572-264-584s315-19 837-19c685 0 632-8 685 108 157 345 211 479 199 498-3 5-323 9-723 9-558 0-721-3-734-12z",
+  "m9945 3579c-277-19-487-151-627-394-88-153-126-323-115-504 21-307 140-438 535-585 178-66 234-119 234-217-1-40-10-71-38-128-62-125-154-200-291-237-82-21-372-33-824-34-353 0-389-2-408-17-19-17-242-498-256-554-6-24-4-27 36-33 70-11 1495-7 1589 4 397 50 776 300 932 615 73 147 101 271 102 450 0 216-46 337-179 470-96 97-175 139-345 185-271 73-353 149-282 261 59 92 130 107 497 108 236 0 262 2 285 19 25 19 42 47 94 162 17 36 50 108 74 160 50 108 105 261 96 269-9 9-983 9-1109 0z",
+  "m14677 3578c-19-15-257-540-257-568 0-14 10-19 43-24 70-10 1093-19 1252-11 140 7 148 8 175 34 20 18 62 105 139 287 61 143 111 268 111 277 0 16-53 17-723 17-563 0-727-3-740-12z",
+  "m5700 2563c-22-20-70-117-174-348-79-176-241-534-359-797-119-262-219-487-222-501-6-22-3-25 32-31 21-3 178-9 348-12 348-7 379-4 419 49 13 18 106 214 207 437 100 223 249 554 331 735 134 295 198 452 198 484 0 8-114 11-375 11h-375z",
+  "m7286 2538c-26-59-117-258-163-358-91-197-219-474-318-690-62-135-190-414-285-620-328-714-390-851-390-860 0-6 136-10 363-10h363l26 28c14 15 72 117 128 227 57 110 116 223 131 251s95 185 177 350c135 269 224 460 408 872 66 149 97 193 157 223 38 20 55 21 299 20 283-2 326 4 356 47 42 60 242 531 242 569 0 2-331 3-735 3h-735z",
+  "m14181 2492c-41-82-176-369-259-552-126-277-188-417-292-655-159-364-167-384-150-395 25-15 335-22 881-18 458 2 549 5 563 17 21 18 84 142 154 302 50 115 115 290 110 294-2 2-134 5-293 7-325 5-341 8-331 61 4 18 39 101 78 185 65 140 93 181 151 224 1 1 138 4 304 7 286 6 303 7 330 27 21 16 54 82 140 280 62 142 113 271 113 287v27h-725-725z",
+  "m17698 2025c-2-1-79-5-173-9-205-7-431-27-700-62-229-29-265-37-289-62-9-11-84-190-167-398-254-639-255-640-236-647 6-2 65 14 131 35 260 82 580 151 881 189 88 11 170 27 182 34 20 14 46 60 215 385 205 393 270 522 265 527-6 5-103 13-109 8z"
+];
+// 字标 13 个子路径 → 字母/方格旗分组（按 getBBox 位置人工确认）
+const GROUPS = [
+  {n:'B', p:[1]}, {n:'I', p:[4]}, {n:'T', p:[5,9]}, {n:'F', p:[10,6]},
+  {n:'S', p:[7]}, {n:'A', p:[3]}, {n:'E', p:[11,8]}, {n:'flag', p:[0,2,12]},
+];
+const SHARK_D = "M2952.66 877.255 2975.51 931.594 2899.11 931.594 2897.01 927.816C2914.94 911.569 2932.84 895.288 2952.66 877.255ZM3091.51 841.635C3071.8 842.837 3052.11 843.97 3032.39 845.276 3029.26 845.379 3026.13 846.34 3019.32 847.543 3034.66 856.474 3046.4 863.412 3058.24 870.041 3060.51 871.312 3064.64 872.858 3065.81 871.862 3075.72 863.481 3085.11 854.687 3094.65 845.791ZM3273.49 789.321C3303.88 819.239 3334.2 851.664 3346 900.611L3225.55 915.622ZM3092.86 724.402 3057.82 752.877C3089.35 753.804 3090.76 752.637 3092.86 724.402ZM3231.3 624 3231.3 744.221C3218.19 715.746 3222.87 684.523 3217.16 651.788 3202.19 665.94 3187.67 678.374 3174.86 692.354 3168.33 699.499 3174.66 706.094 3180.82 711.452 3200.91 728.627 3220.5 746.454 3241.01 763.147 3249.68 770.223 3252.05 778.089 3249.2 787.947 3243 809.244 3238.22 831.227 3229.61 851.527 3212.8 891.257 3190.81 928.606 3164.23 962.612 3144.99 987.137 3124.83 1010.97 3106.86 1036.39 3099.98 1046.32 3097.5 1059.58 3093.58 1071.5 3091.78 1078.81 3089.48 1086 3086.7 1093 3061.37 1045.19 3023.48 1016.23 2968.25 1011.63L2970.11 1007.68 3001.7 996.446C3018.04 990.503 3020.93 983.771 3013.53 967.043 3004.97 947.567 2995.78 928.331 2987.17 908.856 2982.97 899.708 2980.22 889.962 2979.02 879.968 2983.06 886.368 2987.57 892.464 2992.51 898.207 3022.45 928.434 3052.32 958.799 3083.19 988.099 3096.95 1001.05 3104.66 999.812 3113.92 983.736 3132.95 950.624 3151.29 917.065 3168.6 882.991 3179.68 861.179 3176.41 838.165 3165.16 817.453 3160.1 809.756 3151.98 804.592 3142.86 803.267 3119.74 801.412 3096.5 801.412 3073.38 803.267 3040.86 805.98 3008.48 810.789 2976.13 815.392 2959.23 817.796 2942.54 821.712 2925.75 824.941L2925.61 828.479C2936.17 829.819 2946.74 832.292 2957.3 832.257 3004.83 832.086 3052.32 831.158 3099.84 830.54L3117.53 830.54 3065.29 889.826C3047.5 877.804 3030.64 865.782 3012.98 854.859 3006.73 851.175 2999.6 849.219 2992.34 849.192 2971 849.192 2949.66 851.527 2928.33 851.287 2893.26 850.909 2863.6 836.311 2836.86 814.465 2825.5 805.225 2812.42 798.08 2800.96 788.909 2782.73 774.276 2783.76 766.376 2803.89 753.907 2864.8 716.124 2931.84 693.247 2999.01 669.821 3071.28 644.643 3145.68 632.621 3221.15 624.515 3224.31 624.172 3227.52 624.206 3231.3 624Z";
+const SHARK_VB = {x:2788, y:579.5, w:558, h:558};
+
+/* ───────── 常量 ───────── */
+const W = 800, H = 480, SCREEN = W * H;
+const FLASH_FREE = 393216 - 261188;       // 程序区上限 − 2026-10-19 记录的已用量
+const SKY='#0EA5E9', SKY_L='#38BDF8', SKY_LL='#7DD3FC', SKY_LLL='#BAE6FD', SKY_W='#E0F2FE', SKY_D='#0A5F8A', WHITE='#FFFFFF';
+
+// 时间表（开屏局部时间，ms）
+const TL = {
+  sharkDur: 600,
+  letterT0: 260, letterGap: 70, letterDur: 520,
+  flagT0: 900, flagDur: 300,
+  sheenT0: 1400, sheenSpan: 420, flashDur: 120,
+  exitT0: 2150, exitDur: 450,
+};
+const ENTER_DUR = 300;                    // 点 Logo 重放时，先用斜边扫屏盖住仪表
+// 扫屏边缘：斜率取字标斜体角，按 16 px 一行的台阶近似
+const RH = 16, ROWS = H / RH, SLOPE = 0.36, E_LO = -100, E_HI = 884;
+const BANDS = [[SKY_LLL,3],[SKY,5],[SKY_D,6]];     // 亮 → 暗，共 14 px
+const BAND_TOTAL = 14;
+
+// 背景速度线：[y, 方向(-1 向左/+1 向右), 起始 ms, 速度 px/s, 长度, 粗细, 颜色]
+// 上半区向左（与鲨鱼同向），字母所在的下半区向右（与斜体同向）
+const AMB = [
+  [ 30,-1,  30,2800,170,2,SKY],     [ 54,-1, 110,3400,100,2,SKY_D],  [ 74,-1, 200,2500,220,3,SKY_L],
+  [ 22,-1, 380,3000,140,2,SKY_D],   [ 66,-1, 520,3600, 90,2,SKY],
+  [270, 1, 330,3200,200,2,SKY_D],   [418, 1, 120,2600,180,2,SKY],    [436, 1, 240,3400,120,2,SKY_L],
+  [452, 1, 400,2900,230,3,SKY_D],   [466, 1, 560,3500,100,2,SKY],    [410, 1, 700,3000,150,2,SKY_D],
+];
+// 鲨鱼拖尾：[相对高度, 基础长度, 颜色]；字母拖尾同理
+const SH_TRAIL = [[.10,360,SKY_D],[.26,240,SKY],[.42,420,SKY_L],[.58,200,SKY_D],[.74,320,SKY],[.90,150,SKY_D]];
+const LT_TRAIL = [[.32,240,SKY],[.74,170,SKY_D]];
+
+/* ───────── 工具 ───────── */
+const $ = id => document.getElementById(id);
+const clamp = (v,a=0,b=1) => Math.min(b, Math.max(a, v));
+const lerp = (a,b,t) => a + (b - a) * t;
+const easeOutQuart = p => 1 - Math.pow(1 - p, 4);
+const easeOutCubic = p => 1 - Math.pow(1 - p, 3);
+
+const cfg = {fps:30, speed:1, wm:420, shark:120, dirty:false};
+let sprites = null;                       // {shark, glyphs[], flag, total bytes ...}
+const tintCache = new Map();
+const bg = new Image(); let bgOK = false;
+
+/* ───────── 位图生成（模拟 gen 脚本：栅格化 → 裁到有效包围盒 → A8） ───────── */
+function cropAlpha(c, id){
+  const w = c.width, h = c.height, d = c.getContext('2d').getImageData(0,0,w,h).data;
+  let x0=w, y0=h, x1=-1, y1=-1;
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++) if(d[(y*w+x)*4+3]){ if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y; }
+  const o = document.createElement('canvas'); o.width = x1-x0+1; o.height = y1-y0+1;
+  o.getContext('2d').drawImage(c, -x0, -y0);
+  return {id, c:o, w:o.width, h:o.height, ox:x0, oy:y0};
+}
+function newCanvas(w,h){ const c=document.createElement('canvas'); c.width=w; c.height=h; return c; }
+
+function buildSprites(){
+  tintCache.clear();
+  // 字标：每个分组在整幅字标坐标系里单独栅格化再裁剪，保留相对位置
+  const s = cfg.wm / WM_VB.w, fw = Math.ceil(WM_VB.w*s), fh = Math.ceil(WM_VB.h*s);
+  const p2d = WM_D.map(d => new Path2D(d));
+  const all = GROUPS.map(g => {
+    const c = newCanvas(fw, fh), x = c.getContext('2d');
+    x.setTransform(s,0,0,s,0,0); x.transform(.1,0,0,-.1,0,WM_VB.h);
+    x.fillStyle = '#fff'; g.p.forEach(i => x.fill(p2d[i]));
+    return Object.assign(cropAlpha(c, g.n), {name:g.n});
+  });
+  const minOx = Math.min(...all.map(g=>g.ox)), minOy = Math.min(...all.map(g=>g.oy));
+  const maxR  = Math.max(...all.map(g=>g.ox+g.w)), maxB = Math.max(...all.map(g=>g.oy+g.h));
+  const wmW = maxR - minOx, wmH = maxB - minOy;
+
+  // 鲨鱼：先按 1:1 求图形包围盒，再按目标高度栅格化
+  const sp = new Path2D(SHARK_D);
+  const probe = newCanvas(SHARK_VB.w, SHARK_VB.h), px = probe.getContext('2d');
+  px.translate(-SHARK_VB.x, -SHARK_VB.y); px.fill(sp, 'evenodd');
+  const art = cropAlpha(probe, 'probe');
+  const ss = cfg.shark / art.h;
+  const sc = newCanvas(Math.ceil(SHARK_VB.w*ss), Math.ceil(SHARK_VB.h*ss)), sx = sc.getContext('2d');
+  sx.setTransform(ss,0,0,ss,-SHARK_VB.x*ss,-SHARK_VB.y*ss); sx.fillStyle='#fff'; sx.fill(sp,'evenodd');
+  const shark = cropAlpha(sc, 'shark');
+
+  // 版面：鲨鱼在上、字标在下，整体水平居中、略偏上
+  const gap = 32, totalH = shark.h + gap + wmH, top = Math.round((H - totalH)/2) - 6;
+  shark.fx = Math.round((W - shark.w)/2); shark.fy = top;
+  const wmTop = top + shark.h + gap, wmLeft = Math.round((W - wmW)/2);
+  all.forEach(g => { g.fx = wmLeft + g.ox - minOx; g.fy = wmTop + g.oy - minOy; });
+  const flag = all.pop();
+  sprites = {shark, glyphs: all, flag};
+  sprites.bytes = {shark: shark.w*shark.h, letters: all.reduce((a,g)=>a+g.w*g.h,0), flag: flag.w*flag.h};
+  sprites.bytes.total = sprites.bytes.shark + sprites.bytes.letters + sprites.bytes.flag;
+}
+function tinted(spr, color){
+  const k = spr.id + color; let c = tintCache.get(k);
+  if(!c){ c = newCanvas(spr.w, spr.h); const x = c.getContext('2d');
+    x.fillStyle = color; x.fillRect(0,0,spr.w,spr.h); x.globalCompositeOperation='destination-in'; x.drawImage(spr.c,0,0);
+    tintCache.set(k,c); }
+  return c;
+}
+
+/* ───────── 时间表 → 绘制元素（纯函数，t 为 ms） ───────── */
+const totalMs = mode => (mode==='replay' ? ENTER_DUR : 0) + TL.exitT0 + TL.exitDur;
+
+function sheen(tt, cx){                   // 高光从左向右扫过：2=最亮档，1=次亮档，0=无
+  const d = tt - (TL.sheenT0 + cx / W * TL.sheenSpan);
+  return (d < 0 || d >= TL.flashDur) ? 0 : (d < TL.flashDur/2 ? 2 : 1);
+}
+function streak(P, id, x1, x2, y, th, color){
+  x1 = Math.round(Math.max(0, x1)); x2 = Math.round(Math.min(W, x2));
+  if(x2 - x1 >= 2) P.push({id, layer:'s', type:'rect', x:x1, y:Math.round(y), w:x2-x1, h:th, color});
+}
+function splashPrims(tt){
+  const P = [];
+  if(tt < 0) return P;
+  const {shark, glyphs, flag} = sprites;
+
+  AMB.forEach((a,i) => {
+    const [y,dir,t0,v,len,th,col] = a, d = (tt - t0)/1000; if(d < 0) return;
+    const x = dir < 0 ? W - v*d : -len + v*d;
+    streak(P, 'amb'+i, x, x+len, y, th, col);
+  });
+
+  // 鲨鱼：自右向左冲入，速度越慢拖尾越短；落定后由亮白降温到品牌蓝
+  const sp = clamp(tt / TL.sharkDur), se = easeOutQuart(sp);
+  const sxp = Math.round(lerp(W + 10, shark.fx, se));
+  if(sp < 1) SH_TRAIL.forEach((t,i) => {
+    const len = t[1] * Math.pow(1 - sp, 3);
+    if(len >= 6) streak(P, 'st'+i, sxp + shark.w*0.55, sxp + shark.w*0.55 + len, shark.fy + t[0]*shark.h, 3, t[2]);
+  });
+  let sc = SKY_W; const lt = tt - TL.sharkDur;
+  if(lt >= 140) sc = SKY; else if(lt >= 70) sc = SKY_L; else if(lt >= 0) sc = SKY_LLL;
+  const shn = sheen(tt, shark.fx + shark.w/2); if(shn) sc = shn === 2 ? SKY_W : SKY_LL;
+  P.push({id:'shark', layer:'s', type:'spr', spr:shark, x:sxp, y:shark.fy, color:sc});
+
+  // 字母：自左向右冲入（与斜体同向）。最右的字母先发，B 最后落定，飞行中互不穿插
+  glyphs.forEach((g,i) => {
+    const t0 = TL.letterT0 + (glyphs.length - 1 - i)*TL.letterGap; if(tt < t0) return;
+    const p = clamp((tt - t0)/TL.letterDur), x = Math.round(lerp(-g.w - 12, g.fx, easeOutQuart(p)));
+    if(p < 1) LT_TRAIL.forEach((t,k) => {
+      const len = t[1] * Math.pow(1 - p, 3);
+      if(len >= 6) streak(P, 'lt'+i+'_'+k, x + g.w*0.3 - len, x + g.w*0.3, g.fy + t[0]*g.h, 3, t[2]);
+    });
+    let c = p < 1 ? SKY_LLL : WHITE;
+    const sh = sheen(tt, g.fx + g.w/2); if(sh) c = sh === 2 ? SKY_LL : SKY_LLL;
+    P.push({id:'g'+i, layer:'s', type:'spr', spr:g, x, y:g.fy, color:c});
+  });
+
+  // 方格旗：自左向右擦出
+  if(tt >= TL.flagT0){
+    const cw = Math.round(flag.w * easeOutCubic(clamp((tt - TL.flagT0)/TL.flagDur)));
+    let c = SKY; const sh = sheen(tt, flag.fx + flag.w/2); if(sh) c = sh === 2 ? SKY_W : SKY_LL;
+    if(cw > 0) P.push({id:'flag', layer:'s', type:'spr', spr:flag, x:flag.fx, y:flag.fy, cw, color:c});
+  }
+  return P;
+}
+
+// 扫屏边缘：每行一个黑色矩形 + 三条实色边带；进场盖住仪表，退场露出仪表
+function coverPrims(t, mode){
+  const P = [], enter = mode==='replay' ? ENTER_DUR : 0, tt = t - enter;
+  if(tt >= TL.exitT0 + TL.exitDur) return P;
+  for(let r=0; r<ROWS; r++){
+    const y = r*RH, yc = y + RH/2, skew = SLOPE*(H/2 - yc);
+    const black = (a,b) => { if(b > a) P.push({id:'k'+r, layer:'k', type:'rect', x:a, y, w:b-a, h:RH, color:'#000'}); };
+    const band = (x, list) => list.forEach(([c,w],i) => {
+      const x1 = clamp(Math.round(x), 0, W), x2 = clamp(Math.round(x + w), 0, W);
+      if(x2 > x1) P.push({id:'b'+i+'_'+r, layer:'b', type:'rect', x:x1, y, w:x2-x1, h:RH, color:c});
+      x += w;
+    });
+    if(t < enter){                                  // 进场：黑色自左向右盖住仪表，边带在黑色右侧
+      const ex = lerp(E_LO, E_HI, t/enter) + skew, b = clamp(Math.round(ex), 0, W);
+      black(0, b); band(b, BANDS.slice().reverse());
+    }else if(tt < TL.exitT0){                       // 开屏期间：整屏黑
+      black(0, W);
+    }else{                                          // 退场：边带在左，黑色在右，向右推出
+      const p = clamp((tt - TL.exitT0)/TL.exitDur), ex = lerp(E_LO, E_HI, (p + p*p)/2) + skew;
+      band(ex, BANDS); black(clamp(Math.round(ex + BAND_TOTAL), 0, W), W);
+    }
+  }
+  return P;
+}
+const build = (t, mode) => coverPrims(t, mode).concat(splashPrims(t - (mode==='replay' ? ENTER_DUR : 0)));
+
+/* ───────── 脏区统计（2×2 px 格） ───────── */
+const GW = W/2, GH = H/2, grid = new Uint8Array(GW*GH);
+const bbox = p => p.type === 'spr' ? [p.x, p.y, p.x + (p.cw ?? p.spr.w), p.y + p.spr.h] : [p.x, p.y, p.x + p.w, p.y + p.h];
+function mark(x1,y1,x2,y2){
+  x1 = clamp(Math.floor(x1/2),0,GW); x2 = clamp(Math.ceil(x2/2),0,GW);
+  y1 = clamp(Math.floor(y1/2),0,GH); y2 = clamp(Math.ceil(y2/2),0,GH);
+  for(let y=y1;y<y2;y++) grid.fill(1, y*GW+x1, y*GW+x2);
+}
+function sameState(a,b){
+  return a.x===b.x && a.y===b.y && a.color===b.color && (a.w??a.cw)===(b.w??b.cw) && a.h===b.h;
+}
+function diffDirty(prev, cur){
+  grid.fill(0);
+  const pm = new Map(prev.map(p => [p.id,p])), cm = new Map(cur.map(p => [p.id,p]));
+  for(const p of cur){
+    const q = pm.get(p.id);
+    if(!q){ mark(...bbox(p)); continue; }
+    if(sameState(p,q)) continue;
+    if(p.type==='rect' && q.color===p.color && p.y===q.y && p.h===q.h){
+      // 同色同行矩形只有 x 区间在变：重绘区间的对称差（扫屏边缘、条纹）
+      const [a1,b1,a2,b2] = [q.x, q.x+q.w, p.x, p.x+p.w];
+      mark(Math.min(a1,a2), p.y, Math.max(a1,a2), p.y+p.h); mark(Math.min(b1,b2), p.y, Math.max(b1,b2), p.y+p.h);
+    }else{ mark(...bbox(q)); mark(...bbox(p)); }
+  }
+  for(const q of prev) if(!cm.has(q.id)) mark(...bbox(q));
+  let n = 0; for(let i=0;i<grid.length;i++) n += grid[i];
+  return n*4 / SCREEN;
+}
+
+/* ───────── 渲染 ───────── */
+const cv = $('cv'), ctx = cv.getContext('2d'), dv = $('dv'), dctx = dv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+function drawBackground(){
+  if(bgOK) ctx.drawImage(bg, 0, 0, W, H);
+  else { ctx.fillStyle = '#0d1117'; ctx.fillRect(0,0,W,H); ctx.fillStyle = '#3a4656'; ctx.font = '16px sans-serif';
+         ctx.fillText('(未找到 docs/images/dashboard.png，此处为仪表占位)', 190, 240); }
+}
+function render(prims){
+  drawBackground();
+  const ks = prims.filter(p => p.layer==='k'), ss = prims.filter(p => p.layer==='s'), bs = prims.filter(p => p.layer==='b');
+  ctx.fillStyle = '#000'; ks.forEach(p => ctx.fillRect(p.x, p.y, p.w, p.h));
+  if(ss.length){
+    ctx.save(); ctx.beginPath(); ks.forEach(p => ctx.rect(p.x, p.y, p.w, p.h)); ctx.clip();   // 开屏内容只显示在黑色一侧
+    for(const p of ss){
+      if(p.type==='rect'){ ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.w, p.h); }
+      else { const t = tinted(p.spr, p.color), cw = p.cw ?? p.spr.w; ctx.drawImage(t, 0, 0, cw, p.spr.h, p.x, p.y, cw, p.spr.h); }
+    }
+    ctx.restore();
+  }
+  bs.forEach(p => { ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.w, p.h); });
+}
+function drawDirtyOverlay(){
+  dctx.clearRect(0,0,W,H);
+  if(!cfg.dirty) return;
+  dctx.fillStyle = 'rgba(255,40,60,.45)';
+  for(let y=0;y<GH;y++){
+    let x = 0;
+    while(x < GW){
+      if(!grid[y*GW+x]){ x++; continue; }
+      let e = x; while(e < GW && grid[y*GW+e]) e++;
+      dctx.fillRect(x*2, y*2, (e-x)*2, 2); x = e;
+    }
+  }
+}
+
+/* ───────── 播放控制 ───────── */
+let run = null, prof = null;
+const stage = $('stage');
+
+function profile(mode){
+  const ms = 1000/cfg.fps, n = Math.ceil(totalMs(mode)/ms) + 1, out = [];
+  let prev = build(0, mode);
+  for(let k=1;k<n;k++){ const cur = build(k*ms, mode); out.push(diffDirty(prev, cur)); prev = cur; }
+  return out;
+}
+function drawChart(cur){
+  const c = $('chart'), x = c.getContext('2d'), cw = c.width, ch = c.height, n = prof.length, bw = cw / n;
+  const css = getComputedStyle(document.documentElement);
+  x.clearRect(0,0,cw,ch);
+  x.strokeStyle = css.getPropertyValue('--line'); x.lineWidth = 1; x.setLineDash([4,4]);
+  [.25].forEach(v => { const y = ch - ch*v/.5; x.beginPath(); x.moveTo(0,y); x.lineTo(cw,y); x.stroke(); });
+  x.setLineDash([]); x.fillStyle = css.getPropertyValue('--dim'); x.font = '11px sans-serif'; x.fillText('25%', 4, ch - ch*.25/.5 - 3);
+  prof.forEach((v,i) => {
+    const hh = Math.min(ch, ch*v/.5);
+    x.fillStyle = i === cur ? '#ffffff' : (v > .25 ? css.getPropertyValue('--warn') : css.getPropertyValue('--sky'));
+    x.fillRect(Math.floor(i*bw)+1, ch - hh, Math.max(1, Math.ceil(bw)-1), hh);
+  });
+}
+function fmtPct(v){ return (v*100).toFixed(1) + '%'; }
+function setStats(cur){
+  const peak = Math.max(0, ...prof), avg = prof.reduce((a,b)=>a+b,0) / Math.max(1, prof.length);
+  $('stCur').textContent = cur == null ? '–' : fmtPct(cur);
+  $('stPeak').textContent = fmtPct(peak); $('stAvg').textContent = fmtPct(avg);
+  $('stOver').textContent = prof.filter(v => v > .25).length + ' / ' + prof.length;
+  $('stDur').textContent = (totalMs(run ? run.mode : 'boot')/1000).toFixed(2) + ' s';
+  $('chartCap').textContent = `峰值 ${fmtPct(peak)} · 均值 ${fmtPct(avg)} · ${cfg.fps} fps`;
+}
+function setIdle(){
+  stage.classList.add('canreplay'); $('hit').classList.add('on');
+}
+function start(mode){
+  run = {mode, t0: performance.now(), offset: 0, k: -1, prev: build(0, mode), done: false};
+  prof = profile(mode); setStats(null); drawChart(-1);
+  stage.classList.remove('canreplay','overhit'); $('hit').classList.remove('on');
+}
+function skip(){
+  if(!run || run.done) return;
+  const sim = (performance.now() - run.t0)*cfg.speed + run.offset, exit = (run.mode==='replay'?ENTER_DUR:0) + TL.exitT0;
+  if(sim < exit) run.offset += exit - sim;
+}
+function frame(now){
+  requestAnimationFrame(frame);
+  if(!run || run.done) return;
+  const ms = 1000/cfg.fps, sim = (now - run.t0)*cfg.speed + run.offset, k = Math.floor(sim/ms);
+  if(k === run.k) return;
+  const adjacent = k === run.k + 1;       // 浏览器掉帧、跳过时的跨步差异没有统计意义，不显示
+  run.k = k;
+  const t = k*ms, end = totalMs(run.mode), prims = build(Math.min(t, end), run.mode);
+  const pct = diffDirty(run.prev, prims);
+  render(prims); drawDirtyOverlay(); run.prev = prims;
+  $('clock').textContent = 't = ' + (Math.min(t,end)/1000).toFixed(2) + ' s';
+  setStats(k === 0 || !adjacent ? null : pct); drawChart(Math.min(k-1, prof.length-1));
+  if(t >= end){ run.done = true; dctx.clearRect(0,0,W,H); drawChart(-1); setIdle(); }
+}
+
+/* ───────── 界面 ───────── */
+function fit(){
+  const wrap = document.querySelector('.stage-wrap'), avail = wrap.clientWidth, dpr = window.devicePixelRatio || 1;
+  const n = Math.max(1, Math.floor(Math.min(avail, 1400) * dpr / W));      // 取整数倍，保证像素边界清晰
+  const css = avail * dpr >= W ? W * n / dpr : avail;
+  stage.style.width = css + 'px';
+  document.querySelectorAll('.bar,.hint,.chartbox').forEach(e => e.style.width = css + 'px');
+}
+function inHit(x,y){ return x >= 4 && x <= 160 && y >= 3 && y <= 48; }   // 顶栏 Logo 140×29 外扩 8 px，与模式色块一致
+function pos(e){ const r = cv.getBoundingClientRect(); return [(e.clientX-r.left)/r.width*W, (e.clientY-r.top)/r.height*H]; }
+stage.addEventListener('pointermove', e => { if(run && run.done){ const [x,y]=pos(e); stage.classList.toggle('overhit', inHit(x,y)); } });
+stage.addEventListener('pointerdown', e => {
+  if(!run) return;
+  if(!run.done){ skip(); return; }
+  const [x,y] = pos(e); if(inHit(x,y)) start('replay');
+});
+$('btnBoot').onclick = () => start('boot');
+$('btnReplay').onclick = () => start('replay');
+addEventListener('keydown', e => {
+  if(e.code === 'Space'){ e.preventDefault(); start('replay'); }
+  else if(e.key === 'd' || e.key === 'D'){ $('chkDirty').click(); }
+});
+$('selFps').onchange = e => { cfg.fps = +e.target.value; if(run){ prof = profile(run.mode); setStats(null); drawChart(-1); } };
+$('selSpeed').onchange = e => { cfg.speed = +e.target.value; };
+$('chkDirty').onchange = e => { cfg.dirty = e.target.checked; drawDirtyOverlay(); };
+
+function updateFlash(){
+  const b = sprites.bytes, kb = v => (v/1024).toFixed(1) + ' KiB';
+  $('flashTbl').innerHTML =
+    `<tr><td>鲨鱼 ${sprites.shark.w}×${sprites.shark.h}</td><td>${kb(b.shark)}</td></tr>` +
+    `<tr><td>字母 ×7（逐个裁剪）</td><td>${kb(b.letters)}</td></tr>` +
+    `<tr><td>方格旗 ${sprites.flag.w}×${sprites.flag.h}</td><td>${kb(b.flag)}</td></tr>` +
+    `<tr class="total"><td>合计</td><td>${kb(b.total)}</td></tr>`;
+  const r = b.total / FLASH_FREE;
+  $('flashBar').style.width = Math.min(100, r*100) + '%';
+  $('flashBar').style.background = r > .4 ? 'var(--warn)' : 'var(--sky)';
+  $('flashNote').innerHTML = `占程序区剩余约 ${(FLASH_FREE/1024).toFixed(0)} KiB 的 <b class="${r>.4?'warn':''}">${(r*100).toFixed(0)}%</b>（按 2026-10-19 记录的 261,188 B 已用量；A8 每像素 1 B，按整块包围盒估算；固件按条带切分，实测小得多）。`;
+}
+function rebuild(){
+  $('outWm').textContent = cfg.wm + ' px'; $('outSh').textContent = cfg.shark + ' px';
+  buildSprites(); updateFlash();
+}
+['rngWm','rngSh'].forEach(id => {
+  $(id).oninput = e => { cfg[id==='rngWm'?'wm':'shark'] = +e.target.value; $('outWm').textContent = cfg.wm+' px'; $('outSh').textContent = cfg.shark+' px'; };
+  $(id).onchange = () => { rebuild(); start('boot'); };
+});
+
+addEventListener('resize', fit);
+fit(); rebuild();
+requestAnimationFrame(frame);
+const go = () => start('boot');
+bg.onload = () => { bgOK = true; go(); };
+bg.onerror = () => { bgOK = false; go(); };
+bg.src = '../../docs/images/dashboard.png';
+</script>
+</body>
+</html>

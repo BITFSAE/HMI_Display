@@ -121,13 +121,14 @@ HAL_StatusTypeDef HAL_FLASHEx_Erase(FLASH_EraseInitTypeDef *init,uint32_t *error
 
 static uint16_t frame_pixels[800*480],draw_pixels[800*10];
 static unsigned flushes;
+static unsigned long flushed_px;   /* 写屏像素数：开屏每一步实际重绘的面积 */
 static void flush(lv_display_t *display,const lv_area_t *area,uint8_t *data)
 {
     unsigned width=area->x2-area->x1+1;
     for(int y=area->y1;y<=area->y2;y++) {
         memcpy(frame_pixels+y*800+area->x1,data,width*2);data+=width*2;
     }
-    flushes++;
+    flushes++;flushed_px+=(unsigned long)width*(unsigned)(area->y2-area->y1+1);
     lv_display_flush_ready(display);
 }
 static void init_ui(void)
@@ -1427,11 +1428,143 @@ static void render_modes(const char *directory)
     Dashboard_UI_RequestAlertClear();Dashboard_UI_SubmitDriveMode(0);Dashboard_UI_SetSprintReady(1);
     Dashboard_UI_SubmitSpeed(0);test_tick+=300;Dashboard_UI_Process();lv_refr_now(NULL);save_frame(directory,5);
 }
+
+#ifdef HAS_SPLASH
+/* 开屏动画：每一步的增量帧必须与整屏重绘逐像素一致（失效区域不漏不错），结束后与仪表一致且覆盖层被删除。 */
+static uint16_t splash_ref[800*480],splash_check[800*480];
+static unsigned splash_draws;
+static void count_draw(lv_event_t *e) {(void)e;splash_draws++;}
+static void splash_tick(void) {test_tick+=33;Dashboard_UI_Process();lv_refr_now(NULL);}
+static void splash_full_redraw_matches(const char *where)
+{
+    memcpy(splash_check,frame_pixels,sizeof(frame_pixels));
+    lv_obj_invalidate(lv_screen_active());lv_refr_now(NULL);
+    if(memcmp(splash_check,frame_pixels,sizeof(frame_pixels))) {
+        unsigned bad=0,first=0;
+        for(unsigned i=0;i<800*480;i++) if(splash_check[i]!=frame_pixels[i]) {if(!bad++)first=i;}
+        fprintf(stderr,"splash %s: incremental frame differs from full redraw in %u px (first at x=%u y=%u)\n",where,bad,first%800,first/800);
+        abort();
+    }
+}
+static unsigned splash_nonblack(unsigned y1,unsigned y2)
+{
+    unsigned n=0;
+    for(unsigned y=y1;y<y2;y++) for(unsigned x=0;x<800;x++) n+=frame_pixels[y*800+x]!=0;
+    return n;
+}
+/* 从当前状态走到动画结束。shots: 要存 PNG 源帧的步序号（相对本次播放，第一步 = 0）；directory 为空则不存。 */
+static void splash_run(const char *label,unsigned hold_step,const unsigned *shots,unsigned nshots,const char *directory,unsigned *shot_index)
+{
+    unsigned steps=0,over25=0,count_dashboard_draw_in_hold=0;
+    unsigned long peak=0,sum=0;
+    lv_obj_t *probe=lv_obj_get_child(lv_screen_active(),0);   /* 仪表顶栏 Logo 对象：保持阶段不应被绘制 */
+    lv_obj_add_event_cb(probe,count_draw,LV_EVENT_DRAW_MAIN,NULL);
+    while(Splash_View_IsActive()) {
+        flushed_px=0;splash_tick();
+        if(steps>0) {  /* 第 0 步含上电首帧的整屏黑，不计入每步面积 */
+            if(flushed_px>peak)peak=flushed_px;sum+=flushed_px;over25+=flushed_px>800UL*480UL/4;
+        }
+        for(unsigned i=0;i<nshots;i++) if(shots[i]==steps&&directory) {
+            char path[1024];snprintf(path,sizeof(path),"%s/splash-%u.rgb565",directory,(*shot_index)++);
+            FILE *f=fopen(path,"wb");assert(f);assert(fwrite(frame_pixels,2,800*480,f)==800*480);fclose(f);
+        }
+        if(steps==hold_step&&!directory) {
+            /* 全黑保持阶段：整屏失效后 LVGL 只画覆盖层，不碰其下的仪表控件；底栏区域没有开屏内容，必须保持全黑。 */
+            splash_draws=0;lv_obj_invalidate(lv_screen_active());lv_refr_now(NULL);
+            count_dashboard_draw_in_hold=splash_draws;
+            assert(count_dashboard_draw_in_hold==0);
+            assert(splash_nonblack(376,480)==0);
+        }
+        if(!directory) splash_full_redraw_matches(label);
+        steps++;assert(steps<200);
+    }
+    lv_obj_remove_event_cb(probe,count_draw);
+    if(!directory) {
+        assert(splash_draws>0);   /* 扫屏阶段确实画了仪表控件 */
+        printf("Splash %s: %u steps, per-step redraw peak %lu px (%.1f%%), average %.1f%%, %u steps above 25%%\n",label,steps,peak,
+               peak*100.0/(800*480),steps>1?sum*100.0/((steps-1)*800.0*480):0.0,over25);
+        assert(peak<=800UL*480UL*2/5);
+    }
+}
+static void splash_touch(unsigned x,unsigned y)
+{
+    Dashboard_UI_SubmitTouchState(x,y,0);
+    test_tick+=400;Dashboard_UI_SubmitTouchState(x,y,1);
+}
+static void test_splash(void)
+{
+    unsigned boot_ms=Splash_View_DurationMs(SPLASH_BOOT),replay_ms=Splash_View_DurationMs(SPLASH_REPLAY),children;
+    assert(replay_ms==boot_ms+300&&boot_ms>2000&&boot_ms<3000);
+
+    /* 上电：首帧整屏黑，之后逐步播放，结束后覆盖层已删除。 */
+    assert(Splash_View_IsActive()&&splash_nonblack(0,480)==0);
+    children=lv_obj_get_child_count(lv_screen_active());
+    lv_mem_monitor_t with_overlay;lv_mem_monitor(&with_overlay);
+    splash_run("boot",62,NULL,0,NULL,NULL);
+    assert(!Splash_View_IsActive()&&lv_obj_get_child_count(lv_screen_active())==children-1U);
+    lv_mem_monitor_t without_overlay;lv_mem_monitor(&without_overlay);
+    size_t overlay_bytes=(with_overlay.total_size-with_overlay.free_size)-(without_overlay.total_size-without_overlay.free_size);
+    assert(overlay_bytes<1024);   /* 覆盖层对象 + 事件表 + 局部样式；LVGL 池几乎没有余量，不能多占 */
+    memcpy(splash_ref,frame_pixels,sizeof(frame_pixels));       /* 开屏结束后的仪表，后面的重放必须还原成它 */
+    assert(splash_nonblack(0,480)>0);
+
+    /* 触摸区：Logo 区只重放开屏，不触发计时；其余顶栏仍是计时区。 */
+    assert(Dash_View_HitTest(50,25)==DASH_ZONE_LOGO&&Dash_View_HitTest(163,25)==DASH_ZONE_LOGO);
+    assert(Dash_View_HitTest(164,25)==DASH_ZONE_LAP&&Dash_View_HitTest(500,25)==DASH_ZONE_LAP&&Dash_View_HitTest(50,52)==DASH_ZONE_NONE);
+    g_pending_lap_toggle=0U;
+    splash_touch(200,25);assert(g_pending_lap_toggle==1U);g_pending_lap_toggle=0U;
+    splash_touch(50,25);assert(g_pending_lap_toggle==0U&&g_pending_splash_replay==1U);
+    test_tick+=20;Dashboard_UI_Process();assert(Splash_View_IsActive()&&g_splash_active==1U);
+    Dashboard_UI_SubmitTouchState(50,25,0);
+
+    /* 重放：与上电同样的流程，只是多一段入场扫屏；结束后与原来的仪表逐像素相同。 */
+    children=lv_obj_get_child_count(lv_screen_active());
+    Splash_View_Start(SPLASH_REPLAY);                          /* 已在播放时再启动无效 */
+    assert(lv_obj_get_child_count(lv_screen_active())==children);
+    splash_run("replay",72,NULL,0,NULL,NULL);
+    assert(!Splash_View_IsActive()&&g_splash_active==0U);
+    assert(!memcmp(splash_ref,frame_pixels,sizeof(frame_pixels)));
+
+    /* 开屏中点击：只跳过动画，不触发下面的触摸区（模式色块、Logo 区）。 */
+    for(unsigned phase=0;phase<2;phase++) {
+        uint32_t mode_before=(uint32_t)g_drive_mode;
+        splash_touch(50,25);Dashboard_UI_SubmitTouchState(50,25,0);
+        test_tick+=20;Dashboard_UI_Process();lv_refr_now(NULL);
+        assert(Splash_View_IsActive());
+        for(unsigned i=0;i<(phase?20U:3U);i++)splash_tick();   /* phase 0: 入场扫屏中（t≈100 ms）；phase 1: 字母飞行中（t≈700 ms） */
+        Dashboard_UI_SubmitTouchState(56,106,0);Dashboard_UI_SubmitTouchState(56,106,1);   /* 不推进时间，点在模式色块上 */
+        assert(g_pending_splash_skip==1U&&g_pending_mode_cycle==0U&&g_pending_splash_replay==0U);
+        splash_tick();assert(Splash_View_IsActive());
+        unsigned after_skip=0;
+        flushed_px=0;
+        while(Splash_View_IsActive()) {splash_tick();splash_full_redraw_matches("skip");after_skip++;assert(after_skip<40);}
+        assert(after_skip<=(450U+33U)/33U+2U);               /* 跳到退场扫屏，扫屏时长不变 */
+        assert(!memcmp(splash_ref,frame_pixels,sizeof(frame_pixels))&&(uint32_t)g_drive_mode==mode_before);
+        Dashboard_UI_SubmitTouchState(56,106,0);
+    }
+    lv_mem_monitor_t m;lv_mem_monitor(&m);
+    printf("UI splash: boot/replay/skip frames match a full redraw, dashboard not drawn while covered, touch zones and no-residue passed (overlay %zu B of LVGL pool, pool peak %zu, free %zu)\n",overlay_bytes,m.max_used,m.free_size);
+}
+/* 截图：上电 6 帧 + 重放入场 1 帧（splash-0..6） */
+static void render_splash(const char *directory)
+{
+    static const unsigned boot_shots[]={6,15,24,33,47,70};
+    static const unsigned replay_shots[]={4};
+    unsigned index=0;
+    splash_run("boot",0,boot_shots,6,directory,&index);
+    Splash_View_Start(SPLASH_REPLAY);
+    splash_run("replay",0,replay_shots,1,directory,&index);
+}
+#endif
 int main(int argc,char **argv)
 {
     CAN_StartServiceTask();
     if(argc==1) {assert(!Dashboard_UI_IsStartupComplete());receive(0x305,6,3);assert(g_can_rx_queue->count==0);}
     init_ui();assert(Dashboard_UI_IsStartupComplete());
+#ifdef HAS_SPLASH
+    if(argc==2) render_splash(argv[1]);
+    else test_splash();
+#endif
     if(argc==2) {render_modes(argv[1]);return 0;}
     test_can();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_ui();test_motor_peak();return 0;
 }

@@ -5,6 +5,7 @@
  * Dashboard_UI_Process() in the dashboard task. */
 #include "dashboard_ui.h"
 #include "dashboard_view.h"
+#include "splash_view.h"
 
 #include "main.h"
 
@@ -136,6 +137,12 @@ static uint32_t g_mode_lock_alert_last_tick = 0U;
 /* Night mode: 0 = day (100% backlight), 1 = night (45% backlight). */
 static volatile uint8_t g_pending_night_toggle = 0U;
 static uint8_t g_night_mode = 0U;
+
+/* 开屏动画：触摸任务只置位，由 Dashboard 任务启动/跳过；g_splash_active 供触摸侧判断是否吞掉点击。 */
+#define DASHBOARD_SPLASH_TOUCH_DEBOUNCE_MS 300U
+static volatile uint8_t g_pending_splash_replay = 0U;
+static volatile uint8_t g_pending_splash_skip = 0U;
+static volatile uint8_t g_splash_active = 0U;
 
 /* Backlight dimming: PF9 is reconfigured from plain GPIO output to TIM14_CH1
  * PWM (AF9). 84 MHz / 84 / 1000 = 1 kHz; night compare = 45% duty. */
@@ -1105,6 +1112,30 @@ void Dashboard_UI_PushAlert(const char * text)
     }
 }
 
+/* 先于"没有待处理项就返回"的检查调用：动画靠时间推进，不依赖任何数据更新。 */
+static void dashboard_process_splash(uint32_t now)
+{
+    uint32_t primask;
+    uint8_t replay, skip;
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    replay = g_pending_splash_replay;
+    skip = g_pending_splash_skip;
+    g_pending_splash_replay = 0U;
+    g_pending_splash_skip = 0U;
+    if(primask == 0U) {
+        __enable_irq();
+    }
+    if((replay != 0U) && (Splash_View_IsActive() == 0U)) {
+        Splash_View_Start(SPLASH_REPLAY);
+    }
+    if(skip != 0U) {
+        Splash_View_Skip();
+    }
+    g_splash_active = Splash_View_Step(now);
+}
+
 void Dashboard_UI_Process(void)
 {
     uint32_t index;
@@ -1118,6 +1149,7 @@ void Dashboard_UI_Process(void)
     uint32_t dashboard_mask = 0U;
 
     now = HAL_GetTick();
+    dashboard_process_splash(now);
     update_lap_analysis_indicator(now);
     GPS_Lap_Tick();
     GPS_Sprint_Tick();
@@ -1442,6 +1474,8 @@ void Dashboard_UI_Init(void)
     update_alert_ui();
     dashboard_backlight_init();
     update_night_mode_ui();
+    Splash_View_Start(SPLASH_BOOT);
+    g_splash_active = 1U;
     g_dashboard_initialized = 1U;
     LED_Diag_SetBootStage(5);   /* both LEDs off: UI init fully complete */
 }
@@ -1453,10 +1487,21 @@ void Dashboard_UI_SubmitTouchState(uint16_t x, uint16_t y, uint8_t pressed)
     static uint32_t last_mode_cycle_tick = 0U;
     static uint32_t last_alert_touch_tick = 0U;
     static uint32_t last_night_toggle_tick = 0U;
+    static uint32_t last_splash_tick = 0U;
     uint32_t now = HAL_GetTick();
 
-    if((pressed != 0U) && (last_pressed == 0U)) {
+    if((pressed != 0U) && (last_pressed == 0U) && (g_splash_active != 0U)) {
+        /* 开屏中任意点击只用来跳过动画，不触发下面的触摸区 */
+        g_pending_splash_skip = 1U;
+    }
+    else if((pressed != 0U) && (last_pressed == 0U)) {
         switch(Dash_View_HitTest(x, y)) {
+            case DASH_ZONE_LOGO:
+                if((now - last_splash_tick) >= DASHBOARD_SPLASH_TOUCH_DEBOUNCE_MS) {
+                    last_splash_tick = now;
+                    g_pending_splash_replay = 1U;
+                }
+                break;
             case DASH_ZONE_LAP:
                 if((now - last_lap_toggle_tick) >= 200U) {
                     last_lap_toggle_tick = now;
