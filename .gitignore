@@ -23,6 +23,9 @@ stm32_port/MDK-ARM/DATA_COLLECTION_INTEGRAL/
 .vscode/
 /.settings/
 
+# 外部接口仓库的本地克隆(仅作 DBC 与接口文档参考, 权威内容以该仓库为准, 不入库)
+/vehicle-interfaces/
+
 # ZCode workflow drafts (machine-owned)
 .zcode/
 

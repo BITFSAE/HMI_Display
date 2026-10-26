@@ -2,6 +2,12 @@
 
 ## 未发布
 
+### 2026-10-26 本地克隆 vehicle-interfaces 作为接口参考
+
+- 把 `https://github.com/BITFSAE/vehicle-interfaces` 浅克隆到根目录 `vehicle-interfaces/`（`main` 的 `8dbc47e`，即 2026-10-14 评审过的基线），用于核对 `can/Vehicle_CanB.dbc` 与 `docs/CANB接口.md`。
+- 该目录列入 `.gitignore`，不入库：仓库仍不保留 DBC 副本，权威内容以中央库为准（嵌套 git 目录若提交会变成无 `.gitmodules` 的 gitlink）。`docs/can_interface.md` 的路径说明同时给出根目录克隆与同级存放两种位置。
+- 验证：`can/Vehicle_CanB.dbc` 共 58 个 `BO_`，`BU_` 含 `Display`；固件接收白名单 23 个 ID、发送 6 个 ID 全部在 DBC 中，DLC 与发送方一致。
+
 ### 2026-10-21 开屏动画
 
 - 上电先播放约 2.6 s 开屏（鲨鱼冲入、七个字母依次冲入、方格旗、高光，最后斜边扫屏露出仪表）；点击左上角 Logo 区重放，行驶中也允许，重放多一段 0.3 s 入场扫屏。开屏中点击任意位置只跳到退场扫屏，不触发其他触摸区。素材为 `tools/assets/BITFSAE.svg` 和新增的 `silver-shark-sky.svg`，设计与实现细节见 [仪表盘界面](docs/dashboard_ui.md)。

@@ -1,6 +1,6 @@
 # CAN 接口
 
-本文是车手屏（DBC 节点名 `Display`）在 CANB 与方向盘总线上的**收发实现说明**。帧的字段、比例、单位和范围以 [`vehicle-interfaces`](https://github.com/BITFSAE/vehicle-interfaces) 的 `can/Vehicle_CanB.dbc` 与 `docs/CANB接口.md` 为准，本仓库不保留 DBC 副本（与本仓库同级存放时路径为 `../vehicle-interfaces/`）。本文只写固件实际收哪些帧、怎么用、超时多久、发哪些帧，以及与中央库尚未对齐的部分。整个网络的分工见 [CAN 网络分工](can_network.md)，方向盘与车手屏的配合见 [方向盘与车手屏](steering_wheel.md)。
+本文是车手屏（DBC 节点名 `Display`）在 CANB 与方向盘总线上的**收发实现说明**。帧的字段、比例、单位和范围以 [`vehicle-interfaces`](https://github.com/BITFSAE/vehicle-interfaces) 的 `can/Vehicle_CanB.dbc` 与 `docs/CANB接口.md` 为准，本仓库不保留 DBC 副本（本地参考可克隆到根目录的 `vehicle-interfaces/`，已列入 `.gitignore`；或与本仓库同级存放为 `../vehicle-interfaces/`）。本文只写固件实际收哪些帧、怎么用、超时多久、发哪些帧，以及与中央库尚未对齐的部分。整个网络的分工见 [CAN 网络分工](can_network.md)，方向盘与车手屏的配合见 [方向盘与车手屏](steering_wheel.md)。
 
 物理参数见 [硬件映射](hardware.md)：CAN1 接整车 CANB，CAN2 接方向盘，均 500 kbit/s，标准数据帧。
 
