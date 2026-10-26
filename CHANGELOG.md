@@ -2,6 +2,14 @@
 
 ## 未发布
 
+### 2026-10-26 修复 CAN1 发送队列满后持续停发
+
+- 定位到两处问题：CAN1 开启发送完成通知，但 `.ioc` 未启用 `CAN1_TX_IRQn`，中断文件也没有处理函数；32 项软件队列满时，入队函数在尝试发送之前直接返回。GPS 周期帧积压后，后续请求持续被丢弃，方向盘界面更新仍可继续。
+- 入队前先尝试发送积压帧；CAN 任务每次唤醒时也尝试发送，接收等待最多 50 ms。删除无独立中断入口的发送完成通知及回调，保留现有 `.ioc` 配置。ID、DLC、数据字段和周期调度不变，处理顺序见 [CAN 接口](docs/can_interface.md)。
+- 回归改为可模拟三个硬件邮箱。原代码在“队列满后邮箱恢复空闲”的驾驶模式请求处断言失败；修复后，满队列恢复、无接收/发送中断时运行真实 CAN 任务、五帧突发及现有 CAN、GPS、里程、界面用例全部通过。Windows 使用临时适配运行 `tools/run_firmware_tests.py`，以 MinGW GCC 替代脚本写死的 `/usr/bin/cc`，未启用 ASan/UBSan；两版均出现开屏测试原有的缩进警告。
+- 验证：`./build_fw.sh`（Windows Git Bash，补充本机工具路径）通过，0 警告；Flash 293,992 B、主 SRAM 109,624 B、CCM 61,440 B。CubeIDE headless `-cleanBuild DATA_COLLECTION_INTEGRAL/Debug` 完整构建通过，0 错误、0 警告。
+- **待办**：修复固件未烧写，需上板确认 CAN1 周期帧持续发送，以及 `0x310` 原样转发和 `0x700/0x701/0x702` 合并转发；断开后恢复总线的行为待实测。ASan/UBSan 版本需在 macOS/Linux 补跑。
+
 ### 2026-10-26 本地克隆 vehicle-interfaces 作为接口参考
 
 - 把 `https://github.com/BITFSAE/vehicle-interfaces` 浅克隆到根目录 `vehicle-interfaces/`（`main` 的 `8dbc47e`，即 2026-10-14 评审过的基线），用于核对 `can/Vehicle_CanB.dbc` 与 `docs/CANB接口.md`。

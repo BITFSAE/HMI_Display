@@ -429,7 +429,6 @@ int main(void)
    * notification only feeds the g_can_bus_off_count diagnostic. */
   if(HAL_CAN_ActivateNotification(&hcan1,
                                   CAN_IT_RX_FIFO0_MSG_PENDING |
-                                  CAN_IT_TX_MAILBOX_EMPTY |
                                   CAN_IT_ERROR | CAN_IT_BUSOFF) != HAL_OK) {
     Error_Handler();
   }
