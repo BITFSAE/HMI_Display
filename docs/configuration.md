@@ -75,8 +75,8 @@ UM982 启动时依次发送（每条等待回执并继续读取 DMA，无回执�
 | 夜间背光 | 45 | `BACKLIGHT_NIGHT_COMPARE` / `BACKLIGHT_PWM_PERIOD` = 450 / 1000 | 占空比，‰ | 模拟器用 55% 黑色遮罩模拟 |
 | Dashboard 循环延时 | 5..20（启动期 ≤16） | `freertos.c` | ms | 取 `lv_timer_handler` 返回值并限幅 |
 | 告警队列 | 6 条，每条 ≤32 字符 | `DASHBOARD_ALERT_MAX`、`DASHBOARD_ALERT_TEXT_MAX` | — | |
-| 触摸松手确认 | 80 | `DASHBOARD_TOUCH_RELEASE_MS`（`dashboard_ui.c`） | ms | 连续松手达到门限后才允许下一次点击；首次按下立即响应，短暂丢点不会重复触发 |
-| 驾驶模式色块触摸防抖 | 200 | `DASHBOARD_MODE_TOUCH_DEBOUNCE_MS`（`dashboard_ui.c`） | ms | 两次有效轮转的最小间隔；防抖只作用于触摸，不阻挡方向盘 `0x310` |
+| 触摸松手确认 | 80 | `DASHBOARD_TOUCH_RELEASE_MS`（`dashboard_ui.c`） | ms | 连续松手达到门限后才允许下一次触摸；模式色块还须满足长按门限，短暂丢点不会重新触发 |
+| 驾驶模式色块长按门限 | 200 | `DASHBOARD_MODE_TOUCH_HOLD_MS`（`dashboard_ui.c`） | ms | 从本次按下计时，持续按住达到门限只切一档；提前松手或移出色块即取消，须稳定松手后才能再次触发；不阻挡方向盘 `0x310` |
 | 温度着色阈值 | 70 / 85 | `TEMP_WARN_C`、`TEMP_HOT_C`（`dashboard_view.c`） | ℃ | 琥珀 / 红；MOT、INV、TMAX 共用 |
 | FreeRTOS 堆 | 16 KiB | `.ioc` `configTOTAL_HEAP_SIZE`，`FreeRTOSConfig.h` USER 区同值 | B | 只服务 CMSIS 对象和引导任务 |
 | 任务栈与优先级 | 见 [固件资源与性能优化](firmware_optimization.md) | | | 栈水位由 `g_firmware_diag` 监测 |

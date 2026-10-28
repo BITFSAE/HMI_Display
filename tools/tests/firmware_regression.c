@@ -1256,11 +1256,20 @@ static void test_ui_speed(void)
     GPS_Lap_Reset();GPS_Sprint_Reset();
     puts("UI speed: '--' vs real 0, invalid state, supersede/latency trace and sprint/lap start gating on speed validity passed");
 }
-/* 驾驶模式色块：命中区、五档轮转、0x310 内容、200 ms 防抖和计时锁。 */
-static void tap_mode_tile(void)
+/* 驾驶模式色块：五档轮转、200 ms 长按门限、单次触发和计时锁。 */
+static void start_mode_hold(void)
 {
     Dashboard_UI_SubmitTouchState(56,106,0);
-    test_tick+=DASHBOARD_MODE_TOUCH_DEBOUNCE_MS+50U;Dashboard_UI_SubmitTouchState(56,106,1);
+    test_tick+=100;Dashboard_UI_SubmitTouchState(56,106,1);
+    assert(g_pending_mode_cycle==0U);
+}
+static void hold_mode_tile(void)
+{
+    start_mode_hold();
+    test_tick+=199;Dashboard_UI_SubmitTouchState(56,106,1);
+    assert(g_pending_mode_cycle==0U);
+    test_tick++;Dashboard_UI_SubmitTouchState(56,106,1);
+    assert(g_pending_mode_cycle==1U);
     test_tick+=60;Dashboard_UI_Process();
     Dashboard_UI_SubmitTouchState(56,106,0);
 }
@@ -1284,7 +1293,7 @@ static void test_mode_touch(void)
 
     mode_tx=test_tx_id_count[0x310];
     for(unsigned i=0;i<5;i++) {
-        tap_mode_tile();
+        hold_mode_tile();
         assert(g_drive_mode==(drive_mode_t)modes[i]);
         assert(g_mode_index==modes[i]);
         assert(test_tx_id_count[0x310]==++mode_tx);
@@ -1309,28 +1318,27 @@ static void test_mode_touch(void)
     /* 方向盘默认请求尚未应用时点击：按待应用目标轮转，不能丢掉 AC 请求。 */
     Dashboard_UI_SubmitDriveMode(-1);
     mode_tx=test_tx_id_count[0x310];
-    tap_mode_tile();
+    hold_mode_tile();
     assert(test_tx_id_count[0x310]==mode_tx+1U&&test_tx_id_data[0x310][0]=='0');
     assert(g_drive_mode==DRIVE_MODE_ACCELERATION&&g_mode_index==0);
 
-    /* 200 ms 内的第二次按下不轮转，也不发 0x310。 */
+    /* 按下后 199 ms 松手，不切模式、不发送；松手后也不能补发。 */
     mode_tx=test_tx_id_count[0x310];
-    test_tick+=50;Dashboard_UI_SubmitTouchState(56,106,1);
+    start_mode_hold();
+    test_tick+=199;Dashboard_UI_SubmitTouchState(56,106,1);
     assert(g_pending_mode_cycle==0U);
     Dashboard_UI_SubmitTouchState(56,106,0);
-    test_tick+=DASHBOARD_MODE_TOUCH_DEBOUNCE_MS;Dashboard_UI_SubmitTouchState(56,106,1);
-    assert(g_pending_mode_cycle==1U);
-    test_tick+=60;Dashboard_UI_Process();
+    test_tick+=100;Dashboard_UI_Process();
+    assert(test_tx_id_count[0x310]==mode_tx&&g_drive_mode==DRIVE_MODE_ACCELERATION);
+    hold_mode_tile();
     assert(test_tx_id_count[0x310]==mode_tx+1U&&g_drive_mode==DRIVE_MODE_AUTOCROSS);
 
     /* 非 AC 模式圈速分析进行中：拒绝轮转、不改界面、不发送并弹模式锁告警。 */
     Dashboard_UI_RequestAlertClear();test_tick+=300;Dashboard_UI_Process();
     Dashboard_UI_SubmitDriveMode(1);test_tick+=300;Dashboard_UI_Process();
     g_lap_analysis_active=1U;g_mode_lock_alert_last_tick=0U;
-    Dashboard_UI_SubmitTouchState(56,106,0);
-    test_tick+=DASHBOARD_MODE_TOUCH_DEBOUNCE_MS+50U;Dashboard_UI_SubmitTouchState(56,106,1);
     mode_tx=test_tx_id_count[0x310];
-    test_tick+=60;Dashboard_UI_Process();
+    hold_mode_tile();
     assert(test_tx_id_count[0x310]==mode_tx&&g_drive_mode==DRIVE_MODE_AUTOCROSS);
     assert(g_alert_count>0U&&!strcmp(g_alert_queue[g_alert_count-1U],"MODE LOCK: TIMER ACTIVE"));
     g_lap_analysis_active=0U;
@@ -1339,7 +1347,7 @@ static void test_mode_touch(void)
     mode_tx=test_tx_id_count[0x310];
     assert(CAN_SendDriveModeRequest(4U)==0U&&test_tx_id_count[0x310]==mode_tx);
     assert(CAN_SendDriveModeRequest(-2)==0U&&test_tx_id_count[0x310]==mode_tx);
-    puts("UI mode tile: hit zone, DF/AC/AX/8/EN wrap, 0x310 payload, debounce, pending-request ordering and timing lock passed");
+    puts("UI mode tile: hit zone, DF/AC/AX/8/EN wrap, 0x310 payload, 199/200 ms hold threshold, pending-request ordering and timing lock passed");
 }
 
 static void test_mode_touch_release(void)
@@ -1349,36 +1357,67 @@ static void test_mode_touch_release(void)
     unsigned mode_tx=test_tx_id_count[0x310];
 
     for(int32_t mode=-1;mode<4;mode++) {
-        Dashboard_UI_SubmitTouchState(56,106,0);
-        test_tick+=300;Dashboard_UI_SubmitTouchState(56,106,1);
-        test_tick+=60;Dashboard_UI_Process();
-        assert(g_mode_index==(int32_t)mode&&test_tx_id_count[0x310]==++mode_tx);
+        hold_mode_tile();
+        assert(g_mode_index==mode&&test_tx_id_count[0x310]==++mode_tx);
         assert(test_tx_id_data[0x310][0]==(uint8_t)(48+mode));
 
-        /* 长按超过换档间隔，短暂丢点后仍是同一次触摸，每次点击只能换一档。 */
-        test_tick+=300;Dashboard_UI_SubmitTouchState(56,106,1);
+        /* 上一个 helper 已上报松手；不足 80 ms 的丢点不能让长按重新布防。 */
+        test_tick+=10;Dashboard_UI_SubmitTouchState(56,106,1);
+        for(unsigned sample=0;sample<20;sample++) {
+            test_tick+=50;Dashboard_UI_SubmitTouchState(56,106,1);
+            Dashboard_UI_Process();
+            assert(g_mode_index==mode&&test_tx_id_count[0x310]==mode_tx);
+        }
         for(unsigned bounce=0;bounce<3;bounce++) {
             Dashboard_UI_SubmitTouchState(56,106,0);
             test_tick+=10;Dashboard_UI_SubmitTouchState(56,106,1);
-            test_tick+=60;Dashboard_UI_Process();
-            assert(g_mode_index==(int32_t)mode&&test_tx_id_count[0x310]==mode_tx);
+            test_tick+=250;Dashboard_UI_SubmitTouchState(56,106,1);Dashboard_UI_Process();
+            assert(g_mode_index==mode&&test_tx_id_count[0x310]==mode_tx);
         }
 
-        /* 连续松手不足 80 ms 不重新布防；重复松手采样不能累计多次间隔。 */
+        /* 连续松手 79 ms 不重新布防，重复松手采样不重置确认起点。 */
         Dashboard_UI_SubmitTouchState(56,106,0);
         test_tick+=40;Dashboard_UI_SubmitTouchState(56,106,0);
         test_tick+=39;Dashboard_UI_SubmitTouchState(56,106,1);
-        test_tick+=60;Dashboard_UI_Process();
-        assert(g_mode_index==(int32_t)mode&&test_tx_id_count[0x310]==mode_tx);
+        test_tick+=250;Dashboard_UI_SubmitTouchState(56,106,1);Dashboard_UI_Process();
+        assert(g_mode_index==mode&&test_tx_id_count[0x310]==mode_tx);
     }
 
-    /* 连续松手恰好 80 ms 后，新的按下立即允许 EN→DF。 */
+    /* 连续松手恰好 80 ms 后仍须重新按满 200 ms，才允许 EN→DF。 */
     Dashboard_UI_SubmitTouchState(56,106,0);
     test_tick+=80;Dashboard_UI_SubmitTouchState(56,106,1);
+    test_tick+=199;Dashboard_UI_SubmitTouchState(56,106,1);assert(g_pending_mode_cycle==0U);
+    test_tick++;Dashboard_UI_SubmitTouchState(56,106,1);
     test_tick+=60;Dashboard_UI_Process();
-    assert(g_mode_index==-1&&test_tx_id_count[0x310]==mode_tx+1U);
+    assert(g_mode_index==-1&&test_tx_id_count[0x310]==++mode_tx);
+
+    /* 达门限前丢点取消本次长按，不能累计松手前后的时间。 */
+    start_mode_hold();
+    test_tick+=100;Dashboard_UI_SubmitTouchState(56,106,0);
+    test_tick+=10;Dashboard_UI_SubmitTouchState(56,106,1);
+    test_tick+=250;Dashboard_UI_SubmitTouchState(56,106,1);Dashboard_UI_Process();
+    assert(g_mode_index==-1&&test_tx_id_count[0x310]==mode_tx);
+
+    /* 移出色块或从别处滑入均不能切模式，必须松手后重新长按。 */
+    start_mode_hold();
+    test_tick+=100;Dashboard_UI_SubmitTouchState(180,200,1);
+    test_tick+=100;Dashboard_UI_SubmitTouchState(56,106,1);Dashboard_UI_Process();
+    assert(test_tx_id_count[0x310]==mode_tx);
     Dashboard_UI_SubmitTouchState(56,106,0);
-    puts("UI mode touch: long hold, release glitches, stable-release boundary and five-mode cycle passed");
+    test_tick+=100;Dashboard_UI_SubmitTouchState(180,200,1);
+    test_tick+=250;Dashboard_UI_SubmitTouchState(56,106,1);Dashboard_UI_Process();
+    assert(test_tx_id_count[0x310]==mode_tx);
+    hold_mode_tile();assert(g_mode_index==0&&test_tx_id_count[0x310]==++mode_tx);
+
+    /* 200 ms 判定跨 HAL 毫秒计数回绕仍只触发一次。 */
+    uint32_t saved_tick=test_tick;
+    test_tick=UINT32_MAX-100U;Dashboard_UI_SubmitTouchState(56,106,1);
+    test_tick+=199;Dashboard_UI_SubmitTouchState(56,106,1);assert(g_pending_mode_cycle==0U);
+    test_tick++;Dashboard_UI_SubmitTouchState(56,106,1);assert(g_pending_mode_cycle==1U);
+    test_tick=saved_tick+400U;Dashboard_UI_Process();
+    assert(g_mode_index==1&&test_tx_id_count[0x310]==mode_tx+1U);
+    Dashboard_UI_SubmitTouchState(56,106,0);
+    puts("UI mode hold: five modes, hold/release boundaries, no repeat, interrupted hold, slide cancellation and tick wrap passed");
 }
 
 static void test_default_mode(void)
@@ -1397,7 +1436,7 @@ static void test_default_mode(void)
     test_tick+=300;Dashboard_UI_Process();assert(g_mode_index==-1);
 
     /* 默认模式首次触摸请求 AC，重复的旧模式回报不撤销尚未应用的请求。 */
-    tap_mode_tile();
+    hold_mode_tile();
     assert(g_mode_index==0&&test_tx_id_count[0x310]==mode_tx+1U);
     assert(test_tx_id_data[0x310][0]=='0');
     Dashboard_UI_RequestDriveMode(1);Dashboard_UI_SubmitDriveMode(0);
@@ -1423,11 +1462,11 @@ static void test_default_mode(void)
         assert(User_CAN_TxQueuePush(0x703,(const uint8_t[]){0,0},2));
     }
     unsigned drops=g_user_can_tx_drop_count;
-    tap_mode_tile();
+    hold_mode_tile();
     assert(g_mode_index==3&&g_user_can_tx_drop_count==drops+1U);
     assert(test_tx_id_count[0x310]==mode_tx+1U);
     test_can_free_mailboxes=1;User_CAN_TxQueueDrain();
-    tap_mode_tile();
+    hold_mode_tile();
     assert(g_mode_index==-1&&test_tx_id_count[0x310]==mode_tx+2U);
     lv_refr_now(NULL);
     puts("UI default mode: signed 0x509 feedback, invalid modes, telemetry isolation, request relay, timing lock and TX queue recovery passed");

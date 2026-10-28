@@ -81,7 +81,7 @@ static uint32_t g_lap_analysis_blink_tick = 0U;
 #define DASHBOARD_ALERT_TEXT_MAX 32U
 #define DASHBOARD_UI_FAST_PERIOD_MS 50U
 #define DASHBOARD_UI_SLOW_PERIOD_MS 200U
-#define DASHBOARD_MODE_TOUCH_DEBOUNCE_MS 200U
+#define DASHBOARD_MODE_TOUCH_HOLD_MS 200U
 #define DASHBOARD_TOUCH_RELEASE_MS 80U
 #define LAP_START_MIN_SPEED_KMH     5.0f
 #define DELTA_TEXT_LIMIT_HUNDREDTHS 3000
@@ -1491,16 +1491,18 @@ void Dashboard_UI_SubmitTouchState(uint16_t x, uint16_t y, uint8_t pressed)
     static uint8_t last_pressed = 0U;
     static uint8_t release_pending = 0U;
     static uint32_t release_tick = 0U;
+    static uint8_t mode_hold_armed = 0U;
+    static uint32_t mode_hold_tick = 0U;
     static uint32_t last_lap_toggle_tick = 0U;
-    static uint32_t last_mode_cycle_tick = 0U;
     static uint32_t last_alert_touch_tick = 0U;
     static uint32_t last_night_toggle_tick = 0U;
     static uint32_t last_splash_tick = 0U;
     uint32_t now = HAL_GetTick();
 
-    /* 短暂丢点不能把一次长按拆成两次点击。松手稳定后才重新布防，
-     * 首次按下仍立即响应；松手只上报一次时，在下一次按下补做确认。 */
+    /* 短暂丢点不能重新布防；不足门限的长按一旦松手即作废。
+     * 松手只上报一次时，在下一次按下补做稳定松手确认。 */
     if(pressed == 0U) {
+        mode_hold_armed = 0U;
         if((last_pressed != 0U) && (release_pending == 0U)) {
             release_pending = 1U;
             release_tick = now;
@@ -1537,10 +1539,8 @@ void Dashboard_UI_SubmitTouchState(uint16_t x, uint16_t y, uint8_t pressed)
                 }
                 break;
             case DASH_ZONE_MODE:
-                if((now - last_mode_cycle_tick) >= DASHBOARD_MODE_TOUCH_DEBOUNCE_MS) {
-                    last_mode_cycle_tick = now;
-                    Dashboard_UI_RequestDriveModeCycle();
-                }
+                mode_hold_armed = 1U;
+                mode_hold_tick = now;
                 break;
             case DASH_ZONE_ALERT:
                 if((now - last_alert_touch_tick) >= 200U) {
@@ -1562,6 +1562,18 @@ void Dashboard_UI_SubmitTouchState(uint16_t x, uint16_t y, uint8_t pressed)
     }
 
     last_pressed = pressed != 0U ? 1U : 0U;
+
+    /* 触摸任务按住期间持续提交状态：在色块内按满门限只发一次请求。
+     * 移出后取消，回到色块也不能重启，必须先稳定松手。 */
+    if(mode_hold_armed != 0U) {
+        if((g_splash_active != 0U) || (Dash_View_HitTest(x, y) != DASH_ZONE_MODE)) {
+            mode_hold_armed = 0U;
+        }
+        else if((now - mode_hold_tick) >= DASHBOARD_MODE_TOUCH_HOLD_MS) {
+            mode_hold_armed = 0U;
+            Dashboard_UI_RequestDriveModeCycle();
+        }
+    }
 }
 
 const dashboard_data_t * Dashboard_UI_GetCurrentData(void)
