@@ -167,9 +167,11 @@ static void test_can(void)
     memset(test_rx_data,0,8);test_rx_data[2]=0xF4;test_rx_data[3]=1;
     receive(0x305,6,1);service_can();assert(g_can_dashboard_data.aps_open_pct==50);
     test_rx_data[0]=0x10;receive(0x509,5,1);service_can();assert(g_can_dashboard_data.mode_index==1);
-    test_rx_header=(CAN_RxHeaderTypeDef){.StdId=0x700,.DLC=1};test_rx_data[0]=7;test_rx_pending=1;
+    assert(CAN2_RX_MSG_ID_BANK0[0]==0x310&&CAN2_RX_MSG_ID_BANK0[1]==0x703&&
+           CAN2_RX_MSG_ID_BANK0[2]==0x310&&CAN2_RX_MSG_ID_BANK0[3]==0x703);
+    test_rx_header=(CAN_RxHeaderTypeDef){.StdId=0x703,.DLC=2};test_rx_data[0]=7;test_rx_data[1]=0;test_rx_pending=1;
     HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);service_can();
-    assert(test_tx_header.StdId==0x703&&test_tx_header.DLC==2&&test_tx_data[0]==7);
+    assert(test_tx_header.StdId==0x703&&test_tx_header.DLC==2&&test_tx_data[0]==7&&test_tx_data[1]==0);
     test_rx_header.RTR=1;test_rx_pending=1;invalid=g_can_rx_invalid_count;
     HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);assert(g_can_rx_invalid_count==invalid+1);
     /* 0x050 的 IMU 设备已停用，车手屏不再转发 0x060..0x066；即使该 ID 到达也不得产生发送。 */
@@ -190,6 +192,18 @@ static void inject_wheel(uint16_t id,unsigned dlc,uint8_t first)
     test_rx_header=(CAN_RxHeaderTypeDef){.StdId=id,.DLC=dlc};
     memset(test_rx_data,0,8);test_rx_data[0]=first;test_rx_pending=1;
     HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);service_can();
+}
+/* 方向盘整帧 0x703：byte0 滑级，byte1 bit0 退使、bit1 清错、bit2 圈速计时。 */
+static void inject_cmd(uint8_t slip,uint8_t bits)
+{
+    test_rx_header=(CAN_RxHeaderTypeDef){.StdId=0x703,.DLC=2};
+    memset(test_rx_data,0,8);test_rx_data[0]=slip;test_rx_data[1]=bits;test_rx_pending=1;
+    HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);service_can();
+}
+static int alert_shown(const char *text)
+{
+    for(unsigned i=0;i<g_alert_count;i++)if(!strcmp(g_alert_queue[i],text))return 1;
+    return 0;
 }
 
 static void feed_encoder(brake_pedal_t *p,uint16_t count,uint16_t oil,uint32_t *now,unsigned samples)
@@ -445,7 +459,7 @@ static void test_can_decode(void)
 }
 static void test_steering(void)
 {
-    unsigned invalid=g_can_rx_invalid_count,relayed,commands;
+    unsigned invalid=g_can_rx_invalid_count,relayed;
     Dashboard_UI_SubmitDriveMode(0);test_tick+=300;Dashboard_UI_Process();assert(g_drive_mode==DRIVE_MODE_ACCELERATION);
     /* 0x310：只接受 mode + 48（47..51），包括默认模式请求。 */
     relayed=test_tx_id_count[0x310];
@@ -460,26 +474,56 @@ static void test_steering(void)
     inject_wheel(0x310,8,'2');
     assert(test_tx_id_count[0x310]==relayed&&g_drive_mode==DRIVE_MODE_AUTOCROSS&&g_pending_mode_lock_alert==1U);
     g_lap_analysis_active=0U;g_pending_mode_lock_alert=0U;
-    /* 0x700: out-of-range level is dropped without a 0x703; a valid one is merged. */
-    commands=test_tx_id_count[0x703];
-    inject_wheel(0x700,1,9);assert(test_tx_id_count[0x703]==commands&&g_can_rx_invalid_count==invalid+3);
-    inject_wheel(0x700,1,5);assert(test_tx_id_count[0x703]==commands+1&&test_tx_id_data[0x703][0]==5);
-    /* 0x701: rising edge only. Held/repeated frames and a stuck 1 do not retrigger. */
-    g_pending_lap_toggle=0;
-    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1&&(test_tx_id_data[0x703][1]&1)==1&&test_tx_id_data[0x703][0]==5);
+    /* 0x703 由方向盘整帧组好，每个 DLC>=2 的帧都原样转发（ID、DLC、内容不变）。 */
+    unsigned commands=test_tx_id_count[0x703];
+    inject_cmd(5,0);
+    assert(test_tx_id_count[0x703]==commands+1&&test_tx_header.DLC==2&&test_tx_id_data[0x703][0]==5&&test_tx_id_data[0x703][1]==0);
+    assert((g_dashboard_dirty_mask&DASH_DIRTY_SLIP)!=0U&&g_pending_dashboard_data.slip_level==5);
+    /* DLC 不足 2 丢弃；滑级越界照常转发但不显示。 */
+    inject_wheel(0x703,1,3);assert(test_tx_id_count[0x703]==commands+1&&g_can_rx_invalid_count==invalid+3);
+    inject_cmd(9,0);
+    assert(test_tx_id_count[0x703]==commands+2&&test_tx_id_data[0x703][0]==9&&g_can_rx_invalid_count==invalid+4);
+    assert(g_pending_dashboard_data.slip_level==5);
+    /* 0x700..0x702 已停用：即使到达也不处理、不转发。 */
+    unsigned tx_before=test_tx_count;
+    g_pending_lap_toggle=0;g_pending_alert_clear=0;
+    inject_wheel(0x700,1,3);inject_wheel(0x701,1,1);inject_wheel(0x702,1,1);
+    assert(test_tx_count==tx_before&&g_pending_lap_toggle==0&&g_pending_alert_clear==0);
+    /* LapTimerToggle（bit2）：上升沿触发；300 ms 内重复的 1 不再触发，中间有 0 帧则重新计。 */
+    inject_cmd(5,0x04);assert(g_pending_lap_toggle==1&&test_tx_id_data[0x703][1]==0x04);
     g_pending_lap_toggle=0;test_tick+=20;
-    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==0&&(test_tx_id_data[0x703][1]&1)==0);   /* repeat while held */
-    test_tick+=20;inject_wheel(0x701,1,0);assert(g_pending_lap_toggle==0);
-    test_tick+=20;inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1);                       /* 0 -> 1 */
+    inject_cmd(5,0x04);assert(g_pending_lap_toggle==0);
+    test_tick+=20;inject_cmd(5,0);assert(g_pending_lap_toggle==0);
+    test_tick+=20;inject_cmd(5,0x04);assert(g_pending_lap_toggle==1);
     g_pending_lap_toggle=0;test_tick+=100;
-    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==0);
-    test_tick+=400;inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1);                      /* single-shot sender without 0 frames */
+    inject_cmd(5,0x04);assert(g_pending_lap_toggle==0);
+    test_tick+=400;inject_cmd(5,0x04);assert(g_pending_lap_toggle==1);
     g_pending_lap_toggle=0;
-    /* 0x702 is the same for the alert clear, carried in byte1 bit1. */
-    g_pending_alert_clear=0;
-    inject_wheel(0x702,1,1);assert(g_pending_alert_clear==1&&(test_tx_id_data[0x703][1]&2)==2);
+    /* bit0 不再是圈速计时：只置 bit0 不得触发计时。 */
+    test_tick+=400;inject_cmd(5,0x01);assert(g_pending_lap_toggle==0);
+    test_tick+=20;inject_cmd(5,0);
+    /* ErrorClearActive（bit1）同样按上升沿。 */
+    g_pending_alert_clear=0;test_tick+=400;
+    inject_cmd(5,0x02);assert(g_pending_alert_clear==1&&g_pending_lap_toggle==0);
     g_pending_alert_clear=0;test_tick+=20;
-    inject_wheel(0x702,1,1);assert(g_pending_alert_clear==0&&(test_tx_id_data[0x703][1]&2)==0);
+    inject_cmd(5,0x02);assert(g_pending_alert_clear==0);
+    test_tick+=20;inject_cmd(5,0);
+    /* DisableRequest（bit0）：方向盘每 20 ms 发一帧 1，只在上升沿弹一次提示；每帧都转发。
+     * 计时锁期间也必须转发。 */
+    Dashboard_UI_Process();g_alert_count=0;
+    g_lap_analysis_active=1U;
+    commands=test_tx_id_count[0x703];
+    for(unsigned i=0;i<10;i++){test_tick+=20;inject_cmd(5,0x01);}
+    assert(test_tx_id_count[0x703]==commands+10&&test_tx_id_data[0x703][1]==0x01);
+    assert(g_pending_disable_alert==1&&g_pending_lap_toggle==0&&g_pending_alert_clear==0);
+    Dashboard_UI_Process();
+    assert(g_pending_disable_alert==0&&alert_shown("DISABLE REQUESTED"));
+    for(unsigned i=0;i<10;i++){test_tick+=20;inject_cmd(5,0x01);}
+    assert(g_pending_disable_alert==0);
+    test_tick+=20;inject_cmd(5,0);assert(test_tx_id_count[0x703]==commands+21&&test_tx_id_data[0x703][1]==0);
+    test_tick+=500;inject_cmd(5,0x01);assert(g_pending_disable_alert==1);
+    test_tick+=20;inject_cmd(5,0);
+    g_lap_analysis_active=0U;g_pending_disable_alert=0;g_alert_count=0;
 }
 static void flash_blank(void) {memset(flash_words,0xFF,sizeof(flash_words));}
 static uint32_t odo_boot(void)

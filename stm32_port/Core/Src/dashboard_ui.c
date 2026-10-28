@@ -132,6 +132,7 @@ static volatile uint8_t g_pending_lap_toggle = 0U;
 static volatile uint8_t g_pending_mode_cycle = 0U;
 static volatile uint8_t g_pending_alert_clear = 0U;
 static volatile uint8_t g_pending_mode_lock_alert = 0U;
+static volatile uint8_t g_pending_disable_alert = 0U;
 static volatile uint8_t g_pending_sprint_ready = 0U;
 static uint8_t g_sprint_ready_dirty = 0U;
 static uint8_t g_sprint_ready_visible = 0U;
@@ -1006,6 +1007,14 @@ void Dashboard_UI_RequestAlertClear(void)
     if(primask == 0U) __enable_irq();
 }
 
+void Dashboard_UI_RequestDisableAlert(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    g_pending_disable_alert = 1U;
+    if(primask == 0U) __enable_irq();
+}
+
 void Dashboard_UI_SubmitLapDelta(int32_t delta_hundredths)
 {
     uint32_t primask = __get_PRIMASK();
@@ -1167,7 +1176,7 @@ void Dashboard_UI_Process(void)
        (g_pending_alert_count == 0U) && (g_pending_alert_pop_count == 0U) &&
        (g_pending_lap_toggle == 0U) && (g_pending_night_toggle == 0U) &&
        (g_pending_alert_clear == 0U) && (g_pending_mode_cycle == 0U) &&
-       (g_pending_mode_lock_alert == 0U)) {
+       (g_pending_mode_lock_alert == 0U) && (g_pending_disable_alert == 0U)) {
         return;
     }
 
@@ -1202,6 +1211,17 @@ void Dashboard_UI_Process(void)
             __enable_irq();
         }
         dashboard_cycle_drive_mode();
+    }
+
+    /* 放在清除告警之后：同一周期内先清再弹，提示不会被一起清掉。 */
+    if(g_pending_disable_alert != 0U) {
+        primask = __get_PRIMASK();
+        __disable_irq();
+        g_pending_disable_alert = 0U;
+        if(primask == 0U) {
+            __enable_irq();
+        }
+        dashboard_push_alert_local("DISABLE REQUESTED");
     }
 
     if(g_pending_mode_lock_alert != 0U) {

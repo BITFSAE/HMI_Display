@@ -116,8 +116,9 @@ uint16_t CAN1_RX_MSG_ID_BANK3[4] = {SOP_ID_POWER, SOP_ID_CURRENT, SOP_ID_POWER, 
 uint16_t CAN1_RX_MSG_ID_BANK4[4] = {0x5A2, 0x001, 0x5A2, 0x001};
 /* Bank5: Tire-temperature cells 1..16, four cells per frame. */
 uint16_t CAN1_RX_MSG_ID_BANK5[4] = {0x071, 0x072, 0x073, 0x074};
-/* Bank14: Vehicle_CanB.dbc steering wheel on CAN2 - DriveMode(0x310), SlipLevel(0x700), RecorderToggle(0x701, lap-timer toggle), ErrorClear(0x702) */
-uint16_t CAN2_RX_MSG_ID_BANK0[4] = {0x310, 0x700, 0x701, 0x702};
+/* Bank14: Vehicle_CanB.dbc steering wheel on CAN2 - DriveMode_Request(0x310), SteeringCmd(0x703).
+ * 16-bit ID list needs four entries; the two IDs are repeated. */
+uint16_t CAN2_RX_MSG_ID_BANK0[4] = {0x310, 0x703, 0x310, 0x703};
 
 #define CAN_ID_GPS_POSITION        0x067U
 #define CAN_ID_GPS_MOTION          0x068U
@@ -593,19 +594,17 @@ void CAN1_Filter_Config(void)
  * @func: CAN2 (steering wheel) filter config
  * Vehicle_CanB.dbc: steering wheel sits on the CAN2 bus. 0x310 is relayed
  * verbatim to the ECU while no sprint/lap timing session holds the mode lock;
- * 0x700/0x701/0x702 are SteeringWheel->Display only and
- * are merged into a single 0x703 (BO_1795) before being sent to the ECU.
+ * 0x703 is built by the wheel and always relayed verbatim.
  *   BO_784  DriveMode_Request 0x310  DriveModeCode byte0 = mode + 48 (47..51)
- *   BO_1792 SlipLevel_0x700   0x700  SlipLevel byte0 [0..7]
- *   BO_1793 RecorderToggle    0x701  lap-timer toggle bit0, one frame per press
- *                                    (the DBC name is historical, it is not a video recorder)
- *   BO_1794 ErrorClear_0x702  0x702  ErrorClearActive bit0, sent once per press
+ *   BO_1795 SteeringCmd_0x703 0x703  SlipLevel byte0 bit0..2; byte1 bit0
+ *                                    DisableRequest, bit1 ErrorClearActive,
+ *                                    bit2 LapTimerToggle
  */
 void CAN2_Filter_Config(void)
 {
 	CAN_FilterTypeDef CAN_FilterInitStructure;
 
-	/* Bank 14: steering wheel frames 0x310/0x700/0x701/0x702 -> FIFO0 */
+	/* Bank 14: steering wheel frames 0x310/0x703 -> FIFO0 */
 	CAN_FilterInitStructure.FilterActivation = ENABLE;
 	CAN_FilterInitStructure.FilterBank = 14;
 	CAN_FilterInitStructure.FilterFIFOAssignment = CAN_FILTER_FIFO0;
@@ -740,8 +739,7 @@ void CAN_ServiceTask(void *argument)
  *   BO_1442 FanController_Status=0x5A2 (Fan1/2/3_RPM + PWM1/2_Duty),
  *   BO_103/104 GPS telemetry=0x067/0x068, BO_1952/1953=0x7A0/0x7A1(Display->WirelessGateway),
  *   BO_113..116 tire-temperature cells 1..16=0x071..0x074,
- *   Vehicle_CanB.dbc BO_1792=0x700(SlipLevel), BO_1793=0x701(RecorderToggle), BO_1794=0x702(ErrorClear),
- *   all SteeringWheel->Display only; merged into BO_1795=0x703(SteeringCmd, Display->ECU)
+ *   Vehicle_CanB.dbc BO_1795=0x703(SteeringCmd): built by the wheel on CAN2, relayed verbatim to the ECU
  * Wheel order mapping: DBC {RL,RR,FL,FR}(0,1,2,3) -> Dashboard {LF,LR,RF,RR}(0,1,2,3)
  *   dash[0]=LF <- DBC[2]=FL, dash[1]=LR <- DBC[0]=RL,
  *   dash[2]=RF <- DBC[3]=FR, dash[3]=RR <- DBC[1]=RR
@@ -768,35 +766,20 @@ void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
   if((hcan != NULL) && ((HAL_CAN_GetError(hcan) & HAL_CAN_ERROR_BOF) != 0U)) g_can_bus_off_count++;
 }
 
-/*
- * @func: Send the consolidated steering command 0x703 (DBC BO_1795) to the ECU.
- * 0x700/0x701/0x702 are SteeringWheel->Display only and must NOT be forwarded
- * verbatim; the ECU consumes only this merged frame.
- *   byte0      = SlipLevel 0..7
- *   byte1 bit0 = RecorderToggle, i.e. the lap-timer toggle (one-shot)
- *   byte1 bit1 = ErrorClearActive (one-shot)
- */
-static void User_CAN_SendSteeringCmd(uint8_t slip_level,
-                                     uint8_t lap_toggle,
-                                     uint8_t error_clear)
-{
-  uint8_t cmd[2] = {0};
+/* 0x703 SteeringCmd (Vehicle_CanB.dbc BO_1795) byte1 bits. */
+#define STEERING_CMD_MIN_DLC        2U
+#define STEERING_CMD_DISABLE_REQ    0x01U
+#define STEERING_CMD_ERROR_CLEAR    0x02U
+#define STEERING_CMD_LAP_TOGGLE     0x04U
 
-  cmd[0] = slip_level & 0x07U;
-  if(lap_toggle != 0U)   cmd[1] |= 0x01U;
-  if(error_clear != 0U)     cmd[1] |= 0x02U;
-
-  User_CAN_SendDlc(0x703U, cmd, 2U);
-}
-
-/* DBC SG_ RecorderToggle / ErrorClearActive: "Display acts only on the rising
- * edge". The wheel firmware (repo Steering_wheel, cb60d69) sends one 1-frame
- * when the button is released and never a 0-frame; this is read from its code,
+/* 0x703 button bits act on the rising edge. The wheel firmware sets
+ * LapTimerToggle / ErrorClearActive in one frame when the key is released and
+ * sends no 0-frame for it; DisableRequest is 1 every 20 ms while the chord is
+ * held and ends with a 0-frame. Read from the wheel code and its host tests,
  * not yet confirmed on the bus. A frame counts as a new press when the
- * previous frame was 0, or when the previous 1-frame is older than
- * CAN_BUTTON_REPEAT_GAP_MS. With that sender the gap is the only thing that
- * separates presses, so two presses less than 300 ms apart count as one. The
- * 0-frame and repeat-while-held cases are kept for other senders. */
+ * previous frame had the bit at 0, or when the previous 1 is older than
+ * CAN_BUTTON_REPEAT_GAP_MS. Two single-key presses with no other 0x703 frame
+ * in between and less than 300 ms apart therefore count as one. */
 #define CAN_BUTTON_REPEAT_GAP_MS 300U
 
 typedef struct {
@@ -821,9 +804,9 @@ static uint8_t User_CAN_ButtonPressed(User_CAN_Button_t * button, uint8_t active
 static void User_CAN_HandleSteeringWheel(const CAN_RxHeaderTypeDef * rx,
                                          const uint8_t data[8])
 {
-  static uint8_t s_slip_level = 0U;
   static User_CAN_Button_t s_lap_button;
   static User_CAN_Button_t s_clear_button;
+  static User_CAN_Button_t s_disable_request;
 
   if((rx == NULL) || (data == NULL)) return;
 
@@ -847,36 +830,35 @@ static void User_CAN_HandleSteeringWheel(const CAN_RxHeaderTypeDef * rx,
       break;
     }
 
-    /* Vehicle_CanB.dbc BO_1792 SlipLevel 0x700: byte0 [0..7] -> merge into 0x703.
-     * An out-of-range level is dropped; no 0x703 is sent for it. */
-    case 0x700:
+    /* Vehicle_CanB.dbc BO_1795 SteeringCmd 0x703. The wheel builds the whole
+     * frame; it is relayed to the ECU with the same ID, DLC and payload, also
+     * while the timing mode lock is active, because DisableRequest is the
+     * driver's exit-enable request and must never be held back here. Only a
+     * frame shorter than 2 bytes is dropped. A slip value above 7 is still
+     * relayed (the ECU checks its own range) but is counted and not shown. */
+    case 0x703:
     {
-      if(data[0] > 7U) {
+      const uint32_t now = HAL_GetTick();
+
+      if(rx->DLC < STEERING_CMD_MIN_DLC) {
         g_can_rx_invalid_count++;
         break;
       }
-      s_slip_level = data[0];
-      Dashboard_UI_SubmitSlipLevel((int32_t)data[0]);
-      User_CAN_SendSteeringCmd(s_slip_level, 0U, 0U);
-      break;
-    }
-
-    /* Vehicle_CanB.dbc BO_1793 RecorderToggle 0x701 (lap-timer toggle): bit0, rising
-     * edge -> start/stop lap or sprint timing and merge into 0x703 */
-    case 0x701:
-    {
-      uint8_t toggle = User_CAN_ButtonPressed(&s_lap_button, data[0] & 0x01U, HAL_GetTick());
-      if(toggle != 0U) Dashboard_UI_RequestLapToggle();
-      User_CAN_SendSteeringCmd(s_slip_level, toggle, 0U);
-      break;
-    }
-
-    /* Vehicle_CanB.dbc BO_1794 ErrorClear_0x702: bit0, rising edge -> merge into 0x703 */
-    case 0x702:
-    {
-      uint8_t clear = User_CAN_ButtonPressed(&s_clear_button, data[0] & 0x01U, HAL_GetTick());
-      if(clear != 0U) Dashboard_UI_RequestAlertClear();
-      User_CAN_SendSteeringCmd(s_slip_level, 0U, clear);
+      User_CAN_SendDlc(rx->StdId, data, rx->DLC);
+      if(data[0] <= 7U) {
+        Dashboard_UI_SubmitSlipLevel((int32_t)data[0]);
+      } else {
+        g_can_rx_invalid_count++;
+      }
+      if(User_CAN_ButtonPressed(&s_lap_button, data[1] & STEERING_CMD_LAP_TOGGLE, now) != 0U) {
+        Dashboard_UI_RequestLapToggle();
+      }
+      if(User_CAN_ButtonPressed(&s_clear_button, data[1] & STEERING_CMD_ERROR_CLEAR, now) != 0U) {
+        Dashboard_UI_RequestAlertClear();
+      }
+      if(User_CAN_ButtonPressed(&s_disable_request, data[1] & STEERING_CMD_DISABLE_REQ, now) != 0U) {
+        Dashboard_UI_RequestDisableAlert();
+      }
       break;
     }
 

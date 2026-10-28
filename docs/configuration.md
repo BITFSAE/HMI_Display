@@ -53,7 +53,7 @@ UM982 启动时依次发送（每条等待回执并继续读取 DMA，无回执�
 | --- | --- | --- | --- | --- |
 | 接收超时 | BMS 2000；ECU 1000；PDM 1500；风扇 1500；SOP 功率 300；SOP 电流 1500；踏板编码器 150 | `CAN_TIMEOUT_BMS_MS/ECU_MS/PDM_MS/FAN_MS/SOP_POWER_MS/SOP_CURRENT_MS`、`CAN_TIMEOUT_BRAKE_ANGLE_MS` | ms | 超时后对应数值显示 `--`。ECU 周期在中央库仍为暂定值，取宽松门限；周期确定后应收紧 |
 | 超时检查间隔 | 50 | `CAN_TIMEOUT_POLL_MS` | ms | 编码器 150 ms 超时最多约晚一个检查周期反映到界面 |
-| 方向盘按键重复间隔 | 300 | `CAN_BUTTON_REPEAT_GAP_MS` | ms | 判定「新按下」；方向盘固件按代码每次按键只发一个 1 帧，故该值是两次按下的最小间隔，待抓包确认 |
+| 方向盘按键重复间隔 | 300 | `CAN_BUTTON_REPEAT_GAP_MS` | ms | 判定 `0x703` 各按键位的「新按下」；方向盘单键只在松开的那一帧置 1，两次单键之间没有其他 `0x703` 帧时，该值是两次按下的最小间隔，待抓包确认 |
 | 机械制动条油压标定 | 2100 → 0%；4900 → 90% | `BRAKE_OIL_ZERO_RAW`、`BRAKE_OIL_FULL_RAW`、`BRAKE_OIL_FULL_PCT`（`brake_pedal.h`） | 0.001 kPa（即 2.1 / 4.9 kPa）；百分比 | `0x305` 油压线性换算为机械制动条，限幅 0..100；静止油压 2135 显示 1% |
 | 能量回收满量程 | 7.0 | `BRAKE_PEDAL_REGEN_FULL_SCALE_MDEG` | 度 | 相对静止位达到 7° 即 100%，以上不再细分 |
 | 能量回收死区 | 0.3 | `BRAKE_PEDAL_REGEN_DEADBAND_MDEG` | 度 | 死区内显示 0%；静止窗口抖动约 2 count（0.18°） |

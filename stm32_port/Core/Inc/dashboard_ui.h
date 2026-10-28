@@ -142,6 +142,9 @@ uint8_t Dashboard_UI_IsTimingModeLocked(void);
 void Dashboard_UI_SubmitSlipLevel(int32_t slip_level);
 void Dashboard_UI_RequestLapToggle(void);
 void Dashboard_UI_RequestAlertClear(void);
+/* 方向盘退使组合键（0x703 DisableRequest 上升沿）：只弹出 DISABLE REQUESTED 提示。
+ * 请求本身由 CAN 层原样转发给 ECU，界面不判断 ECU 是否执行。 */
+void Dashboard_UI_RequestDisableAlert(void);
 void Dashboard_UI_SubmitLapDelta(int32_t delta_hundredths);
 void Dashboard_UI_SubmitLapTimes(int32_t current_hundredths,
 								 int32_t last_hundredths,
