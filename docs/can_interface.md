@@ -1,6 +1,6 @@
 # CAN 接口
 
-本文是车手屏（DBC 节点名 `Display`）在 CANB 与方向盘总线上的**收发实现说明**。帧的字段、比例、单位和范围以 [`vehicle-interfaces`](https://github.com/BITFSAE/vehicle-interfaces) 的 `can/Vehicle_CanB.dbc` 与 `docs/CANB接口.md` 为准，本仓库不保留 DBC 副本（与本仓库同级存放时路径为 `../vehicle-interfaces/`）。本文只写固件实际收哪些帧、怎么用、超时多久、发哪些帧，以及与中央库尚未对齐的部分。整个网络的分工见 [CAN 网络分工](can_network.md)，方向盘与车手屏的配合见 [方向盘与车手屏](steering_wheel.md)。
+本文是车手屏（DBC 节点名 `Display`）在 CANB 与方向盘总线上的**收发实现说明**。帧的字段、比例、单位和范围以 [`vehicle-interfaces`](https://github.com/BITFSAE/vehicle-interfaces) 的 `can/Vehicle_CanB.dbc` 与 `docs/CANB接口.md` 为准，本仓库不保留 DBC 副本（本地参考可克隆到根目录的 `vehicle-interfaces/`，已列入 `.gitignore`；或与本仓库同级存放为 `../vehicle-interfaces/`）。本文只写固件实际收哪些帧、怎么用、超时多久、发哪些帧，以及与中央库尚未对齐的部分。整个网络的分工见 [CAN 网络分工](can_network.md)，方向盘与车手屏的配合见 [方向盘与车手屏](steering_wheel.md)。
 
 物理参数见 [硬件映射](hardware.md)：CAN1 接整车 CANB，CAN2 接方向盘，均 500 kbit/s，标准数据帧。
 
@@ -8,7 +8,7 @@
 
 1. 硬件过滤器为 ID 白名单（16 位 ID 列表模式），不在表内的帧不进入软件。CAN1 过滤器见下表；新增接收 ID 时必须同步修改 `can.c` 的 `CAN1_RX_MSG_ID_BANK*`。
 2. 接收中断每次最多读取 3 帧，丢弃扩展帧、远程帧和 DLC>8 的帧（计入 `g_can_rx_invalid_count`），其余放入 64 项静态队列；队列满时丢新帧并计 `g_can_rx_drop_count`。UI 启动完成前到达的帧直接丢弃。
-3. CAN 任务（优先级 26，栈 4 KiB）取帧解码，等待队列最多 50 ms，超时后检查各报文族新鲜度。DLC 短于下表「最小 DLC」的帧丢弃并计入 `g_can_rx_invalid_count`。
+3. CAN 任务（优先级 26，栈 4 KiB）取帧解码，按[配置表](configuration.md)中的发送轮询间隔等待队列，每次唤醒后尝试发送积压帧，并定期检查各报文族新鲜度。DLC 短于下表「最小 DLC」的帧丢弃并计入 `g_can_rx_invalid_count`。
 
 全部进入 FIFO0，FIFO1 的接收通知未开启。
 
@@ -53,6 +53,8 @@ SOP 只接收 BMS 发的 `0x4A0/0x4A3`，不接收 ECU 的 `0x4A4` 确认，也�
 
 只接收，不发送。发送方是方向盘按钮板，各控件的作用见 [方向盘与车手屏](steering_wheel.md)。两种帧都在 CAN1 上以原 ID、原 DLC 转发：
 
+界面调用只提交待处理数据，由 Dashboard 任务稍后绘制。`0x310` 先尝试转发，再提交界面模式请求；`0x703` 先提交有效滑级和按键动作，再尝试原样转发。两条路径都不等待屏幕刷新。
+
 | ID | 处理 |
 | --- | --- |
 | `0x310` 驾驶模式请求 | byte0 必须为 47..51（模式值 + 48），否则丢弃。计时模式锁（见 [GPS 与圈速](gps_lap.md)）未生效时，在 CAN1 上以**原 ID 和原 DLC**转发给 ECU；无论是否转发，界面都提交该模式（锁生效时界面弹出 MODE LOCK 告警并拒绝切换）。车手屏模式色块点击也会直接发送同格式的 `0x310`（DLC 8，byte1..7 为 0） |
@@ -78,7 +80,9 @@ SOP 只接收 BMS 发的 `0x4A0/0x4A3`，不接收 ECU 的 `0x4A4` 确认，也�
 
 ### 发送队列与总线故障
 
-发送先进入 32 项软件队列，由邮箱空闲中断逐帧送入硬件邮箱。队列满时丢新帧并计 `g_user_can_tx_drop_count`。CAN 控制器开启自动重传和自动 bus-off 恢复：总线繁忙时低优先级帧仲裁失败会自动重发，bus-off 由硬件恢复，`g_can_bus_off_count` 记录次数。无节点应答时（如台架单机）邮箱会持续重试，队列满后丢新帧，总线接上后先发出积压的旧帧。这些计数器都是 RAM 变量，复位清零，可在调试器中查看。
+发送先进入软件队列。入队前、入队后和 CAN 任务每次唤醒时，都尝试把队首送入空闲硬件邮箱。发送轮询与接收超时检查使用独立间隔，取值和队列容量见[配置表](configuration.md)。即使没有接收报文或新发送请求，任务也会继续发送积压帧。当前 `.ioc` 未启用 `CAN1_TX_IRQn`，发送队列由任务轮询，CAN1 只开启接收和错误通知。
+
+入队前尝试发送后，队列仍满才丢新帧，并计 `g_user_can_tx_drop_count`。CAN 控制器开启自动重传和自动 bus-off 恢复：总线繁忙时低优先级帧仲裁失败会自动重发，bus-off 由硬件恢复，`g_can_bus_off_count` 记录次数。无节点应答时（如台架单机）邮箱会持续重试，队列满后丢新帧，总线接上后先发出积压的旧帧。这些计数器都是 RAM 变量，复位清零，可在调试器中查看。界面更新与发送结果独立，显示变化不代表 CAN1 已发送成功。
 
 ## 与中央库尚未对齐的部分
 

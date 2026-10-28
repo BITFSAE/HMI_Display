@@ -2,6 +2,14 @@
 
 ## 未发布
 
+### 2026-10-28 CAN1 持续发送与最新主线整合
+
+- 合入 PR #4 的接口参考路径说明和 PR #5 的满队列恢复修复。保留当前主线的默认模式、200 ms 长按及 `0x703` 原样转发，更新方向盘处理顺序说明。
+- 发送轮询与接收超时检查分开。原 50 ms 发送轮询在无接收报文、GPS 与 CAN 任务同相位时只能补发 60 帧/秒，低于现有遥测的 67 帧/秒；发送轮询改为 10 ms，接收超时检查仍为 50 ms。
+- 回归保留有限的三个邮箱模型，覆盖满队列恢复、静默轮询、五帧突发和默认模式请求。新增 10 秒持续发送用例，按真实 CAN 任务请求的等待时间调度，使用现有 GPS 周期发送函数。
+- 验证：新增持续发送用例在原 50 ms 轮询下失败，10 秒发送 600 帧、积压 32 帧、丢弃 38 帧。修复后 `python3 tools/run_firmware_tests.py`（ASan/UBSan）全部通过，同场景发送 670 帧、积压和丢弃均为 0，队列峰值 2 帧。`./build_fw.sh` 0 警告，Flash 295,688 B、主 SRAM 109,632 B、CCM 61,440 B，均与当前主线相同。
+- **未验证 / 待办**：尚未烧写上板。需确认 CAN1 持续发送、`0x310/0x703` 原样转发、总线断开后恢复，以及 CAN/GPS/显示任务的实测负载。本机未找到 CubeIDE 可执行程序，当前版本的 CubeIDE 完整构建未运行。
+
 ### 2026-10-28 方向盘改发整帧 0x703，新增退使提示
 
 - 不兼容修改（须与方向盘固件同批烧录）：依据中央库 `vehicle-interfaces` 同日的 `0x703` 修改，CAN2 不再接收 `0x700/0x701/0x702`，改收方向盘组好的整帧 `0x703`，与 `0x310` 一样以原 ID、原 DLC、原内容转发到 CANB。删除车手屏自己合并 `0x703` 的 `User_CAN_SendSteeringCmd` 和滑级缓存。
@@ -25,6 +33,20 @@
 - 默认请求按项目负责人要求沿用模式值加 48 的规则类推，中央库候选提交为 [`733e8de`](https://github.com/BITFSAE/vehicle-interfaces/commit/733e8de)。本仓库补齐发送、CAN2 转发和有符号模式回报，保留计时锁及入队失败时不换档的行为。编码及确认状态见 [CAN 接口](docs/can_interface.md)。
 - 验证：`./build_fw.sh clean` 0 警告，Flash 295,576 B（+1640）、主 SRAM 109,632 B（+8）、CCM 61,440 B（不变）。`python3 tools/run_firmware_tests.py`（ASan/UBSan）通过，覆盖五档轮转、长按及松手抖动、默认回报与转发、计时锁和发送队列满后的恢复。渲染并检查新增 DF 模式，输出八帧仪表与七帧开屏截图。`./run_sim_mac.sh --build-only` 通过，保留既有重复链接库警告。中央库接口校验、cantools strict 和 canmatrix 交叉解析通过；DBC 语义差异仅为请求最小值与注释，原始语句计数不变。
 - **未验证 / 待办**：尚未上板复现实际触摸波形或确认连续点击手感；默认请求的 ECU 接受情况需核对回报和 CAN 抓包。本机未找到 CubeIDE 可执行程序，未运行 CubeIDE 完整构建。中央库候选变更见 [草稿 PR #7](https://github.com/BITFSAE/vehicle-interfaces/pull/7)，仍待维护者审核。
+
+### 2026-10-26 修复 CAN1 发送队列满后持续停发
+
+- 定位到两处问题：CAN1 开启发送完成通知，但 `.ioc` 未启用 `CAN1_TX_IRQn`，中断文件也没有处理函数；32 项软件队列满时，入队函数在尝试发送之前直接返回。GPS 周期帧积压后，后续请求持续被丢弃，方向盘界面更新仍可继续。
+- 入队前先尝试发送积压帧；CAN 任务每次唤醒时也尝试发送，接收等待最多 50 ms。删除无独立中断入口的发送完成通知及回调，保留现有 `.ioc` 配置。ID、DLC、数据字段和周期调度不变，处理顺序见 [CAN 接口](docs/can_interface.md)。
+- 回归改为可模拟三个硬件邮箱。原代码在“队列满后邮箱恢复空闲”的驾驶模式请求处断言失败；修复后，满队列恢复、无接收/发送中断时运行真实 CAN 任务、五帧突发及现有 CAN、GPS、里程、界面用例全部通过。Windows 使用临时适配运行 `tools/run_firmware_tests.py`，以 MinGW GCC 替代脚本写死的 `/usr/bin/cc`，未启用 ASan/UBSan；两版均出现开屏测试原有的缩进警告。
+- 验证：`./build_fw.sh`（Windows Git Bash，补充本机工具路径）通过，0 警告；Flash 293,992 B、主 SRAM 109,624 B、CCM 61,440 B。CubeIDE headless `-cleanBuild DATA_COLLECTION_INTEGRAL/Debug` 完整构建通过，0 错误、0 警告。
+- 后续验证及当前上板待办见上方 2026-10-28 CAN1 持续发送条目。
+
+### 2026-10-26 本地克隆 vehicle-interfaces 作为接口参考
+
+- 把 `https://github.com/BITFSAE/vehicle-interfaces` 浅克隆到根目录 `vehicle-interfaces/`（`main` 的 `8dbc47e`，即 2026-10-14 评审过的基线），用于核对 `can/Vehicle_CanB.dbc` 与 `docs/CANB接口.md`。
+- 该目录列入 `.gitignore`，不入库：仓库仍不保留 DBC 副本，权威内容以中央库为准（嵌套 git 目录若提交会变成无 `.gitmodules` 的 gitlink）。`docs/can_interface.md` 的路径说明同时给出根目录克隆与同级存放两种位置。
+- 验证：`can/Vehicle_CanB.dbc` 共 58 个 `BO_`，`BU_` 含 `Display`；固件接收白名单 23 个 ID、发送 6 个 ID 全部在 DBC 中，DLC 与发送方一致。
 
 ### 2026-10-21 开屏动画
 

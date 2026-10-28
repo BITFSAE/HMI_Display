@@ -2,6 +2,7 @@
 #include "mock_platform.h"
 #include "firmware_diag.h"
 #include <stdio.h>
+#include <setjmp.h>
 
 uint32_t test_tick=1000, test_primask, test_dma_ndtr=512;
 unsigned test_mutex_depth;
@@ -56,15 +57,16 @@ static unsigned test_rx_pending,test_tx_count,test_can_speed_tenths;
 static unsigned test_tx_id_count[0x800];
 static uint8_t test_tx_id_data[0x800][8];
 static unsigned test_can_error;
-static unsigned test_can_free_mailboxes=1;
+/* 默认即时完成；限额模式保留三个邮箱，只有模拟总线发完后才释放。 */
+static int test_can_free_mailboxes=-1;
 static CAN_TxHeaderTypeDef test_tx_header;
 static uint8_t test_tx_data[8];
 int HAL_CAN_ConfigFilter(CAN_HandleTypeDef *h,CAN_FilterTypeDef *f) {(void)h;(void)f;return HAL_OK;}
 uint32_t HAL_CAN_GetError(CAN_HandleTypeDef *h) {(void)h;return test_can_error;}
 uint32_t HAL_CAN_GetRxFifoFillLevel(CAN_HandleTypeDef *h,uint32_t fifo) {(void)h;(void)fifo;return test_rx_pending;}
 int HAL_CAN_GetRxMessage(CAN_HandleTypeDef *h,uint32_t fifo,CAN_RxHeaderTypeDef *rx,uint8_t *data) {(void)h;(void)fifo;assert(test_rx_pending);test_rx_pending--;*rx=test_rx_header;memcpy(data,test_rx_data,8);return HAL_OK;}
-uint32_t HAL_CAN_GetTxMailboxesFreeLevel(CAN_HandleTypeDef *h) {(void)h;return test_can_free_mailboxes;}
-int HAL_CAN_AddTxMessage(CAN_HandleTypeDef *h,CAN_TxHeaderTypeDef *tx,uint8_t *data,uint32_t *mail) {(void)h;*mail=0;test_tx_count++;test_tx_header=*tx;memcpy(test_tx_data,data,8);if(tx->StdId<0x800){test_tx_id_count[tx->StdId]++;memcpy(test_tx_id_data[tx->StdId],data,8);}if(tx->StdId==0x301)test_can_speed_tenths=data[0]|((unsigned)data[1]<<8);return HAL_OK;}
+uint32_t HAL_CAN_GetTxMailboxesFreeLevel(CAN_HandleTypeDef *h) {(void)h;return test_can_free_mailboxes<0?3U:(uint32_t)test_can_free_mailboxes;}
+int HAL_CAN_AddTxMessage(CAN_HandleTypeDef *h,CAN_TxHeaderTypeDef *tx,uint8_t *data,uint32_t *mail) {(void)h;assert(test_can_free_mailboxes!=0);if(test_can_free_mailboxes>0)test_can_free_mailboxes--;*mail=0;test_tx_count++;test_tx_header=*tx;memcpy(test_tx_data,data,8);if(tx->StdId<0x800){test_tx_id_count[tx->StdId]++;memcpy(test_tx_id_data[tx->StdId],data,8);}if(tx->StdId==0x301)test_can_speed_tenths=data[0]|((unsigned)data[1]<<8);return HAL_OK;}
 
 /* Internal flash sector 7 with NOR semantics: programming only clears bits and
  * erase sets every bit. Faults are injected per call. */
@@ -105,7 +107,20 @@ HAL_StatusTypeDef HAL_FLASHEx_Erase(FLASH_EraseInitTypeDef *init,uint32_t *error
 
 /* Compile actual application code; only the Cube-generated CAN init/MSP
  * sections are omitted by run_firmware_tests.py. Hardware/RTOS are mocks. */
+/* 运行真正的 CAN 任务循环；两次等待之间允许完成一次静默轮询。 */
+static jmp_buf test_can_task_stop;
+static int test_can_task_wakes=-1;
+static uint32_t test_can_task_wait_ticks;
+static BaseType_t test_can_task_receive(QueueHandle_t q,void *item,uint32_t timeout)
+{
+    if(test_can_task_wakes==0)longjmp(test_can_task_stop,1);
+    if(test_can_task_wakes>0)test_can_task_wakes--;
+    test_can_task_wait_ticks=timeout;
+    return xQueueReceive(q,item,timeout);
+}
+#define xQueueReceive test_can_task_receive
 #include "can_app.inc"
+#undef xQueueReceive
 #include "../../stm32_port/Core/Src/sop.c"
 #include "../../stm32_port/Core/Src/brake_pedal.c"
 #include "../../stm32_port/Core/Src/odometer_flash.c"
@@ -204,6 +219,53 @@ static int alert_shown(const char *text)
 {
     for(unsigned i=0;i<g_alert_count;i++)if(!strcmp(g_alert_queue[i],text))return 1;
     return 0;
+}
+
+static void test_can_idle_wake(void)
+{
+    assert(g_can_rx_queue->count==0U);
+    test_can_task_wakes=1;
+    if(setjmp(test_can_task_stop)==0)CAN_ServiceTask(NULL);
+    test_can_task_wakes=-1;
+}
+
+static void test_can_tx_recovery(void)
+{
+    uint8_t payload[2]={0};
+    unsigned sent=test_tx_count;
+    unsigned drops=g_user_can_tx_drop_count;
+    assert(g_user_can_tx_count==0U);
+    test_can_free_mailboxes=0;
+    for(unsigned i=0;i<USER_CAN_TX_QUEUE_CAPACITY;i++) {
+        payload[0]=(uint8_t)i;
+        assert(User_CAN_TxQueuePush(0x301U,payload,2U)==1U);
+    }
+    assert(test_tx_count==sent&&g_user_can_tx_count==USER_CAN_TX_QUEUE_CAPACITY);
+    assert(User_CAN_TxQueuePush(0x301U,payload,2U)==0U);
+    assert(g_user_can_tx_drop_count==drops+1U);
+
+    /* 总线恢复、邮箱空闲，但没有任何 RX/TX 中断；新方向盘命令仍应入队。 */
+    test_can_free_mailboxes=3;
+    assert(CAN_SendDriveModeRequest(2U)==1U);
+    assert(test_tx_count==sent+3U&&test_tx_data[0]==2U);
+    assert(g_user_can_tx_drop_count==drops+1U);
+    while(g_user_can_tx_count!=0U) {
+        test_can_free_mailboxes=3;
+        test_can_idle_wake();
+    }
+    assert(test_tx_count==sent+USER_CAN_TX_QUEUE_CAPACITY+1U);
+    assert(test_tx_header.StdId==0x310U&&test_tx_header.DLC==8U&&test_tx_data[0]=='2');
+
+    /* 周期突发超过邮箱数时保留队尾，任务轮询后全部发完。 */
+    sent=test_tx_count;
+    test_can_free_mailboxes=3;
+    for(unsigned i=0;i<5U;i++)assert(User_CAN_TxQueuePush(0x301U,payload,2U)==1U);
+    assert(test_tx_count==sent+3U&&g_user_can_tx_count==2U);
+    test_can_free_mailboxes=3;
+    test_can_idle_wake();
+    assert(test_tx_count==sent+5U&&g_user_can_tx_count==0U);
+    test_can_free_mailboxes=-1;
+    puts("CAN TX: full queue recovery without interrupts and five-frame bursts passed");
 }
 
 static void feed_encoder(brake_pedal_t *p,uint16_t count,uint16_t oil,uint32_t *now,unsigned samples)
@@ -1509,9 +1571,14 @@ static void test_default_mode(void)
     hold_mode_tile();
     assert(g_mode_index==3&&g_user_can_tx_drop_count==drops+1U);
     assert(test_tx_id_count[0x310]==mode_tx+1U);
-    test_can_free_mailboxes=1;User_CAN_TxQueueDrain();
+    while(g_user_can_tx_count!=0U) {
+        test_can_free_mailboxes=3;
+        test_can_idle_wake();
+    }
+    test_can_free_mailboxes=3;
     hold_mode_tile();
     assert(g_mode_index==-1&&test_tx_id_count[0x310]==mode_tx+2U);
+    test_can_free_mailboxes=-1;
     lv_refr_now(NULL);
     puts("UI default mode: signed 0x509 feedback, invalid modes, telemetry isolation, request relay, timing lock and TX queue recovery passed");
 }
@@ -1736,6 +1803,35 @@ static void render_splash(const char *directory)
     splash_run("replay",0,replay_shots,1,directory,&index);
 }
 #endif
+/* 500 kbit/s 下三个标准帧可在 1 ms 内发完；没有 RX/TX 中断时，
+ * 只按真实 CAN 任务请求的等待时间唤醒，GPS 则沿用自己的 10 ms 调度。 */
+static void test_can_tx_sustained(void)
+{
+    unsigned sent=test_tx_count,drops=g_user_can_tx_drop_count;
+    unsigned next_wake=0,peak=0;
+    assert(g_user_can_tx_count==0U&&g_can_rx_queue->count==0U);
+    g_gps_can_last_tick=0;
+    g_gps_can_slow_phase=0;
+    g_gps_can_lap_count=gps_clamp_u8(GPS_Lap_GetCurrentLapNum());
+    for(unsigned elapsed=0;elapsed<10000U;elapsed++) {
+        test_tick++;
+        test_can_free_mailboxes=3;
+        if(elapsed>=next_wake) {
+            test_can_idle_wake();
+            assert(test_can_task_wait_ticks>0U);
+            /* 主机桩的一个 tick 为 1 ms。 */
+            next_wake=elapsed+test_can_task_wait_ticks;
+        }
+        if((elapsed%10U)==0U)gps_can_speed_tick(test_tick);
+        if(g_user_can_tx_count>peak)peak=g_user_can_tx_count;
+    }
+    printf("CAN TX sustained: 10 s, sent=%u, pending=%u, drops=%u, queue peak=%u\n",
+           test_tx_count-sent,g_user_can_tx_count,g_user_can_tx_drop_count-drops,peak);
+    assert(g_user_can_tx_drop_count==drops);
+    assert(test_tx_count==sent+670U&&g_user_can_tx_count==0U);
+    test_can_free_mailboxes=-1;
+}
+
 int main(int argc,char **argv)
 {
     CAN_StartServiceTask();
@@ -1747,6 +1843,6 @@ int main(int argc,char **argv)
     else test_splash();
 #endif
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_default_mode();test_ui();test_motor_peak();return 0;
+    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_default_mode();test_ui();test_motor_peak();test_can_tx_sustained();return 0;
 }
 /* USER CODE END Firmware_Regression */

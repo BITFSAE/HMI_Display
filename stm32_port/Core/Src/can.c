@@ -184,6 +184,9 @@ typedef enum {
 #define CAN_TIMEOUT_BRAKE_ANGLE_MS  BRAKE_PEDAL_ENCODER_TIMEOUT_MS
 /* 20 Hz 检查使 150 ms 的踏板编码器超时最迟约 200 ms 反映到界面。 */
 #define CAN_TIMEOUT_POLL_MS 50U
+/* 三个邮箱按 50 ms 轮询只能补发 60 帧/秒，低于 GPS 的 67 帧/秒。
+ * 发送单独按 10 ms 轮询，接收超时检查仍沿用原来的节拍。 */
+#define CAN_TX_POLL_MS 10U
 
 static const struct {
   uint32_t valid_bits;
@@ -661,6 +664,9 @@ static uint8_t User_CAN_TxQueuePush(uint32_t can_id, const uint8_t * data, uint3
 
   if((data == NULL) || (dlc > 8U)) return 0U;
 
+  /* 邮箱可能已在两次入队之间发完；先腾出队列空间，避免满队列永久拒绝新帧。 */
+  User_CAN_TxQueueDrain();
+
   primask = __get_PRIMASK();
   __disable_irq();
   if(g_user_can_tx_count >= USER_CAN_TX_QUEUE_CAPACITY) {
@@ -716,10 +722,12 @@ void CAN_ServiceTask(void *argument)
   User_CAN_RxItem_t frame;
   (void)argument;
   for(;;) {
-    /* Wake at least every CAN_TIMEOUT_POLL_MS so silent sources time out. */
-    if(xQueueReceive(g_can_rx_queue, &frame, pdMS_TO_TICKS(CAN_TIMEOUT_POLL_MS)) == pdPASS) {
+    /* 无接收报文时也及时补发；接收超时检查在其内部按独立节拍限流。 */
+    if(xQueueReceive(g_can_rx_queue, &frame, pdMS_TO_TICKS(CAN_TX_POLL_MS)) == pdPASS) {
       User_CAN_ProcessFifo0(&frame);
     }
+    /* 当前 NVIC 未启用 CAN1_TX_IRQn；静默或总线恢复时也必须继续发送积压帧。 */
+    User_CAN_TxQueueDrain();
     User_CAN_ServiceTimeouts(HAL_GetTick());
   }
   /* USER CODE END CAN_ServiceTask */
@@ -744,21 +752,6 @@ void CAN_ServiceTask(void *argument)
  *   dash[0]=LF <- DBC[2]=FL, dash[1]=LR <- DBC[0]=RL,
  *   dash[2]=RF <- DBC[3]=FR, dash[3]=RR <- DBC[1]=RR
  */
-void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan)
-{
-  if((hcan != NULL) && (hcan->Instance == CAN1)) User_CAN_TxQueueDrain();
-}
-
-void HAL_CAN_TxMailbox1CompleteCallback(CAN_HandleTypeDef *hcan)
-{
-  if((hcan != NULL) && (hcan->Instance == CAN1)) User_CAN_TxQueueDrain();
-}
-
-void HAL_CAN_TxMailbox2CompleteCallback(CAN_HandleTypeDef *hcan)
-{
-  if((hcan != NULL) && (hcan->Instance == CAN1)) User_CAN_TxQueueDrain();
-}
-
 /* Only BUSOFF/ERROR notifications are armed (main.c). ABOM recovers the
  * controller in hardware, so this just counts the event for diagnosis. */
 void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
