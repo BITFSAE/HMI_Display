@@ -23,7 +23,7 @@
 #include <string.h>
 
 LV_FONT_DECLARE(dash_font_speed)  /* Bold 180, digits */
-LV_FONT_DECLARE(dash_font_xl)     /* SemiBold 56, digits % - A C E N X */
+LV_FONT_DECLARE(dash_font_xl)     /* SemiBold 56, digits % - A C D E F N X */
 LV_FONT_DECLARE(dash_font_l)      /* SemiBold 36, digits : . + - */
 LV_FONT_DECLARE(dash_font_m)      /* SemiBold 22, ASCII */
 LV_FONT_DECLARE(dash_font_s)      /* Medium 18, ASCII + eye/bolt/warning */
@@ -753,23 +753,25 @@ void Dash_View_SetSpeed(int32_t kmh)
 
 void Dash_View_SetMode(dash_mode_t mode)
 {
-    static const char * const letters[4] = {"AC", "AX", "8", "EN"};
-    static const char * const names[4] = {"Acceleration", "Autocross", "Skidpad", "Endurance"};
-    static const uint32_t tile[4] = {C_RED, C_YELLOW, C_BLUE, C_GREEN};
-    static const uint32_t text[4] = {C_TEXT, C_BG, C_TEXT, C_BG};
+    static const char * const letters[5] = {"DF", "AC", "AX", "8", "EN"};
+    static const char * const names[5] = {"Default", "Acceleration", "Autocross", "Skidpad", "Endurance"};
+    static const uint32_t tile[5] = {C_TRACK, C_RED, C_YELLOW, C_BLUE, C_GREEN};
+    static const uint32_t text[5] = {C_TEXT, C_TEXT, C_BG, C_TEXT, C_BG};
+    uint32_t index;
     uint8_t sprint;
 
-    if((uint32_t)mode > DASH_MODE_ENDURANCE) mode = DASH_MODE_ACCELERATION;
+    if((mode < DASH_MODE_DEFAULT) || (mode > DASH_MODE_ENDURANCE)) mode = DASH_MODE_DEFAULT;
     if((s_mode_valid != 0U) && (mode == s_mode)) return;
     s_mode = mode;
     s_mode_valid = 1U;
     sprint = (mode == DASH_MODE_ACCELERATION) ? 1U : 0U;
+    index = (uint32_t)(mode + 1);
 
-    set_bg_color(ui.mode_tile, tile[mode]);
-    set_text(ui.mode_letter, letters[mode]);
-    set_text_color(ui.mode_letter, text[mode]);
-    set_text(ui.mode_name, names[mode]);
-    set_text_color(ui.mode_name, text[mode]);
+    set_bg_color(ui.mode_tile, tile[index]);
+    set_text(ui.mode_letter, letters[index]);
+    set_text_color(ui.mode_letter, text[index]);
+    set_text(ui.mode_name, names[index]);
+    set_text_color(ui.mode_name, text[index]);
     lv_label_set_text_static(ui.lap_caption, sprint ? "RUN" : "LAP");
     lv_label_set_text_static(ui.left_caption, sprint ? "DIST M" : "LEFT");
     lv_label_set_text_static(ui.time_caption, sprint ? "RUN TIME" : "LAP TIME");

@@ -127,11 +127,13 @@ void Dashboard_UI_SubmitSpeed(int32_t speed);
 /* 没有可信速度（数据过期、无定位、上电后尚未收到）：界面显示 "--"，不是 0。 */
 void Dashboard_UI_SubmitSpeedInvalid(void);
 void Dashboard_UI_SubmitOdometer(int32_t odometer_tenths);
+/* ECU 模式回报：-1 为默认模式，0..3 为 AC/AX/8/EN，其他值忽略。 */
 void Dashboard_UI_SubmitDriveMode(int32_t mode_index);
 /* 方向盘 0x310 的用户请求：即使用户转回当前显示档位，也要覆盖尚未应用的
  * 其他请求；ECU 0x509 回报仍走 SubmitDriveMode，不撤销新请求。 */
 void Dashboard_UI_RequestDriveMode(int32_t mode_index);
-/* 请求将驾驶模式轮转一档 S -> Q -> C -> E -> S。CAN 任务或触摸任务只置位，
+/* 请求将驾驶模式轮转一档 DF -> AC -> AX -> 8 -> EN -> DF。
+ * CAN 任务或触摸任务只置位，
  * 由 Dashboard 任务统一检查计时锁并通过 0x310 请求 ECU。 */
 void Dashboard_UI_RequestDriveModeCycle(void);
 /* Non-zero while a sprint/lap timing session is active: drive-mode changes
@@ -140,6 +142,9 @@ uint8_t Dashboard_UI_IsTimingModeLocked(void);
 void Dashboard_UI_SubmitSlipLevel(int32_t slip_level);
 void Dashboard_UI_RequestLapToggle(void);
 void Dashboard_UI_RequestAlertClear(void);
+/* 方向盘退使组合键（0x703 DisableRequest 上升沿）：只弹出 DISABLE REQUESTED 提示。
+ * 请求本身由 CAN 层原样转发给 ECU，界面不判断 ECU 是否执行。 */
+void Dashboard_UI_RequestDisableAlert(void);
 void Dashboard_UI_SubmitLapDelta(int32_t delta_hundredths);
 void Dashboard_UI_SubmitLapTimes(int32_t current_hundredths,
 								 int32_t last_hundredths,

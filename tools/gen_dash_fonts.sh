@@ -26,7 +26,7 @@ gen() { # name size weight [extra lv_font_conv args...]
 }
 
 gen dash_font_speed 180 Bold     --symbols "0123456789-"
-gen dash_font_xl    56  SemiBold --symbols "0123456789%-ACENX"
+gen dash_font_xl    56  SemiBold --symbols "0123456789%-ACDEFNX"
 gen dash_font_l     36  SemiBold --symbols "0123456789:.+-"
 gen dash_font_m     22  SemiBold -r "$ASCII"
 gen dash_font_s     18  Medium   -r "$ASCII" --font "$FA" -r 0xF06E,0xF070,0xF0E7,0xF071

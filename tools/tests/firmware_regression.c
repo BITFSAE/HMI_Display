@@ -110,10 +110,12 @@ HAL_StatusTypeDef HAL_FLASHEx_Erase(FLASH_EraseInitTypeDef *init,uint32_t *error
 /* 运行真正的 CAN 任务循环；两次等待之间允许完成一次静默轮询。 */
 static jmp_buf test_can_task_stop;
 static int test_can_task_wakes=-1;
+static uint32_t test_can_task_wait_ticks;
 static BaseType_t test_can_task_receive(QueueHandle_t q,void *item,uint32_t timeout)
 {
     if(test_can_task_wakes==0)longjmp(test_can_task_stop,1);
     if(test_can_task_wakes>0)test_can_task_wakes--;
+    test_can_task_wait_ticks=timeout;
     return xQueueReceive(q,item,timeout);
 }
 #define xQueueReceive test_can_task_receive
@@ -180,9 +182,11 @@ static void test_can(void)
     memset(test_rx_data,0,8);test_rx_data[2]=0xF4;test_rx_data[3]=1;
     receive(0x305,6,1);service_can();assert(g_can_dashboard_data.aps_open_pct==50);
     test_rx_data[0]=0x10;receive(0x509,5,1);service_can();assert(g_can_dashboard_data.mode_index==1);
-    test_rx_header=(CAN_RxHeaderTypeDef){.StdId=0x700,.DLC=1};test_rx_data[0]=7;test_rx_pending=1;
+    assert(CAN2_RX_MSG_ID_BANK0[0]==0x310&&CAN2_RX_MSG_ID_BANK0[1]==0x703&&
+           CAN2_RX_MSG_ID_BANK0[2]==0x310&&CAN2_RX_MSG_ID_BANK0[3]==0x703);
+    test_rx_header=(CAN_RxHeaderTypeDef){.StdId=0x703,.DLC=2};test_rx_data[0]=7;test_rx_data[1]=0;test_rx_pending=1;
     HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);service_can();
-    assert(test_tx_header.StdId==0x703&&test_tx_header.DLC==2&&test_tx_data[0]==7);
+    assert(test_tx_header.StdId==0x703&&test_tx_header.DLC==2&&test_tx_data[0]==7&&test_tx_data[1]==0);
     test_rx_header.RTR=1;test_rx_pending=1;invalid=g_can_rx_invalid_count;
     HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);assert(g_can_rx_invalid_count==invalid+1);
     /* 0x050 的 IMU 设备已停用，车手屏不再转发 0x060..0x066；即使该 ID 到达也不得产生发送。 */
@@ -203,6 +207,18 @@ static void inject_wheel(uint16_t id,unsigned dlc,uint8_t first)
     test_rx_header=(CAN_RxHeaderTypeDef){.StdId=id,.DLC=dlc};
     memset(test_rx_data,0,8);test_rx_data[0]=first;test_rx_pending=1;
     HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);service_can();
+}
+/* 方向盘整帧 0x703：byte0 滑级，byte1 bit0 退使、bit1 清错、bit2 圈速计时。 */
+static void inject_cmd(uint8_t slip,uint8_t bits)
+{
+    test_rx_header=(CAN_RxHeaderTypeDef){.StdId=0x703,.DLC=2};
+    memset(test_rx_data,0,8);test_rx_data[0]=slip;test_rx_data[1]=bits;test_rx_pending=1;
+    HAL_CAN_RxFifo0MsgPendingCallback(&hcan2);service_can();
+}
+static int alert_shown(const char *text)
+{
+    for(unsigned i=0;i<g_alert_count;i++)if(!strcmp(g_alert_queue[i],text))return 1;
+    return 0;
 }
 
 static void test_can_idle_wake(void)
@@ -505,12 +521,12 @@ static void test_can_decode(void)
 }
 static void test_steering(void)
 {
-    unsigned invalid=g_can_rx_invalid_count,relayed,commands;
+    unsigned invalid=g_can_rx_invalid_count,relayed;
     Dashboard_UI_SubmitDriveMode(0);test_tick+=300;Dashboard_UI_Process();assert(g_drive_mode==DRIVE_MODE_ACCELERATION);
-    /* 0x310: only ASCII '0'..'3' is relayed and shown. */
+    /* 0x310：只接受 mode + 48（47..51），包括默认模式请求。 */
     relayed=test_tx_id_count[0x310];
     inject_wheel(0x310,8,0x35);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+1);
-    inject_wheel(0x310,8,0x2F);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+2);
+    inject_wheel(0x310,8,0x2E);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+2);
     inject_wheel(0x310,8,0x31);assert(test_tx_id_count[0x310]==relayed+1&&test_tx_id_data[0x310][0]==0x31);
     assert((g_dashboard_dirty_mask&DASH_DIRTY_MODE)!=0U&&g_pending_dashboard_data.mode_index==1);
     /* 计时锁生效：0x310 不转发，界面也不接受新模式，只请求 MODE LOCK 告警。 */
@@ -520,26 +536,56 @@ static void test_steering(void)
     inject_wheel(0x310,8,'2');
     assert(test_tx_id_count[0x310]==relayed&&g_drive_mode==DRIVE_MODE_AUTOCROSS&&g_pending_mode_lock_alert==1U);
     g_lap_analysis_active=0U;g_pending_mode_lock_alert=0U;
-    /* 0x700: out-of-range level is dropped without a 0x703; a valid one is merged. */
-    commands=test_tx_id_count[0x703];
-    inject_wheel(0x700,1,9);assert(test_tx_id_count[0x703]==commands&&g_can_rx_invalid_count==invalid+3);
-    inject_wheel(0x700,1,5);assert(test_tx_id_count[0x703]==commands+1&&test_tx_id_data[0x703][0]==5);
-    /* 0x701: rising edge only. Held/repeated frames and a stuck 1 do not retrigger. */
-    g_pending_lap_toggle=0;
-    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1&&(test_tx_id_data[0x703][1]&1)==1&&test_tx_id_data[0x703][0]==5);
+    /* 0x703 由方向盘整帧组好，每个 DLC>=2 的帧都原样转发（ID、DLC、内容不变）。 */
+    unsigned commands=test_tx_id_count[0x703];
+    inject_cmd(5,0);
+    assert(test_tx_id_count[0x703]==commands+1&&test_tx_header.DLC==2&&test_tx_id_data[0x703][0]==5&&test_tx_id_data[0x703][1]==0);
+    assert((g_dashboard_dirty_mask&DASH_DIRTY_SLIP)!=0U&&g_pending_dashboard_data.slip_level==5);
+    /* DLC 不足 2 丢弃；滑级越界照常转发但不显示。 */
+    inject_wheel(0x703,1,3);assert(test_tx_id_count[0x703]==commands+1&&g_can_rx_invalid_count==invalid+3);
+    inject_cmd(9,0);
+    assert(test_tx_id_count[0x703]==commands+2&&test_tx_id_data[0x703][0]==9&&g_can_rx_invalid_count==invalid+4);
+    assert(g_pending_dashboard_data.slip_level==5);
+    /* 0x700..0x702 已停用：即使到达也不处理、不转发。 */
+    unsigned tx_before=test_tx_count;
+    g_pending_lap_toggle=0;g_pending_alert_clear=0;
+    inject_wheel(0x700,1,3);inject_wheel(0x701,1,1);inject_wheel(0x702,1,1);
+    assert(test_tx_count==tx_before&&g_pending_lap_toggle==0&&g_pending_alert_clear==0);
+    /* LapTimerToggle（bit2）：上升沿触发；300 ms 内重复的 1 不再触发，中间有 0 帧则重新计。 */
+    inject_cmd(5,0x04);assert(g_pending_lap_toggle==1&&test_tx_id_data[0x703][1]==0x04);
     g_pending_lap_toggle=0;test_tick+=20;
-    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==0&&(test_tx_id_data[0x703][1]&1)==0);   /* repeat while held */
-    test_tick+=20;inject_wheel(0x701,1,0);assert(g_pending_lap_toggle==0);
-    test_tick+=20;inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1);                       /* 0 -> 1 */
+    inject_cmd(5,0x04);assert(g_pending_lap_toggle==0);
+    test_tick+=20;inject_cmd(5,0);assert(g_pending_lap_toggle==0);
+    test_tick+=20;inject_cmd(5,0x04);assert(g_pending_lap_toggle==1);
     g_pending_lap_toggle=0;test_tick+=100;
-    inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==0);
-    test_tick+=400;inject_wheel(0x701,1,1);assert(g_pending_lap_toggle==1);                      /* single-shot sender without 0 frames */
+    inject_cmd(5,0x04);assert(g_pending_lap_toggle==0);
+    test_tick+=400;inject_cmd(5,0x04);assert(g_pending_lap_toggle==1);
     g_pending_lap_toggle=0;
-    /* 0x702 is the same for the alert clear, carried in byte1 bit1. */
-    g_pending_alert_clear=0;
-    inject_wheel(0x702,1,1);assert(g_pending_alert_clear==1&&(test_tx_id_data[0x703][1]&2)==2);
+    /* bit0 不再是圈速计时：只置 bit0 不得触发计时。 */
+    test_tick+=400;inject_cmd(5,0x01);assert(g_pending_lap_toggle==0);
+    test_tick+=20;inject_cmd(5,0);
+    /* ErrorClearActive（bit1）同样按上升沿。 */
+    g_pending_alert_clear=0;test_tick+=400;
+    inject_cmd(5,0x02);assert(g_pending_alert_clear==1&&g_pending_lap_toggle==0);
     g_pending_alert_clear=0;test_tick+=20;
-    inject_wheel(0x702,1,1);assert(g_pending_alert_clear==0&&(test_tx_id_data[0x703][1]&2)==0);
+    inject_cmd(5,0x02);assert(g_pending_alert_clear==0);
+    test_tick+=20;inject_cmd(5,0);
+    /* DisableRequest（bit0）：方向盘每 20 ms 发一帧 1，只在上升沿弹一次提示；每帧都转发。
+     * 计时锁期间也必须转发。 */
+    Dashboard_UI_Process();g_alert_count=0;
+    g_lap_analysis_active=1U;
+    commands=test_tx_id_count[0x703];
+    for(unsigned i=0;i<10;i++){test_tick+=20;inject_cmd(5,0x01);}
+    assert(test_tx_id_count[0x703]==commands+10&&test_tx_id_data[0x703][1]==0x01);
+    assert(g_pending_disable_alert==1&&g_pending_lap_toggle==0&&g_pending_alert_clear==0);
+    Dashboard_UI_Process();
+    assert(g_pending_disable_alert==0&&alert_shown("DISABLE REQUESTED"));
+    for(unsigned i=0;i<10;i++){test_tick+=20;inject_cmd(5,0x01);}
+    assert(g_pending_disable_alert==0);
+    test_tick+=20;inject_cmd(5,0);assert(test_tx_id_count[0x703]==commands+21&&test_tx_id_data[0x703][1]==0);
+    test_tick+=500;inject_cmd(5,0x01);assert(g_pending_disable_alert==1);
+    test_tick+=20;inject_cmd(5,0);
+    g_lap_analysis_active=0U;g_pending_disable_alert=0;g_alert_count=0;
 }
 static void flash_blank(void) {memset(flash_words,0xFF,sizeof(flash_words));}
 static uint32_t odo_boot(void)
@@ -1316,18 +1362,28 @@ static void test_ui_speed(void)
     GPS_Lap_Reset();GPS_Sprint_Reset();
     puts("UI speed: '--' vs real 0, invalid state, supersede/latency trace and sprint/lap start gating on speed validity passed");
 }
-/* 驾驶模式色块：命中区、四档轮转、0x310 内容、200 ms 防抖和计时锁。 */
-static void tap_mode_tile(void)
+/* 驾驶模式色块：五档轮转、200 ms 长按门限、单次触发和计时锁。 */
+static void start_mode_hold(void)
 {
     Dashboard_UI_SubmitTouchState(56,106,0);
-    test_tick+=DASHBOARD_MODE_TOUCH_DEBOUNCE_MS+50U;Dashboard_UI_SubmitTouchState(56,106,1);
+    test_tick+=100;Dashboard_UI_SubmitTouchState(56,106,1);
+    assert(g_pending_mode_cycle==0U);
+}
+static void hold_mode_tile(void)
+{
+    start_mode_hold();
+    test_tick+=199;Dashboard_UI_SubmitTouchState(56,106,1);
+    assert(g_pending_mode_cycle==0U);
+    test_tick++;Dashboard_UI_SubmitTouchState(56,106,1);
+    assert(g_pending_mode_cycle==1U);
     test_tick+=60;Dashboard_UI_Process();
     Dashboard_UI_SubmitTouchState(56,106,0);
 }
 
 static void test_mode_touch(void)
 {
-    static const uint8_t expected[4]={'1','2','3','0'};
+    static const int32_t modes[5]={1,2,3,-1,0};
+    static const uint8_t expected[5]={'1','2','3','/','0'};
     unsigned mode_tx;
 
     assert(Dash_View_HitTest(56,106)==DASH_ZONE_MODE);
@@ -1342,10 +1398,10 @@ static void test_mode_touch(void)
     assert(g_drive_mode==DRIVE_MODE_ACCELERATION);
 
     mode_tx=test_tx_id_count[0x310];
-    for(unsigned i=0;i<4;i++) {
-        tap_mode_tile();
-        assert(g_drive_mode==(drive_mode_t)((i+1U)%4U));
-        assert(g_mode_index==(int32_t)((i+1U)%4U));
+    for(unsigned i=0;i<5;i++) {
+        hold_mode_tile();
+        assert(g_drive_mode==(drive_mode_t)modes[i]);
+        assert(g_mode_index==modes[i]);
         assert(test_tx_id_count[0x310]==++mode_tx);
         assert(test_tx_id_data[0x310][0]==expected[i]);
         assert(test_tx_id_data[0x310][1]==0U&&test_tx_header.DLC==8U);
@@ -1365,31 +1421,30 @@ static void test_mode_touch(void)
     test_tick+=300;Dashboard_UI_Process();
     assert(g_drive_mode==DRIVE_MODE_ACCELERATION&&g_mode_index==0);
 
-    /* 方向盘请求尚未应用时点击：按待应用的目标模式轮转，不能丢掉回绕到 S 的请求。 */
-    Dashboard_UI_SubmitDriveMode(3);
+    /* 方向盘默认请求尚未应用时点击：按待应用目标轮转，不能丢掉 AC 请求。 */
+    Dashboard_UI_SubmitDriveMode(-1);
     mode_tx=test_tx_id_count[0x310];
-    tap_mode_tile();
+    hold_mode_tile();
     assert(test_tx_id_count[0x310]==mode_tx+1U&&test_tx_id_data[0x310][0]=='0');
     assert(g_drive_mode==DRIVE_MODE_ACCELERATION&&g_mode_index==0);
 
-    /* 200 ms 内的第二次按下不轮转，也不发 0x310。 */
+    /* 按下后 199 ms 松手，不切模式、不发送；松手后也不能补发。 */
     mode_tx=test_tx_id_count[0x310];
-    test_tick+=50;Dashboard_UI_SubmitTouchState(56,106,1);
+    start_mode_hold();
+    test_tick+=199;Dashboard_UI_SubmitTouchState(56,106,1);
     assert(g_pending_mode_cycle==0U);
     Dashboard_UI_SubmitTouchState(56,106,0);
-    test_tick+=DASHBOARD_MODE_TOUCH_DEBOUNCE_MS;Dashboard_UI_SubmitTouchState(56,106,1);
-    assert(g_pending_mode_cycle==1U);
-    test_tick+=60;Dashboard_UI_Process();
+    test_tick+=100;Dashboard_UI_Process();
+    assert(test_tx_id_count[0x310]==mode_tx&&g_drive_mode==DRIVE_MODE_ACCELERATION);
+    hold_mode_tile();
     assert(test_tx_id_count[0x310]==mode_tx+1U&&g_drive_mode==DRIVE_MODE_AUTOCROSS);
 
     /* 非 AC 模式圈速分析进行中：拒绝轮转、不改界面、不发送并弹模式锁告警。 */
     Dashboard_UI_RequestAlertClear();test_tick+=300;Dashboard_UI_Process();
     Dashboard_UI_SubmitDriveMode(1);test_tick+=300;Dashboard_UI_Process();
     g_lap_analysis_active=1U;g_mode_lock_alert_last_tick=0U;
-    Dashboard_UI_SubmitTouchState(56,106,0);
-    test_tick+=DASHBOARD_MODE_TOUCH_DEBOUNCE_MS+50U;Dashboard_UI_SubmitTouchState(56,106,1);
     mode_tx=test_tx_id_count[0x310];
-    test_tick+=60;Dashboard_UI_Process();
+    hold_mode_tile();
     assert(test_tx_id_count[0x310]==mode_tx&&g_drive_mode==DRIVE_MODE_AUTOCROSS);
     assert(g_alert_count>0U&&!strcmp(g_alert_queue[g_alert_count-1U],"MODE LOCK: TIMER ACTIVE"));
     g_lap_analysis_active=0U;
@@ -1397,7 +1452,135 @@ static void test_mode_touch(void)
     /* 越界模式不能进入发送队列。 */
     mode_tx=test_tx_id_count[0x310];
     assert(CAN_SendDriveModeRequest(4U)==0U&&test_tx_id_count[0x310]==mode_tx);
-    puts("UI mode tile: hit zone, AC/AX/8/EN wrap, 0x310 payload, debounce, pending-request ordering and timing lock passed");
+    assert(CAN_SendDriveModeRequest(-2)==0U&&test_tx_id_count[0x310]==mode_tx);
+    puts("UI mode tile: hit zone, DF/AC/AX/8/EN wrap, 0x310 payload, 199/200 ms hold threshold, pending-request ordering and timing lock passed");
+}
+
+static void test_mode_touch_release(void)
+{
+    Dashboard_UI_SubmitDriveMode(3);
+    test_tick+=300;Dashboard_UI_Process();
+    unsigned mode_tx=test_tx_id_count[0x310];
+
+    for(int32_t mode=-1;mode<4;mode++) {
+        hold_mode_tile();
+        assert(g_mode_index==mode&&test_tx_id_count[0x310]==++mode_tx);
+        assert(test_tx_id_data[0x310][0]==(uint8_t)(48+mode));
+
+        /* 上一个 helper 已上报松手；不足 80 ms 的丢点不能让长按重新布防。 */
+        test_tick+=10;Dashboard_UI_SubmitTouchState(56,106,1);
+        for(unsigned sample=0;sample<20;sample++) {
+            test_tick+=50;Dashboard_UI_SubmitTouchState(56,106,1);
+            Dashboard_UI_Process();
+            assert(g_mode_index==mode&&test_tx_id_count[0x310]==mode_tx);
+        }
+        for(unsigned bounce=0;bounce<3;bounce++) {
+            Dashboard_UI_SubmitTouchState(56,106,0);
+            test_tick+=10;Dashboard_UI_SubmitTouchState(56,106,1);
+            test_tick+=250;Dashboard_UI_SubmitTouchState(56,106,1);Dashboard_UI_Process();
+            assert(g_mode_index==mode&&test_tx_id_count[0x310]==mode_tx);
+        }
+
+        /* 连续松手 79 ms 不重新布防，重复松手采样不重置确认起点。 */
+        Dashboard_UI_SubmitTouchState(56,106,0);
+        test_tick+=40;Dashboard_UI_SubmitTouchState(56,106,0);
+        test_tick+=39;Dashboard_UI_SubmitTouchState(56,106,1);
+        test_tick+=250;Dashboard_UI_SubmitTouchState(56,106,1);Dashboard_UI_Process();
+        assert(g_mode_index==mode&&test_tx_id_count[0x310]==mode_tx);
+    }
+
+    /* 连续松手恰好 80 ms 后仍须重新按满 200 ms，才允许 EN→DF。 */
+    Dashboard_UI_SubmitTouchState(56,106,0);
+    test_tick+=80;Dashboard_UI_SubmitTouchState(56,106,1);
+    test_tick+=199;Dashboard_UI_SubmitTouchState(56,106,1);assert(g_pending_mode_cycle==0U);
+    test_tick++;Dashboard_UI_SubmitTouchState(56,106,1);
+    test_tick+=60;Dashboard_UI_Process();
+    assert(g_mode_index==-1&&test_tx_id_count[0x310]==++mode_tx);
+
+    /* 达门限前丢点取消本次长按，不能累计松手前后的时间。 */
+    start_mode_hold();
+    test_tick+=100;Dashboard_UI_SubmitTouchState(56,106,0);
+    test_tick+=10;Dashboard_UI_SubmitTouchState(56,106,1);
+    test_tick+=250;Dashboard_UI_SubmitTouchState(56,106,1);Dashboard_UI_Process();
+    assert(g_mode_index==-1&&test_tx_id_count[0x310]==mode_tx);
+
+    /* 移出色块或从别处滑入均不能切模式，必须松手后重新长按。 */
+    start_mode_hold();
+    test_tick+=100;Dashboard_UI_SubmitTouchState(180,200,1);
+    test_tick+=100;Dashboard_UI_SubmitTouchState(56,106,1);Dashboard_UI_Process();
+    assert(test_tx_id_count[0x310]==mode_tx);
+    Dashboard_UI_SubmitTouchState(56,106,0);
+    test_tick+=100;Dashboard_UI_SubmitTouchState(180,200,1);
+    test_tick+=250;Dashboard_UI_SubmitTouchState(56,106,1);Dashboard_UI_Process();
+    assert(test_tx_id_count[0x310]==mode_tx);
+    hold_mode_tile();assert(g_mode_index==0&&test_tx_id_count[0x310]==++mode_tx);
+
+    /* 200 ms 判定跨 HAL 毫秒计数回绕仍只触发一次。 */
+    uint32_t saved_tick=test_tick;
+    test_tick=UINT32_MAX-100U;Dashboard_UI_SubmitTouchState(56,106,1);
+    test_tick+=199;Dashboard_UI_SubmitTouchState(56,106,1);assert(g_pending_mode_cycle==0U);
+    test_tick++;Dashboard_UI_SubmitTouchState(56,106,1);assert(g_pending_mode_cycle==1U);
+    test_tick=saved_tick+400U;Dashboard_UI_Process();
+    assert(g_mode_index==1&&test_tx_id_count[0x310]==mode_tx+1U);
+    Dashboard_UI_SubmitTouchState(56,106,0);
+    puts("UI mode hold: five modes, hold/release boundaries, no repeat, interrupted hold, slide cancellation and tick wrap passed");
+}
+
+static void test_default_mode(void)
+{
+    unsigned mode_tx=test_tx_id_count[0x310];
+    const uint8_t default_frame[5]={0xF1,0,0xF0,0,0};
+    inject(0x509,5,default_frame);test_tick+=300;Dashboard_UI_Process();
+    assert(g_can_dashboard_data.mode_index==-1&&g_mode_index==-1);
+    assert(g_drive_mode==DRIVE_MODE_DEFAULT&&Dashboard_UI_GetCurrentData()->mode_index==-1);
+    assert(g_laps_left==0&&test_tx_id_count[0x310]==mode_tx);
+
+    /* 非模式遥测不能覆盖默认模式；未定义回报值也不能冒充 AC。 */
+    dashboard_data_t data=*Dashboard_UI_GetCurrentData();
+    data.mode_index=0;Dashboard_UI_SubmitData(&data);
+    Dashboard_UI_SubmitDriveMode(-2);Dashboard_UI_SubmitDriveMode(4);
+    test_tick+=300;Dashboard_UI_Process();assert(g_mode_index==-1);
+
+    /* 默认模式首次触摸请求 AC，重复的旧模式回报不撤销尚未应用的请求。 */
+    hold_mode_tile();
+    assert(g_mode_index==0&&test_tx_id_count[0x310]==mode_tx+1U);
+    assert(test_tx_id_data[0x310][0]=='0');
+    Dashboard_UI_RequestDriveMode(1);Dashboard_UI_SubmitDriveMode(0);
+    test_tick+=300;Dashboard_UI_Process();assert(g_mode_index==1);
+
+    /* 圈速计时锁仍拦截默认回报，避免中途切换计时类型。 */
+    g_lap_analysis_active=1U;Dashboard_UI_SubmitDriveMode(-1);
+    test_tick+=300;Dashboard_UI_Process();assert(g_mode_index==1);
+    g_lap_analysis_active=0U;
+    Dashboard_UI_SubmitDriveMode(-1);test_tick+=300;Dashboard_UI_Process();
+    assert(g_mode_index==-1&&g_drive_mode==DRIVE_MODE_DEFAULT);
+    /* 方向盘/网关发来的默认模式请求也按原 ID 和 DLC 转发。 */
+    mode_tx=test_tx_id_count[0x310];
+    Dashboard_UI_RequestDriveMode(3);test_tick+=300;Dashboard_UI_Process();
+    inject_wheel(0x310,8,47);test_tick+=300;Dashboard_UI_Process();
+    assert(g_mode_index==-1&&test_tx_id_count[0x310]==mode_tx+1U);
+    assert(test_tx_id_data[0x310][0]==47&&test_tx_header.DLC==8U);
+
+    /* 邮箱阻塞并填满队列时，EN→DF 请求失败不得先改显示；恢复后再次点击可切换。 */
+    Dashboard_UI_RequestDriveMode(3);test_tick+=300;Dashboard_UI_Process();
+    test_can_free_mailboxes=0;
+    for(unsigned i=0;i<USER_CAN_TX_QUEUE_CAPACITY;i++) {
+        assert(User_CAN_TxQueuePush(0x703,(const uint8_t[]){0,0},2));
+    }
+    unsigned drops=g_user_can_tx_drop_count;
+    hold_mode_tile();
+    assert(g_mode_index==3&&g_user_can_tx_drop_count==drops+1U);
+    assert(test_tx_id_count[0x310]==mode_tx+1U);
+    while(g_user_can_tx_count!=0U) {
+        test_can_free_mailboxes=3;
+        test_can_idle_wake();
+    }
+    test_can_free_mailboxes=3;
+    hold_mode_tile();
+    assert(g_mode_index==-1&&test_tx_id_count[0x310]==mode_tx+2U);
+    test_can_free_mailboxes=-1;
+    lv_refr_now(NULL);
+    puts("UI default mode: signed 0x509 feedback, invalid modes, telemetry isolation, request relay, timing lock and TX queue recovery passed");
 }
 /* Per-motor PK is the highest power since power-on: lifting off, zero torque or regen never clears it. */
 static void test_motor_peak(void)
@@ -1484,6 +1667,9 @@ static void render_modes(const char *directory)
         Dashboard_UI_SubmitLapTimes(6233,8410,8345,3);Dashboard_UI_SubmitLapDelta(-32);
         test_tick+=300;Dashboard_UI_Process();lv_refr_now(NULL);save_frame(directory,mode);
     }
+    Dashboard_UI_SubmitDriveMode(-1);test_tick+=300;Dashboard_UI_Process();
+    lv_refr_now(NULL);save_frame(directory,7);
+    Dashboard_UI_SubmitDriveMode(3);test_tick+=300;Dashboard_UI_Process();
     Dashboard_UI_PushAlert("inverter overtemp");Dashboard_UI_PushAlert("gps not fixed");
     test_tick+=300;Dashboard_UI_Process();lv_refr_now(NULL);save_frame(directory,4);
     Dashboard_UI_RequestAlertClear();Dashboard_UI_SubmitDriveMode(0);Dashboard_UI_SetSprintReady(1);
@@ -1617,16 +1803,46 @@ static void render_splash(const char *directory)
     splash_run("replay",0,replay_shots,1,directory,&index);
 }
 #endif
+/* 500 kbit/s 下三个标准帧可在 1 ms 内发完；没有 RX/TX 中断时，
+ * 只按真实 CAN 任务请求的等待时间唤醒，GPS 则沿用自己的 10 ms 调度。 */
+static void test_can_tx_sustained(void)
+{
+    unsigned sent=test_tx_count,drops=g_user_can_tx_drop_count;
+    unsigned next_wake=0,peak=0;
+    assert(g_user_can_tx_count==0U&&g_can_rx_queue->count==0U);
+    g_gps_can_last_tick=0;
+    g_gps_can_slow_phase=0;
+    g_gps_can_lap_count=gps_clamp_u8(GPS_Lap_GetCurrentLapNum());
+    for(unsigned elapsed=0;elapsed<10000U;elapsed++) {
+        test_tick++;
+        test_can_free_mailboxes=3;
+        if(elapsed>=next_wake) {
+            test_can_idle_wake();
+            assert(test_can_task_wait_ticks>0U);
+            /* 主机桩的一个 tick 为 1 ms。 */
+            next_wake=elapsed+test_can_task_wait_ticks;
+        }
+        if((elapsed%10U)==0U)gps_can_speed_tick(test_tick);
+        if(g_user_can_tx_count>peak)peak=g_user_can_tx_count;
+    }
+    printf("CAN TX sustained: 10 s, sent=%u, pending=%u, drops=%u, queue peak=%u\n",
+           test_tx_count-sent,g_user_can_tx_count,g_user_can_tx_drop_count-drops,peak);
+    assert(g_user_can_tx_drop_count==drops);
+    assert(test_tx_count==sent+670U&&g_user_can_tx_count==0U);
+    test_can_free_mailboxes=-1;
+}
+
 int main(int argc,char **argv)
 {
     CAN_StartServiceTask();
     if(argc==1) {assert(!Dashboard_UI_IsStartupComplete());receive(0x305,6,3);assert(g_can_rx_queue->count==0);}
     init_ui();assert(Dashboard_UI_IsStartupComplete());
+    assert(g_drive_mode==DRIVE_MODE_DEFAULT&&g_mode_index==-1&&g_laps_left==0);
 #ifdef HAS_SPLASH
     if(argc==2) render_splash(argv[1]);
     else test_splash();
 #endif
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_ui();test_motor_peak();return 0;
+    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_default_mode();test_ui();test_motor_peak();test_can_tx_sustained();return 0;
 }
 /* USER CODE END Firmware_Regression */

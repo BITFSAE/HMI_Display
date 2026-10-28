@@ -16,9 +16,9 @@ extern "C" {
 #define DASH_SCREEN_W 800
 #define DASH_SCREEN_H 480
 
-/* Drive modes, same numbering as DBC ModeFlag:
- * 0=AC 1=AX 2=8 3=EN. */
+/* 与 ECU ModeFlag 一致：-1=默认，0=AC，1=AX，2=8，3=EN。 */
 typedef enum {
+    DASH_MODE_DEFAULT = -1,
     DASH_MODE_ACCELERATION = 0,
     DASH_MODE_AUTOCROSS,
     DASH_MODE_SKIDPAD,
@@ -28,7 +28,7 @@ typedef enum {
 typedef enum {
     DASH_ZONE_NONE = 0,
     DASH_ZONE_LAP,      /* top bar: start/stop lap or 75 m run timing */
-    DASH_ZONE_MODE,     /* mode tile: cycle AC -> AX -> 8 -> EN -> AC */
+    DASH_ZONE_MODE,     /* mode tile: cycle DF -> AC -> AX -> 8 -> EN -> DF */
     DASH_ZONE_ALERT,    /* alert banner: dismiss the oldest alert */
     DASH_ZONE_NIGHT,    /* night button: toggle backlight dimming */
     DASH_ZONE_LOGO      /* top-left logo: replay the splash animation */

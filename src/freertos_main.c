@@ -41,7 +41,7 @@
 static volatile bool g_simulator_exit_requested = false;
 static uint8_t g_night_mode = 0U;
 static lv_obj_t * g_night_mask;
-static int g_mode = DASH_MODE_ACCELERATION;
+static int g_mode = DASH_MODE_DEFAULT;
 static int g_slip = 3;
 static int g_signal = 4;
 static bool g_timing_active = false;
@@ -212,7 +212,7 @@ static void screen_press_cb(lv_event_t * e)
             if(!g_timing_active) Dash_View_SetTimingDot(0U, 0U);
             break;
         case DASH_ZONE_MODE:
-            set_mode((g_mode + 1) % 4);
+            set_mode(g_mode == DASH_MODE_ENDURANCE ? DASH_MODE_DEFAULT : g_mode + 1);
             break;
         case DASH_ZONE_ALERT:
             pop_alert();
@@ -232,11 +232,12 @@ static void key_event_cb(lv_event_t * e)
     if(key >= 'a' && key <= 'z') key -= 'a' - 'A';
     switch(key) {
         case LV_KEY_ESC: g_simulator_exit_requested = true; break;
-        case ' ': set_mode((g_mode + 1) % 4); break;
+        case ' ': set_mode(g_mode == DASH_MODE_ENDURANCE ? DASH_MODE_DEFAULT : g_mode + 1); break;
         case 'A': set_mode(DASH_MODE_ACCELERATION); break;
         case 'X': set_mode(DASH_MODE_AUTOCROSS); break;
         case '8': set_mode(DASH_MODE_SKIDPAD); break;
         case 'E': set_mode(DASH_MODE_ENDURANCE); break;
+        case 'D': set_mode(DASH_MODE_DEFAULT); break;
         case 'R':
             g_timing_active = !g_timing_active;
             if(!g_timing_active) Dash_View_SetTimingDot(0U, 0U);
@@ -281,7 +282,7 @@ static void create_simulator_ui(void)
 
     Dash_View_SetSlip(g_slip);
     Dash_View_SetSignal(g_signal);
-    set_mode(DASH_MODE_ACCELERATION);
+    set_mode(DASH_MODE_DEFAULT);
     set_night(g_night_mode);
     demo_timer_cb(NULL);
     lv_timer_create(demo_timer_cb, SIM_DEMO_PERIOD_MS, NULL);
