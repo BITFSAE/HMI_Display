@@ -19,22 +19,23 @@
 static volatile uint8_t g_dashboard_initialized;
 
 typedef enum {
+    DRIVE_MODE_DEFAULT = -1,
     DRIVE_MODE_ACCELERATION = 0,
     DRIVE_MODE_AUTOCROSS,
     DRIVE_MODE_SKIDPAD,
     DRIVE_MODE_ENDURANCE
 } drive_mode_t;
 
-static volatile drive_mode_t g_drive_mode = DRIVE_MODE_ACCELERATION;
+static volatile drive_mode_t g_drive_mode = DRIVE_MODE_DEFAULT;
 /* 当前界面显示的车速；DASH_VIEW_INVALID 表示显示 "--"（没有可信速度）。 */
 static int32_t g_speed = DASH_VIEW_INVALID;
-static volatile int32_t g_mode_index = 0;
+static volatile int32_t g_mode_index = -1;
 static int32_t g_current_lap_time = 0;
 static int32_t g_last_lap_time = 0;
 static int32_t g_best_lap_time = 0;
 static int32_t g_lap_delta = 0;
 static int32_t g_laps_current = 0;
-static int32_t g_laps_left = 75;
+static int32_t g_laps_left = 0;
 /* 整车放电功率峰值(kW)：上电后的最大值，不清零。g_power_peak_seen 为 0 时尚未收到
  * 有效电压和电流，界面显示 "--"。 */
 static int32_t g_power_peak = 0;
@@ -50,8 +51,8 @@ static int32_t g_motor_power_peak[4];
 static int32_t g_tire_temp[4][4];
 static volatile int32_t g_pending_tire_temp[4][4];
 /* valid_mask starts at 0: every CAN-fed field shows "--" until its first frame. */
-static dashboard_data_t g_dashboard_data;
-static volatile dashboard_data_t g_pending_dashboard_data;
+static dashboard_data_t g_dashboard_data = {.mode_index = -1};
+static volatile dashboard_data_t g_pending_dashboard_data = {.mode_index = -1};
 static volatile uint32_t g_dashboard_dirty_mask = 0U;
 /* g_pending_speed < 0 表示 "--"；提交时刻与数值同在一个关中断段内写入，供 speed_trace 计时。 */
 static volatile int32_t g_pending_speed = -1;
@@ -81,6 +82,7 @@ static uint32_t g_lap_analysis_blink_tick = 0U;
 #define DASHBOARD_UI_FAST_PERIOD_MS 50U
 #define DASHBOARD_UI_SLOW_PERIOD_MS 200U
 #define DASHBOARD_MODE_TOUCH_DEBOUNCE_MS 200U
+#define DASHBOARD_TOUCH_RELEASE_MS 80U
 #define LAP_START_MIN_SPEED_KMH     5.0f
 #define DELTA_TEXT_LIMIT_HUNDREDTHS 3000
 #define SPEED_DISPLAY_MAX_KMH       299
@@ -475,6 +477,9 @@ static void apply_drive_mode_ui(void)
 static void sync_mode_from_index(void)
 {
     switch(g_mode_index) {
+        case -1:
+            g_drive_mode = DRIVE_MODE_DEFAULT;
+            break;
         case 1:
             g_drive_mode = DRIVE_MODE_AUTOCROSS;
             break;
@@ -511,7 +516,7 @@ static void dashboard_submit_drive_mode(int32_t mode_index, uint8_t force)
 {
     uint32_t primask;
 
-    if((mode_index < 0) || (mode_index > 3)) return;
+    if((mode_index < -1) || (mode_index > 3)) return;
     if((g_dashboard_data.mode_index == mode_index) &&
        ((force == 0U) || ((g_dashboard_dirty_mask & DASH_DIRTY_MODE) == 0U) ||
         (g_pending_dashboard_data.mode_index == mode_index))) return;
@@ -557,7 +562,8 @@ static void dashboard_cycle_drive_mode(void)
         return;
     }
 
-    next_mode = (dashboard_effective_mode_index() + 1) & 3;
+    next_mode = dashboard_effective_mode_index();
+    next_mode = (next_mode >= DRIVE_MODE_ENDURANCE) ? DRIVE_MODE_DEFAULT : next_mode + 1;
     /* 只在请求已进入 CAN 发送队列后改界面；队列满时保留当前模式并提示。 */
     if(CAN_SendDriveModeRequest(next_mode) != 0U) {
         dashboard_submit_drive_mode(next_mode, 1U);
@@ -1483,12 +1489,34 @@ void Dashboard_UI_Init(void)
 void Dashboard_UI_SubmitTouchState(uint16_t x, uint16_t y, uint8_t pressed)
 {
     static uint8_t last_pressed = 0U;
+    static uint8_t release_pending = 0U;
+    static uint32_t release_tick = 0U;
     static uint32_t last_lap_toggle_tick = 0U;
     static uint32_t last_mode_cycle_tick = 0U;
     static uint32_t last_alert_touch_tick = 0U;
     static uint32_t last_night_toggle_tick = 0U;
     static uint32_t last_splash_tick = 0U;
     uint32_t now = HAL_GetTick();
+
+    /* 短暂丢点不能把一次长按拆成两次点击。松手稳定后才重新布防，
+     * 首次按下仍立即响应；松手只上报一次时，在下一次按下补做确认。 */
+    if(pressed == 0U) {
+        if((last_pressed != 0U) && (release_pending == 0U)) {
+            release_pending = 1U;
+            release_tick = now;
+        }
+        if((release_pending != 0U) && ((now - release_tick) >= DASHBOARD_TOUCH_RELEASE_MS)) {
+            last_pressed = 0U;
+            release_pending = 0U;
+        }
+        return;
+    }
+    if(release_pending != 0U) {
+        if((now - release_tick) >= DASHBOARD_TOUCH_RELEASE_MS) {
+            last_pressed = 0U;
+        }
+        release_pending = 0U;
+    }
 
     if((pressed != 0U) && (last_pressed == 0U) && (g_splash_active != 0U)) {
         /* 开屏中任意点击只用来跳过动画，不触发下面的触摸区 */

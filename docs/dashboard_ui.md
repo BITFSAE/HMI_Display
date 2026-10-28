@@ -25,12 +25,12 @@
 | 区域 | 坐标 (px) | 内容 |
 | --- | --- | --- |
 | 顶栏 | y 0–52 | BITFSAE 标识、BEST、LAST、圈差（数值+条）、LAP/RUN、LEFT/DIST M、ODO KM、GPS 信号 |
-| 左栏 | x 0–200 | 驾驶模式色块（AC Acceleration 红/AX Autocross 黄/8 Skidpad 蓝/EN Endurance 绿，可触摸轮转）、SLIP 等级与 7 段条、四轮胎面温度图与最高温、夜间按钮 |
+| 左栏 | x 0–200 | 驾驶模式色块（DF Default 灰/AC Acceleration 红/AX Autocross 黄/8 Skidpad 蓝/EN Endurance 绿，可触摸轮转）、SLIP 等级与 7 段条、四轮胎面温度图与最高温、夜间按钮 |
 | 中栏 | x 200–600 | 当前圈/冲刺用时与计时状态点、告警/READY 横幅、180 px 车速、机械制动/能量回收/油门三条竖条、车速下方的 SOP（DISCH/CHG 两行：BMS 允许的放电/充电功率与电流） |
 | 右栏 | x 600–800 | SOC 与电量条、HV 电压/电流、PWR 实时功率、PK（功率峰值与放电电流峰值）、TMAX、LV 电压/电流/功率、三路风扇；行距 22 px |
 | 底栏 | y 376–480 | FL/FR/RL/RR 电机：使能（闪电黄=使能）、故障码（红底 `E xxxx`，十进制，不足四位补零）、TQ (Nm)/RPM、功率 kW 与 PK（功率峰值）、MOT/INV 温度 |
 
-触摸区域：顶栏 x ≥ 164 开始/停止计时（AC 模式为 75 m 冲刺），顶栏左端 Logo 区（x < 164）重放开屏动画；驾驶模式色块按 AC→AX→8→EN→AC 轮转一档；告警横幅消除最早一条；夜间按钮把背光降到 45%。模式色块点击通过 CANB 发送既有 `0x310` 请求（byte0 为 ASCII `0`..`3`，DLC 8），界面在入队成功后立即显示新模式，ECU 的 `0x509` 回报会再校正显示。圈速/冲刺计时进行中模式被锁定，点击不发送、不换档，并提示 `MODE LOCK: TIMER ACTIVE`。方向盘的圈速计时键与触摸顶栏等效，消错键清除全部告警，见 [方向盘与车手屏](steering_wheel.md)。告警文字转大写，`+N` 表示还有 N 条排队。
+触摸区域：顶栏 x ≥ 164 开始/停止计时（AC 模式为 75 m 冲刺），顶栏左端 Logo 区（x < 164）重放开屏动画；驾驶模式色块按 DF→AC→AX→8→EN→DF 轮转一档；告警横幅消除最早一条；夜间按钮把背光降到 45%。同一次按住只轮转一档，松手确认和重复点击间隔见 [配置表](configuration.md)。模式色块点击通过 CANB 发送 `0x310` 请求（编码及默认模式候选值见 [CAN 接口](can_interface.md)），界面在入队成功后立即显示新模式，ECU 的 `0x509` 回报会再校正显示。圈速/冲刺计时进行中模式被锁定，点击不发送、不换档，并提示 `MODE LOCK: TIMER ACTIVE`。方向盘的圈速计时键与触摸顶栏等效，消错键清除全部告警，见 [方向盘与车手屏](steering_wheel.md)。告警文字转大写，`+N` 表示还有 N 条排队。
 
 ![无数据](images/dashboard-nodata.png)
 
@@ -89,7 +89,7 @@ SOP 来自 BMS 的 `0x4A0`（功率，kW）和 `0x4A3`（电流，A），接收�
 ## 验证
 
 ```bash
-python3 tools/run_firmware_tests.py --png /tmp/dash   # 编译固件 UI 与 LVGL，跑回归并输出七帧仪表截图（四种模式、告警、READY、无数据）和七帧开屏截图
+python3 tools/run_firmware_tests.py --png /tmp/dash   # 编译固件 UI 与 LVGL，跑回归并输出八帧仪表截图（五种模式、告警、READY、无数据）和七帧开屏截图
 ./build_fw.sh                                         # ARM 构建与内存报告
 ./run_sim_mac.sh                                      # 模拟器
 ./tools/gen_dash_fonts.sh                             # 改字号/字符集后重新生成字库（需 Node.js）

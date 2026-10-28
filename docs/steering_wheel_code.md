@@ -79,14 +79,14 @@
 | `Dashboard_UI_RequestDriveMode`、`Dashboard_UI_SubmitDriveMode` | 方向盘 `0x310` 用前者覆盖待应用请求；ECU `0x509` 用后者校正显示，旧回报不撤销新请求。计时锁在两者内判断 |
 | `Dashboard_UI_SubmitSlipLevel` | 提交滑级 |
 | `Dashboard_UI_RequestDriveModeCycle` | 触摸模式色块只置位轮转请求；Dashboard 任务检查计时锁、发送 `0x310` 并提交下一模式 |
-| `CAN_SendDriveModeRequest` | 组装 `0x310`（ASCII `0`..`3`，DLC 8）进入 CAN1 发送队列；返回是否入队 |
+| `CAN_SendDriveModeRequest` | 组装 `0x310`（编码见 [CAN 接口](can_interface.md)，DLC 8）进入 CAN1 发送队列；返回是否入队 |
 | `Dashboard_UI_IsTimingModeLocked` | 返回 AC 模式冲刺是否进行中，或其他模式圈速分析是否进行中 |
 
 ### 四种帧的处理
 
 | ID | 处理 |
 | --- | --- |
-| `0x310` | byte0 不在 48..51 则丢弃并计入 `g_can_rx_invalid_count`。否则：锁未生效时以原 ID、原 DLC 调用 `User_CAN_SendDlc` 转发；无论是否转发，都调用 `Dashboard_UI_RequestDriveMode(byte0 − 48)`，锁生效时该函数拒绝切换并请求 MODE LOCK 告警 |
+| `0x310` | byte0 不在 47..51 则丢弃并计入 `g_can_rx_invalid_count`。否则：锁未生效时以原 ID、原 DLC 调用 `User_CAN_SendDlc` 转发；无论是否转发，都调用 `Dashboard_UI_RequestDriveMode(byte0 − 48)`，锁生效时该函数拒绝切换并请求 MODE LOCK 告警 |
 | `0x700` | byte0 > 7 则丢弃并计数，不发 `0x703`。否则保存到静态变量 `s_slip_level`、提交界面，并发送 `0x703` |
 | `0x701` | `User_CAN_ButtonPressed` 判定为新按下则调用 `Dashboard_UI_RequestLapToggle`；无论是否新按下都发送一帧 `0x703`，计时位仅在新按下时为 1 |
 | `0x702` | 同上，新按下时调用 `Dashboard_UI_RequestAlertClear`，`0x703` 的清错位为 1 |
@@ -99,13 +99,13 @@
 
 回归测试 `tools/tests/firmware_regression.c` 的 `test_steering` 覆盖：
 
-- `0x310` 只放行 ASCII `0`..`3`，其余丢弃并计数，放行的原样转发；
+- `0x310` 越界值丢弃并计数，合法请求原样转发；默认模式请求和计时锁由模式回归用例验证；
 - `0x700` 越界丢弃且不发 `0x703`，合法值合并进 `0x703`；
 - `0x701` 的上升沿：按住重复帧不重复触发，`0 → 1` 触发，间隔 300 ms 以内不触发、超过 300 ms 触发；
 - `0x702` 同理，清错位在 `0x703` 的 byte1 bit1。
-- 模式色块：命中区、AC/AX/8/EN 四档轮转与回绕、`0x310` 内容和 DLC、200 ms 防抖、计时锁拒绝，以及越界模式不入队。
+- 模式色块：命中区、五档轮转与回绕、`0x310` 内容和 DLC、长按与松手抖动、计时锁拒绝，以及越界模式拒绝和发送队列满后的恢复。
 
-未覆盖：方向盘输入在计时锁生效时的 `0x310` 不转发；界面启动完成前丢帧；`0x701/0x702` 触发后界面端的实际动作（计时开始/停止、清告警）；方向盘固件本身（`Steering_wheel` 仓库没有测试）。
+未覆盖：`0x701/0x702` 触发后界面端的实际动作（计时开始/停止、清告警）；方向盘固件本身（`Steering_wheel` 仓库没有测试）。
 
 ### 验证命令
 

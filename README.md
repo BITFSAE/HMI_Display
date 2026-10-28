@@ -107,7 +107,7 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 - VS Code 任务：`Build Firmware`、`Rebuild Firmware (clean)`（`Tasks: Run Task`），编译报错可点击跳转。
 - ST-Link 烧写：`tools/flash_stlink.sh [文件]` 用 STM32CubeProgrammer 命令行经 SWD 烧写 `build_vscode/DATA_COLLECTION_INTEGRAL.hex` 并回读校验、复位运行；只擦程序用到的扇区，里程记录保留。找工具的顺序见脚本头注释，也可用 `STM32_PROGRAMMER_CLI` 指定路径。VS Code 任务 `Flash Firmware (ST-Link)`、`Build & Flash Firmware (ST-Link)`（先 `Build Firmware` 再烧写）需在本机 `.vscode/tasks.json` 中配置。
 - 模拟器与固件共用 `stm32_port/Core/Src/dashboard_view.c` 界面，只是数据换成动画演示，设计与约束见 [仪表盘界面](docs/dashboard_ui.md)。
-- 窗口内按键：空格循环模式，`A/X/8/E` 选 Acceleration/Autocross/Skidpad/Endurance，`0`–`7` 滑移等级，`R` 圈速计时，`N` 夜间模式，`F` 推入演示告警，`Y` READY 横幅，`[` `]`/`G` 信号强度，`Esc` 退出。鼠标点击区域与触摸屏相同：顶栏开关计时，左上 Logo 重放开屏动画（开屏中点任意处跳过），驾驶模式色块轮转模式，告警条消除一条，眼睛按钮切换夜间。
+- 窗口内按键：空格循环模式，`D/A/X/8/E` 选 Default/Acceleration/Autocross/Skidpad/Endurance，`0`–`7` 滑移等级，`R` 圈速计时，`N` 夜间模式，`F` 推入演示告警，`Y` READY 横幅，`[` `]`/`G` 信号强度，`Esc` 退出。鼠标点击区域与触摸屏相同：顶栏开关计时，左上 Logo 重放开屏动画（开屏中点任意处跳过），驾驶模式色块轮转模式，告警条消除一条，眼睛按钮切换夜间。
 
 ### Visual Studio Code
 

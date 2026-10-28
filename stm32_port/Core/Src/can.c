@@ -595,7 +595,7 @@ void CAN1_Filter_Config(void)
  * verbatim to the ECU while no sprint/lap timing session holds the mode lock;
  * 0x700/0x701/0x702 are SteeringWheel->Display only and
  * are merged into a single 0x703 (BO_1795) before being sent to the ECU.
- *   BO_784  DriveMode_Request 0x310  DriveModeCode byte0 = ASCII '0'..'3' (48..51)
+ *   BO_784  DriveMode_Request 0x310  DriveModeCode byte0 = mode + 48 (47..51)
  *   BO_1792 SlipLevel_0x700   0x700  SlipLevel byte0 [0..7]
  *   BO_1793 RecorderToggle    0x701  lap-timer toggle bit0, one frame per press
  *                                    (the DBC name is historical, it is not a video recorder)
@@ -699,14 +699,15 @@ void User_CAN_Send_sq(uint32_t CAN_ID_NEW,uint8_t* CAN_TxData_NEW)
 	User_CAN_SendDlc(CAN_ID_NEW, CAN_TxData_NEW, 8U);
 }
 
-/* 0x310 DriveMode_Request: byte0 = ASCII '0'..'3'，byte1..7 为 0。
+/* 0x310 DriveMode_Request: byte0 = mode + 48（-1..3 → 47..51），byte1..7 为 0。
+ * 默认模式编码按项目负责人要求类推，中央库已登记候选值，仍需 ECU 上板验证。
  * DLC 8 与方向盘发送格式一致；返回 0 时不改界面，由调用方提示发送失败。 */
-uint8_t CAN_SendDriveModeRequest(uint8_t mode_index)
+uint8_t CAN_SendDriveModeRequest(int32_t mode_index)
 {
   uint8_t data[8] = {0U};
 
-  if(mode_index > 3U) return 0U;
-  data[0] = (uint8_t)('0' + mode_index);
+  if((mode_index < -1) || (mode_index > 3)) return 0U;
+  data[0] = (uint8_t)(48 + mode_index);
   return User_CAN_TxQueuePush(0x310U, data, 8U);
 }
 
@@ -828,14 +829,14 @@ static void User_CAN_HandleSteeringWheel(const CAN_RxHeaderTypeDef * rx,
 
   switch(rx->StdId)
   {
-    /* Vehicle_CanB.dbc BO_784 DriveMode_Request 0x310: DriveModeCode byte0 = ASCII '0'..'3' (48..51).
+    /* Vehicle_CanB.dbc BO_784 DriveMode_Request 0x310: DriveModeCode byte0 = mode + 48 (47..51).
      * Drive mode is relayed verbatim to the ECU, except while a sprint/lap
      * timing session holds the mode lock: then the request is not relayed and
      * Dashboard_UI_SubmitDriveMode() raises the MODE LOCK alert instead.
-     * Codes outside 48..51 are dropped, neither relayed nor shown. */
+     * Codes outside 47..51 are dropped, neither relayed nor shown. */
     case 0x310:
     {
-      if((data[0] < 48U) || (data[0] > 51U)) {
+      if((data[0] < 47U) || (data[0] > 51U)) {
         g_can_rx_invalid_count++;
         break;
       }
@@ -1078,7 +1079,7 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
        * not in the formal DBC): -1 default mode (12.3 kW per motor; the ECU
        * returns to it after every LV power-up), 0 AC/acceleration, 1 AX/autocross,
        * 2 8/skidpad, 3 EN/endurance - the same numbering as 0x310 code - 48.
-       * -1 and other values are ignored here, so the UI keeps its last mode. */
+       * -1 显示 DF/Default；其他未定义值由 UI 忽略。 */
       {
         int32_t mode_val = (int32_t)((CAN_RxData[0] >> 4) & 0x0FU);
         if(mode_val & 8) mode_val -= 16;

@@ -76,9 +76,9 @@ void MX_CAN2_Init(void);
 void CAN1_Filter_Config(void);
 void CAN2_Filter_Config(void);
 void User_CAN_Send_sq(uint32_t CAN_ID_NEW,uint8_t* CAN_TxData_NEW);
-/* 发送 0x310 驾驶模式请求（ASCII '0'..'3'，DLC 8）。
+/* 发送 0x310 驾驶模式请求（mode -1..3 编码为 47..51，DLC 8）。
  * 返回 1 表示已进入发送队列，0 表示模式越界或队列满。 */
-uint8_t CAN_SendDriveModeRequest(uint8_t mode_index);
+uint8_t CAN_SendDriveModeRequest(int32_t mode_index);
 void CAN_ServiceTask(void *argument);
 void CAN_StartServiceTask(void);
 void CAN_SendGPSSpeed(int32_t speed_kmh_tenths);
