@@ -33,7 +33,7 @@ typedef struct {
 	/* Display speed in integer km/h; -1 = no trusted speed (shown as "--").
 	 * CAN GPS_Speed uses 0.1 km/h raw units. */
 	int32_t speed;
-	/* DBC BO_1200 BatterySOC (%) */
+	/* SOC，单位 0.1%，0..1000；支持旧 7 字节帧。 */
 	int32_t soc;
 	/* DBC BO_1289 Debug9: ModeFlag, bit4|4@1- [-8,7] */
 	int32_t mode_index;

@@ -74,7 +74,7 @@ void Dash_View_SetSlip(int32_t level);
 /* 三条独立开度条：油门、机械制动（油压）、能量回收（踏板转角）。 */
 void Dash_View_SetPedals(int32_t throttle_pct, int32_t mechanical_brake_pct,
                          int32_t regen_pct);
-void Dash_View_SetBattery(int32_t soc_pct, int32_t voltage_v, int32_t current_a);
+void Dash_View_SetBattery(int32_t soc_pct_x10, int32_t voltage_v, int32_t current_a);
 /* peak_kw: highest discharge power since power-on; DASH_VIEW_INVALID until
  * the first valid sample. */
 void Dash_View_SetPower(int32_t live_kw, int32_t peak_kw);

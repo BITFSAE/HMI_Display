@@ -49,8 +49,8 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 /* Motor/inverter/max temperature text colour thresholds, degC. */
 #define TEMP_WARN_C 70
 #define TEMP_HOT_C  85
-#define SOC_LOW_PCT  20
-#define SOC_MID_PCT  50
+#define SOC_LOW_PCT  200
+#define SOC_MID_PCT  500
 #define DELTA_FULL_SCALE 500   /* 5.00 s fills half the delta bar */
 
 /* Geometry */
@@ -198,7 +198,7 @@ static lv_style_t st_line;      /* 1 px divider */
 static dash_bar_t s_brake_bar = {0, 100, C_RED, 1, 1};
 static dash_bar_t s_regen_bar = {0, 100, C_BLUE, 1, 1};
 static dash_bar_t s_throttle_bar = {0, 100, C_GREEN, 1, 1};
-static dash_bar_t s_soc_bar = {0, 100, C_GREEN, 0, 0};
+static dash_bar_t s_soc_bar = {0, 1000, C_GREEN, 0, 0};
 static int32_t s_delta;
 static int32_t s_slip = -1;
 static int32_t s_signal = -1;
@@ -838,14 +838,14 @@ void Dash_View_SetBattery(int32_t soc_pct, int32_t voltage_v, int32_t current_a)
     }
     else {
         if(soc_pct < 0) soc_pct = 0;
-        if(soc_pct > 100) soc_pct = 100;
+        if(soc_pct > 1000) soc_pct = 1000;
         color = soc_pct < SOC_LOW_PCT ? C_RED : (soc_pct < SOC_MID_PCT ? C_AMBER : C_GREEN);
         if((soc_pct != s_soc_bar.value) || (color != s_soc_bar.color)) {
             s_soc_bar.value = soc_pct;
             s_soc_bar.color = color;
             lv_obj_invalidate(ui.soc_bar);
         }
-        lv_snprintf(buf, sizeof(buf), "%ld%%", (long)soc_pct);
+        lv_snprintf(buf, sizeof(buf), "%ld.%ld%%", (long)(soc_pct / 10), (long)(soc_pct % 10));
         set_text(ui.soc, buf);
         set_text_color(ui.soc, soc_pct < SOC_LOW_PCT ? C_RED : C_TEXT);
     }

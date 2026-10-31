@@ -940,8 +940,13 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
         g_can_dashboard_data.sum_current = (int32_t)(current_da / 10);
       }
       if(((flags & 0x04U) != 0U) && (soc <= 100U)) {
-        g_can_dashboard_data.soc = (int32_t)soc;
-        User_CAN_SetValid(DASH_VALID_SOC, 1U);
+        uint16_t soc_x10 = (uint16_t)soc * 10U;
+        if((RxHeader.DLC >= 8U) && ((CAN_RxData[7] & 0xF0U) == 0xA0U)
+           && ((CAN_RxData[7] & 0x0FU) <= 9U)) {
+          soc_x10 += CAN_RxData[7] & 0x0FU;
+        }
+        g_can_dashboard_data.soc = (int32_t)soc_x10;
+        User_CAN_SetValid(DASH_VALID_SOC, (uint8_t)(soc_x10 <= 1000U));
       }
       else {
         User_CAN_SetValid(DASH_VALID_SOC, 0U);

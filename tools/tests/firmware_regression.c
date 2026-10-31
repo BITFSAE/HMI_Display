@@ -400,7 +400,7 @@ static void test_can_decode(void)
         const uint32_t valid=DASH_VALID_SOC|DASH_VALID_HV_V|DASH_VALID_HV_I;
         unsigned peak_before;
         inject(0x4B0,7,pack);
-        assert(d->sum_voltage_dv==5491&&d->sum_voltage==549&&d->sum_current_da==-857&&d->sum_current==-85&&d->soc==77);
+        assert(d->sum_voltage_dv==5491&&d->sum_voltage==549&&d->sum_current_da==-857&&d->sum_current==-85&&d->soc==770);
         assert((d->valid_mask&valid)==valid);
         /* P NOW is the discharge power: 549.1 V x 85.7 A = 47.06 kW -> 47. */
         test_tick+=300;Dashboard_UI_Process();
@@ -419,7 +419,14 @@ static void test_can_decode(void)
             const uint8_t no_soc[7]={0x15,0x73, 0x00,0x1D, 80, 0x1B, 0x50};
             inject(0x4B0,7,no_soc);
             assert((d->valid_mask&DASH_VALID_SOC)==0&&(d->valid_mask&(DASH_VALID_HV_V|DASH_VALID_HV_I))==(DASH_VALID_HV_V|DASH_VALID_HV_I));
-            assert(d->soc==77);                                   /* the unqualified 80 is not stored */
+            assert(d->soc==770);                                   /* the unqualified 80 is not stored */
+        }
+        {
+            const uint8_t fractional[8]={0x15,0x73,0,0,77,0x1F,0x50,0xA9};
+            inject(0x4B0,8,fractional);
+            assert(d->soc==779 && (d->valid_mask&DASH_VALID_SOC)!=0);
+            inject(0x4B0,7,pack);
+            assert(d->soc==770);
         }
         /* No flags: nothing from this frame is usable. SOC above 100 % is rejected even when flagged. */
         {
@@ -1612,7 +1619,7 @@ static void test_ui(void)
     g_dashboard_slow_ui_last_tick=test_tick;g_dashboard_fast_ui_last_tick=test_tick;
     for(unsigned i=0;i<400;i++) {
         dashboard_data_t data=*Dashboard_UI_GetCurrentData();
-        data.valid_mask=TEST_ALL_VALID;data.soc=i%101;data.sum_voltage=400;data.sum_current=i%100;
+        data.valid_mask=TEST_ALL_VALID;data.soc=i%1001;data.sum_voltage=400;data.sum_current=i%100;
         data.sum_voltage_dv=4000;data.sum_current_da=-(int32_t)(i%100)*10;
         data.aps_open_pct=i%101;data.brake_pct=(i+10)%101;data.regen_pct=(i+20)%101;
         data.diag_num[i%4]=(i%5==0)?0x231:0;data.inverter_temp[i%4]=(int32_t)(i%120);
@@ -1648,7 +1655,7 @@ static void render_modes(const char *directory)
     /* mode-6: the power-on frame, every CAN field still "--" (nothing received yet). */
     save_frame(directory,6);
     dashboard_data_t data=*Dashboard_UI_GetCurrentData();
-    data.valid_mask=TEST_ALL_VALID;data.soc=76;data.sum_voltage=386;data.sum_current=-118;
+    data.valid_mask=TEST_ALL_VALID;data.soc=760;data.sum_voltage=386;data.sum_current=-118;
     data.sum_voltage_dv=3860;data.sum_current_da=-1180;data.max_temperature=74;
     data.aps_open_pct=62;data.brake_pct=0;data.regen_pct=38;
     data.lv_bus_voltage_mV=13820;data.lv_bus_current_cA=-1240;data.lv_bus_power_dW=1712;

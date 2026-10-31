@@ -127,7 +127,7 @@ static void demo_timer_cb(lv_timer_t * timer)
     Dash_View_SetSpeed(speed);
     Dash_View_SetPedals(throttle, brake, regen);
 
-    soc = 100 - (int32_t)((g_tick / 50U) % 100U);
+    soc = 1000 - (int32_t)((g_tick / 5U) % 1000U);
     current = throttle * 3;
     power = (392 * current) / 1000;
     if(power > g_power_peak) g_power_peak = power;
