@@ -598,7 +598,7 @@ void CAN1_Filter_Config(void)
  * Vehicle_CanB.dbc: steering wheel sits on the CAN2 bus. 0x310 is relayed
  * verbatim to the ECU while no sprint/lap timing session holds the mode lock;
  * 0x703 is built by the wheel and always relayed verbatim.
- *   BO_784  DriveMode_Request 0x310  DriveModeCode byte0 = mode + 2 (1..5)
+ *   BO_784  DriveMode_Request 0x310  DriveModeCode byte0 = mode + 48 (47..51)
  *   BO_1795 SteeringCmd_0x703 0x703  SlipLevel byte0 bit0..2; byte1 bit0
  *                                    DisableRequest, bit1 ErrorClearActive,
  *                                    bit2 LapTimerToggle
@@ -704,15 +704,15 @@ void User_CAN_Send_sq(uint32_t CAN_ID_NEW,uint8_t* CAN_TxData_NEW)
 	User_CAN_SendDlc(CAN_ID_NEW, CAN_TxData_NEW, 8U);
 }
 
-/* 0x310 DriveMode_Request: byte0 = mode + 2（-1..3 → 1..5），byte1..7 为 0。
- * ECU 更新为数值 1..5（非 ASCII），与 0x509 回报的 0..4 分开转换。
+/* 0x310 DriveMode_Request: byte0 = mode + 48（-1..3 → 47..51），byte1..7 为 0。
+ * 请求编码已由 ECU ModeSelect 逻辑确认，与 0x509 回报的 0..4 分开转换。
  * DLC 8 与方向盘发送格式一致；返回 0 时不改界面，由调用方提示发送失败。 */
 uint8_t CAN_SendDriveModeRequest(int32_t mode_index)
 {
   uint8_t data[8] = {0U};
 
   if((mode_index < -1) || (mode_index > 3)) return 0U;
-  data[0] = (uint8_t)(mode_index + 2);
+  data[0] = (uint8_t)(48 + mode_index);
   return User_CAN_TxQueuePush(0x310U, data, 8U);
 }
 
@@ -805,21 +805,21 @@ static void User_CAN_HandleSteeringWheel(const CAN_RxHeaderTypeDef * rx,
 
   switch(rx->StdId)
   {
-    /* Vehicle_CanB.dbc BO_784 DriveMode_Request 0x310: DriveModeCode byte0 = mode + 2 (1..5).
+    /* Vehicle_CanB.dbc BO_784 DriveMode_Request 0x310: DriveModeCode byte0 = mode + 48 (47..51).
      * Drive mode is relayed verbatim to the ECU, except while a sprint/lap
      * timing session holds the mode lock: then the request is not relayed and
      * Dashboard_UI_SubmitDriveMode() raises the MODE LOCK alert instead.
-     * Codes outside 1..5 are dropped, neither relayed nor shown. */
+     * Codes outside 47..51 are dropped, neither relayed nor shown. */
     case 0x310:
     {
-      if((data[0] < 1U) || (data[0] > 5U)) {
+      if((data[0] < 47U) || (data[0] > 51U)) {
         g_can_rx_invalid_count++;
         break;
       }
       if(Dashboard_UI_IsTimingModeLocked() == 0U) {
         User_CAN_SendDlc(rx->StdId, data, rx->DLC);
       }
-      Dashboard_UI_RequestDriveMode((int32_t)data[0] - 2);
+      Dashboard_UI_RequestDriveMode((int32_t)data[0] - 48);
       break;
     }
 
