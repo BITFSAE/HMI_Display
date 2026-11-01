@@ -23,7 +23,7 @@
 #include <string.h>
 
 LV_FONT_DECLARE(dash_font_speed)  /* Bold 180, digits */
-LV_FONT_DECLARE(dash_font_xl)     /* SemiBold 56, digits % - A C D E F N X */
+LV_FONT_DECLARE(dash_font_xl)     /* SemiBold 56, digits . % - A C D E F N X */
 LV_FONT_DECLARE(dash_font_l)      /* SemiBold 36, digits : . + - */
 LV_FONT_DECLARE(dash_font_m)      /* SemiBold 22, ASCII */
 LV_FONT_DECLARE(dash_font_s)      /* Medium 18, ASCII + eye/bolt/warning */
