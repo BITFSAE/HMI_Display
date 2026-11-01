@@ -2,6 +2,14 @@
 
 ## 未发布
 
+### 2026-11-01 修正 ECU 驾驶模式回报解码
+
+- 按 ECU 负责人确认，`0x509` 的 byte0 高四位为无符号 0～4，对应 DF/AC/AX/8/EN。接收时减 1 转为界面内部 −1～3，修复回报错位覆盖触摸目标的问题；5～15 保持上次有效模式，使能位仍正常更新。
+- `0x310` 仍按 47～51 请求五档，默认请求 47 已有 ECU `ModeSelect` 逻辑依据。中央接口库提交 [`ad92bd6`](https://github.com/BITFSAE/vehicle-interfaces/commit/ad92bd6) 已同步 DBC、GBK 副本、枚举和说明；补正方向盘说明中的旧四档轮转。
+- 新增五档实际 CAN 接收、全部保留码、使能位独立更新，以及两轮“触摸请求→ECU 回报→界面显示”回归。新增断言在修复前因 AC 回报被解作 AX 而失败。
+- 验证：`python3 tools/run_firmware_tests.py`（ASan/UBSan）通过；`./build_fw.sh` 0 警告，Flash 295,756 B、主 SRAM 109,632 B、CCM 61,440 B；`./run_sim_mac.sh --build-only` 通过，仅有既有重复链接库警告。中央库接口校验和两份 DBC 的 strict/canmatrix 交叉解析、语义比较通过，decode-check 55/55 通过。
+- **未验证 / 待办**：新固件尚未烧录，需实车抓包核对 DF→AC→AX→8→EN→DF 连续轮转和计时锁行为。本机未找到 STM32CubeIDE 应用，未运行 CubeIDE 完整构建。
+
 ### 2026-11-01 Windows VS Code 任务适配
 
 - `.vscode/tasks.json` 增加 Windows PowerShell 进程入口，覆盖模拟器构建、日间/夜间运行、固件增量/全量构建和 ST-Link 烧写；自动从 STM32Cube bundles 或 PATH 查找工具，不写本机路径。非 Windows 任务继续通过 Bash 调用原脚本。

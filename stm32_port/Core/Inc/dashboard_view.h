@@ -16,7 +16,7 @@ extern "C" {
 #define DASH_SCREEN_W 800
 #define DASH_SCREEN_H 480
 
-/* 与 ECU ModeFlag 一致：-1=默认，0=AC，1=AX，2=8，3=EN。 */
+/* 界面内部编号：-1=默认，0=AC，1=AX，2=8，3=EN；CAN 回报在接收层转换。 */
 typedef enum {
     DASH_MODE_DEFAULT = -1,
     DASH_MODE_ACCELERATION = 0,

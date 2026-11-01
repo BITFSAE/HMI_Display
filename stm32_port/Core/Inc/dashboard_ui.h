@@ -35,7 +35,7 @@ typedef struct {
 	int32_t speed;
 	/* SOC，单位 0.1%，0..1000；支持旧 7 字节帧。 */
 	int32_t soc;
-	/* DBC BO_1289 Debug9: ModeFlag, bit4|4@1- [-8,7] */
+	/* 界面模式 -1..3；CAN 0x509 的 ModeFlag 0..4 在接收时减 1。 */
 	int32_t mode_index;
 	/* DBC BO_1282 Debug2: RL/RR/FL/FR_ActualTorque (1,0) Nm */
 	/* Wheel order: 0=LF(DBC FL), 1=LR(DBC RL), 2=RF(DBC FR), 3=RR(DBC RR) */
@@ -127,7 +127,7 @@ void Dashboard_UI_SubmitSpeed(int32_t speed);
 /* 没有可信速度（数据过期、无定位、上电后尚未收到）：界面显示 "--"，不是 0。 */
 void Dashboard_UI_SubmitSpeedInvalid(void);
 void Dashboard_UI_SubmitOdometer(int32_t odometer_tenths);
-/* ECU 模式回报：-1 为默认模式，0..3 为 AC/AX/8/EN，其他值忽略。 */
+/* 接收层转换后的界面模式：-1 为默认，0..3 为 AC/AX/8/EN，其他值忽略。 */
 void Dashboard_UI_SubmitDriveMode(int32_t mode_index);
 /* 方向盘 0x310 的用户请求：即使用户转回当前显示档位，也要覆盖尚未应用的
  * 其他请求；ECU 0x509 回报仍走 SubmitDriveMode，不撤销新请求。 */

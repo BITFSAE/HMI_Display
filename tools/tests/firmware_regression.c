@@ -181,7 +181,7 @@ static void test_can(void)
     receive(0x4B0,2,1);service_can();assert(g_can_rx_invalid_count==invalid+1);
     memset(test_rx_data,0,8);test_rx_data[2]=0xF4;test_rx_data[3]=1;
     receive(0x305,6,1);service_can();assert(g_can_dashboard_data.aps_open_pct==50);
-    test_rx_data[0]=0x10;receive(0x509,5,1);service_can();assert(g_can_dashboard_data.mode_index==1);
+    test_rx_data[0]=0x10;receive(0x509,5,1);service_can();assert(g_can_dashboard_data.mode_index==0);
     assert(CAN2_RX_MSG_ID_BANK0[0]==0x310&&CAN2_RX_MSG_ID_BANK0[1]==0x703&&
            CAN2_RX_MSG_ID_BANK0[2]==0x310&&CAN2_RX_MSG_ID_BANK0[3]==0x703);
     test_rx_header=(CAN_RxHeaderTypeDef){.StdId=0x703,.DLC=2};test_rx_data[0]=7;test_rx_data[1]=0;test_rx_pending=1;
@@ -1536,7 +1536,22 @@ static void test_mode_touch_release(void)
 static void test_default_mode(void)
 {
     unsigned mode_tx=test_tx_id_count[0x310];
-    const uint8_t default_frame[5]={0xF1,0,0xF0,0,0};
+    /* ECU 回报 0..4 与界面 -1..3 分开；低四位和使能位不参与模式解码。 */
+    for(unsigned raw=0;raw<5;raw++) {
+        const uint8_t feedback[5]={(uint8_t)((raw<<4)|0x0F),0,0xF0,0,0};
+        inject(0x509,5,feedback);test_tick+=300;Dashboard_UI_Process();
+        assert(g_can_dashboard_data.mode_index==(int32_t)raw-1);
+        assert(g_mode_index==(int32_t)raw-1);
+        for(unsigned wheel=0;wheel<4;wheel++) assert(g_can_dashboard_data.motor_enable[wheel]==1U);
+    }
+    /* 保留码 5..15（含旧默认 F）保持上次模式，不得污染遥测快照。 */
+    for(unsigned raw=5;raw<16;raw++) {
+        const uint8_t feedback[5]={(uint8_t)(raw<<4),0,0,0,0};
+        inject(0x509,5,feedback);test_tick+=300;Dashboard_UI_Process();
+        assert(g_can_dashboard_data.mode_index==3&&g_mode_index==3);
+        for(unsigned wheel=0;wheel<4;wheel++) assert(g_can_dashboard_data.motor_enable[wheel]==0U);
+    }
+    const uint8_t default_frame[5]={0x01,0,0xF0,0,0};
     inject(0x509,5,default_frame);test_tick+=300;Dashboard_UI_Process();
     assert(g_can_dashboard_data.mode_index==-1&&g_mode_index==-1);
     assert(g_drive_mode==DRIVE_MODE_DEFAULT&&Dashboard_UI_GetCurrentData()->mode_index==-1);
@@ -1547,6 +1562,20 @@ static void test_default_mode(void)
     data.mode_index=0;Dashboard_UI_SubmitData(&data);
     Dashboard_UI_SubmitDriveMode(-2);Dashboard_UI_SubmitDriveMode(4);
     test_tick+=300;Dashboard_UI_Process();assert(g_mode_index==-1);
+
+    /* 每次长按后模拟 ECU 按请求回报，连续两轮五档必须保持一致。 */
+    for(unsigned step=0;step<10;step++) {
+        int32_t expected=(int32_t)(step%5U);
+        if(expected==4) expected=-1;
+        hold_mode_tile();
+        assert(test_tx_id_count[0x310]==++mode_tx);
+        assert(test_tx_id_data[0x310][0]==(uint8_t)(expected+48));
+        assert(test_tx_header.DLC==8U);
+        for(unsigned byte=1;byte<8;byte++) assert(test_tx_id_data[0x310][byte]==0U);
+        const uint8_t feedback[5]={(uint8_t)((expected+1)<<4),0,0,0,0};
+        inject(0x509,5,feedback);test_tick+=300;Dashboard_UI_Process();
+        assert(g_mode_index==expected&&g_drive_mode==(drive_mode_t)expected);
+    }
 
     /* 默认模式首次触摸请求 AC，重复的旧模式回报不撤销尚未应用的请求。 */
     hold_mode_tile();
@@ -1587,7 +1616,7 @@ static void test_default_mode(void)
     assert(g_mode_index==-1&&test_tx_id_count[0x310]==mode_tx+2U);
     test_can_free_mailboxes=-1;
     lv_refr_now(NULL);
-    puts("UI default mode: signed 0x509 feedback, invalid modes, telemetry isolation, request relay, timing lock and TX queue recovery passed");
+    puts("UI default mode: ECU 0..4 feedback, reserved codes, two full request/feedback cycles, telemetry isolation, request relay, timing lock and TX queue recovery passed");
 }
 /* Per-motor PK is the highest power since power-on: lifting off, zero torque or regen never clears it. */
 static void test_motor_peak(void)

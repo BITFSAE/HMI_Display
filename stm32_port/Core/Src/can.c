@@ -705,7 +705,7 @@ void User_CAN_Send_sq(uint32_t CAN_ID_NEW,uint8_t* CAN_TxData_NEW)
 }
 
 /* 0x310 DriveMode_Request: byte0 = mode + 48（-1..3 → 47..51），byte1..7 为 0。
- * 默认模式编码按项目负责人要求类推，中央库已登记候选值，仍需 ECU 上板验证。
+ * 请求编码已由 ECU ModeSelect 逻辑确认，与 0x509 回报的 0..4 分开转换。
  * DLC 8 与方向盘发送格式一致；返回 0 时不改界面，由调用方提示发送失败。 */
 uint8_t CAN_SendDriveModeRequest(int32_t mode_index)
 {
@@ -1054,17 +1054,15 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
       User_CAN_NoteRx(CAN_SRC_AMK_STATE, now);
       User_CAN_SetValid(DASH_VALID_AMK_EN, 1U);
 
-      /* SG_ ModeFlag: 4|4@1- (1,0) [-8,7], signed 4-bit in byte0 high nibble.
-       * Values (vehicle-interfaces archive/CANRS485_G473_REFERENCE/cana_canb_protocol.md,
-       * not in the formal DBC): -1 default mode (12.3 kW per motor; the ECU
-       * returns to it after every LV power-up), 0 AC/acceleration, 1 AX/autocross,
-       * 2 8/skidpad, 3 EN/endurance - the same numbering as 0x310 code - 48.
-       * -1 显示 DF/Default；其他未定义值由 UI 忽略。 */
+      /* ECU ModeFlag 为 byte0 高四位无符号数：0..4 对应 DF/AC/AX/8/EN。
+       * 界面内部仍用 -1..3；保留码不覆盖上次有效模式，使能位照常更新。 */
       {
-        int32_t mode_val = (int32_t)((CAN_RxData[0] >> 4) & 0x0FU);
-        if(mode_val & 8) mode_val -= 16;
-        g_can_dashboard_data.mode_index = mode_val;
-        Dashboard_UI_SubmitDriveMode(mode_val);
+        const uint8_t mode_raw = (CAN_RxData[0] >> 4) & 0x0FU;
+        if(mode_raw <= 4U) {
+          const int32_t mode_index = (int32_t)mode_raw - 1;
+          g_can_dashboard_data.mode_index = mode_index;
+          Dashboard_UI_SubmitDriveMode(mode_index);
+        }
       }
       break;
     }
