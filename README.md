@@ -13,7 +13,8 @@
 | `docs/` | 设计与参考文档，索引见下节 |
 | `legacy/` | 不参与构建的遗留与参考资料，含旧版 F103 板（另一个 `.ioc`），见 [legacy/README.md](legacy/README.md) |
 | `lvgl/`、`FreeRTOS/`、`SDL2-2.32.10/` | 第三方源码，见下节 |
-| `simulator.code-workspace`、`lv_conf.defaults`、`licence.txt` | 上游 `lv_port_pc_vscode` 遗留：前者是 Windows 旧流程的工作区文件，含作者本机路径（`cmake.cmakePath`、构建任务），需自行修改才能用；`lv_conf.defaults` 未被构建引用；`licence.txt` 是上游 MIT 许可证 |
+| `simulator.code-workspace` | 打开仓库的工作区入口，复用 `.vscode/` 中的任务、调试和扩展配置 |
+| `lv_conf.defaults`、`licence.txt` | 上游 `lv_port_pc_vscode` 遗留：前者未被构建引用，后者是上游 MIT 许可证 |
 
 ### 文档索引
 
@@ -57,7 +58,7 @@
 
 ### Install SDL and the build tools
 
-- **Windows (vcpkg):** `vcpkg install sdl2`  (`vcpkg` can be installed from [https://github.com/microsoft/vcpkg](https://github.com/microsoft/vcpkg)) Also install either MinGW or another compiler and `cmake`.
+- **Windows：** 64 位 MinGW（`gcc.exe`、`g++.exe`，调试另需 `gdb.exe`）加入 PATH；在 STM32Cube 扩展中安装 CMake、Ninja、GNU Tools for STM32 和 Programmer。SDL2 使用仓库中的 MinGW 开发包，补齐方式见下方 Windows 说明。
 - **macOS (Homebrew):** `brew install sdl2 cmake make`  
 - **Linux:**  
   - **Debian/Ubuntu:** `sudo apt install build-essential cmake libsdl2-dev`  
@@ -76,6 +77,24 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 
 ## Usage
 
+### Windows（VS Code / PowerShell）
+
+直接打开仓库文件夹或 `simulator.code-workspace`。`Ctrl+Shift+B` 默认执行 `Build Simulator`；在 `Tasks: Run Task` 中可选择日间/夜间模拟器、固件增量/全量构建以及 ST-Link 烧写；F5 选择 `Debug Simulator` 或 `Debug Simulator (night)`，使用 PATH 中的 GDB。
+
+Windows 任务调用 `tools/windows_task.ps1`，无需 Bash。CMake、Ninja 和 ARM 工具链优先从 `CUBE_BUNDLE_PATH`、`%LOCALAPPDATA%/stm32cube/bundles` 查找，再回退到 PATH；`STM32_PROGRAMMER_CLI` 可覆盖烧写工具。模拟器显式使用 PATH 中的 64 位 MinGW，构建缓存放在 `cmake-build-win/`，程序为 `bin/main.exe`；构建时为旧版 MinGW 启用 C++ 格式宏、预先包含 `stdlib.h`（保留对齐分配函数声明），并复制 SDL2.dll 到程序目录。固件仍使用 `stm32_port/build/<预设>/`，全量任务通过 `--clean-first` 清理。
+
+仓库的 `bin/` 忽略规则导致 SDL2 开发包中的运行库未纳入版本控制。若缺少 `SDL2-2.32.10/x86_64-w64-mingw32/bin/SDL2.dll`，从 [SDL2 2.32.10 官方开发包](https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-devel-2.32.10-mingw.tar.gz) 解压该文件到对应位置即可，保留仓库中原有的头文件和导入库。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/windows_task.ps1 -Action BuildSimulator
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/windows_task.ps1 -Action RunSimulator -Night
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/windows_task.ps1 -Action BuildFirmware
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/windows_task.ps1 -Action BuildFirmware -Clean
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/windows_task.ps1 -Action FlashFirmware
+```
+
+固件可加 `-Preset Release`；优化等级沿用 `FW_OPT` 环境变量。默认烧写 Debug 产物，连接与擦写行为见[固件构建](#固件构建vs-code--命令行)。
+
 ### macOS 命令行（推荐）
 
 依赖：`brew install cmake ninja sdl2`。在仓库根目录执行：
@@ -89,7 +108,7 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 - 构建目录固定为 `cmake-build-mac/`，产物 `bin/main`。不要使用 `build/`：VS Code 的 STM32Cube 扩展会用 ARM 工具链自动配置该目录，与模拟器无关。
 - macOS 要求窗口与事件循环在主线程，故 macOS 下 `main()` 直接在主线程运行 LVGL 循环，不启动 FreeRTOS 调度器，且 `lv_conf.h` 中 `LV_USE_OS` 为 `LV_OS_NONE`；其他平台仍走 FreeRTOS 任务。
 - 若 `cmake-build-mac/` 曾被 VS Code 的 CMake Tools/STM32Cube 扩展用 ARM 工具链配置过，缓存里会残留 `arm-none-eabi-ar`，链接报 `archive member '//' not a mach-o file`；`run_sim_mac.sh` 检测到后会自动清目录重配，并显式指定 Apple 的 `ar/ranlib`。
-- VS Code（macOS）：直接打开仓库文件夹，`.vscode/tasks.json` 与 `launch.json` 已配置 `Build Simulator`（⇧⌘B）、`Run Simulator`（任务 `Tasks: Run Test Task`）与 F5 `Debug Simulator (lldb)`，三者均调用 `run_sim_mac.sh`；需装 C/C++ 扩展。`.vscode/settings.json` 让 CMake Tools 指向固件工程 `stm32_port`，不会再用 ARM kit 去配置根目录的模拟器工程；状态栏的 CMake Build/▷ 按钮对应固件，模拟器请用上述任务。首次 lldb 调试若提示开发者工具授权，按提示输入密码或执行 `sudo DevToolsSecurity -enable`。
+- VS Code（macOS）：直接打开仓库文件夹，`.vscode/tasks.json` 与 `launch.json` 已配置 `Build Simulator`（⇧⌘B）、`Run Simulator`（任务 `Tasks: Run Test Task`）与 F5 `Debug Simulator`，三者均调用 `run_sim_mac.sh`；需装 C/C++ 扩展。`.vscode/settings.json` 让 CMake Tools 指向固件工程 `stm32_port`，不会再用 ARM kit 去配置根目录的模拟器工程；状态栏的 CMake Build/▷ 按钮对应固件，模拟器请用上述任务。首次 lldb 调试若提示开发者工具授权，按提示输入密码或执行 `sudo DevToolsSecurity -enable`。
 
 ### 固件构建（VS Code / 命令行）
 
@@ -98,7 +117,7 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 **VS Code（STM32Cube 扩展包）：**
 
 1. 安装 STM32Cube for VS Code 扩展包（含 CMake Tools）。
-2. 直接打开仓库根目录即可。`.vscode/settings.json` 把 `cmake.sourceDirectory` 指向 `stm32_port` 并强制使用 `CMakePresets.json`，CMake Tools 因此以固件工程而不是根目录的模拟器工程为准，模拟器仍用 `run_sim_mac.sh`，二者互不影响。也可以用 `File > Open Folder` 只打开 `stm32_port/`。
+2. 直接打开仓库根目录即可。`.vscode/settings.json` 把 `cmake.sourceDirectory` 指向 `stm32_port` 并强制使用 `CMakePresets.json`，CMake Tools 因此以固件工程而不是根目录的模拟器工程为准，模拟器使用独立任务，二者互不影响。也可以用 `File > Open Folder` 只打开 `stm32_port/`。
 3. 扩展提示配置所发现的 CMake 工程时确认。它按 `stm32_port/.settings/bundles.store.json` 自动安装 CMake、Ninja、GNU Tools for STM32 和 clangd，并配置 `Debug` 预设；之后用状态栏的 Build 按钮或 `CMake: Build` 构建，产物在 `stm32_port/build/Debug/`。
 
 **命令行（macOS/Linux），不依赖 CubeIDE，在仓库根目录执行：**
@@ -113,18 +132,13 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 - 固件优化、任务栈、运行诊断和回归验证见 [固件资源与性能优化](docs/firmware_optimization.md)。CubeIDE 的 `Debug/` 不入库，克隆后需在 CubeIDE 里完整构建一次。
 - 工具链优先取 STM32 VS Code 扩展 bundles 里的 CMake、Ninja 和 GNU Tools for STM32，否则用 PATH 中的同名工具；扩展之外可用 `-DARM_GNU_TOOLCHAIN_BIN=<bin 目录>` 指定工具链。
 - VS Code 任务：`Build Firmware`、`Rebuild Firmware (clean)`（`Tasks: Run Task`），编译报错可点击跳转。
-- ST-Link 烧写：`tools/flash_stlink.sh [文件]` 用 STM32CubeProgrammer 命令行经 SWD 烧写 `stm32_port/build/Debug/DATA_COLLECTION_INTEGRAL.hex` 并回读校验、复位运行；只擦程序用到的扇区，里程记录保留。找工具的顺序见脚本头注释，也可用 `STM32_PROGRAMMER_CLI` 指定路径。VS Code 任务 `Flash Firmware (ST-Link)`、`Build & Flash Firmware (ST-Link)`（先 `Build Firmware` 再烧写）需在本机 `.vscode/tasks.json` 中配置。
+- ST-Link 烧写：`tools/flash_stlink.sh [文件]` 用 STM32CubeProgrammer 命令行经 SWD 烧写 `stm32_port/build/Debug/DATA_COLLECTION_INTEGRAL.hex` 并回读校验、复位运行；只擦程序用到的扇区，里程记录保留。找工具的顺序见脚本头注释，也可用 `STM32_PROGRAMMER_CLI` 指定路径。VS Code 任务 `Flash Firmware (ST-Link)`、`Build & Flash Firmware (ST-Link)`（先 `Build Firmware` 再烧写）已纳入 `.vscode/tasks.json`，Windows 使用原生 PowerShell 入口。
 - 模拟器与固件共用 `stm32_port/Core/Src/dashboard_view.c` 界面，只是数据换成动画演示，设计与约束见 [仪表盘界面](docs/dashboard_ui.md)。
 - 窗口内按键：空格循环模式，`D/A/X/8/E` 选 Default/Acceleration/Autocross/Skidpad/Endurance，`0`–`7` 滑移等级，`R` 圈速计时，`N` 夜间模式，`F` 推入演示告警，`Y` READY 横幅，`[` `]`/`G` 信号强度，`Esc` 退出。鼠标点击区域与触摸屏相同：顶栏开关计时，左上 Logo 重放开屏动画（开屏中点任意处跳过），驾驶模式色块轮转模式，告警条消除一条，眼睛按钮切换夜间。
 
 ### Visual Studio Code
 
-1. Be sure you have installed [SDL and the build tools](#install-sdl-and-the-build-tools)
-2. Open the project by double clicking on `simulator.code-workspace` or opening it with `File/Open Workspace from File`
-3. Install the recommended plugins
-4. Click the Run and Debug page on the left, and select `Debug LVGL demo with gdb` from the drop-down on the top. Like this:
-![image](https://github.com/lvgl/lv_port_pc_vscode/assets/7599318/f527b235-5718-4949-b5f0-bd807b3a64ba)
-5. Click the Play button or hit F5 to start debugging.
+打开仓库文件夹或 `simulator.code-workspace` 后安装推荐扩展。模拟器与固件使用同一份 `.vscode/` 任务，工作区文件不再覆盖工具路径或任务。构建、运行与调试方式见上方对应平台说明。
 
 #### ArchLinux User
 

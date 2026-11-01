@@ -2,6 +2,14 @@
 
 ## 未发布
 
+### 2026-11-01 Windows VS Code 任务适配
+
+- `.vscode/tasks.json` 增加 Windows PowerShell 进程入口，覆盖模拟器构建、日间/夜间运行、固件增量/全量构建和 ST-Link 烧写；自动从 STM32Cube bundles 或 PATH 查找工具，不写本机路径。非 Windows 任务继续通过 Bash 调用原脚本。
+- 新增 `tools/windows_task.ps1`：固件沿用 CMake Debug/Release 预设，全量构建使用 `--clean-first`；模拟器显式选择 64 位 MinGW，缓存放在 `cmake-build-win/`，兼容本机 MinGW 8.1 的 C++ 格式宏与对齐分配声明，并复制 SDL2.dll。缺失的 SDL2.dll 已在本机从官方同版本开发包补齐，仍按现有忽略规则留在本地，补齐方法见 [README](README.md#windowsvs-code--powershell)。
+- 工作区删除旧机器的工具路径及重复的任务/调试配置，统一复用 `.vscode/`；模拟器调试在 Windows 使用 GDB，macOS 继续使用 LLDB。README 更新 Windows 依赖与用法。
+- 验证：Windows PowerShell 5.1 下模拟器构建、固件增量/全量构建通过，0 编译警告；CMake 固件 Flash 295,756 B、主 SRAM 109,632 B、CCM 61,440 B。Git Bash 下 `./build_fw.sh` 通过；CubeIDE headless `-cleanBuild DATA_COLLECTION_INTEGRAL/Debug` 完整构建通过，0 错误、0 警告。从 tasks.json 读取日间/夜间启动命令，各在 SDL dummy 驱动下运行 7 秒，未提前退出；烧写任务用替身工具验证 SWD/UR、HEX 路径、校验/复位参数、含空格的工具路径及失败返回。
+- **未验证 / 待办**：VS Code UI 中点击任务和 F5 调试、实际窗口交互、ST-Link 烧写/回读/复位与上板运行未验证；本次 Windows 环境未复测 macOS 的 `./run_sim_mac.sh --build-only` 和 LLDB。
+
 ### 2026-10-31 固件改用 CMake 工程，VS Code 的 STM32Cube 扩展可自动配置
 
 - 新增 `stm32_port/CMakeLists.txt`、`CMakePresets.json`（Debug/Release）、`cmake/gcc-arm-none-eabi.cmake`、`cmake/fw_version.cmake`，以及与 `CAN2RS485` 同款的 `stm32_port/.settings/{bundles,bundles-lock,ide}.store.json`（CMake 4.2.3、Ninja 1.13.2、GNU Tools for STM32 14.3.1、clangd 21.1.0，器件 STM32F407ZET6）。克隆后用扩展打开即可按这些文件装工具并配置预设，不再依赖手写脚本找工具。

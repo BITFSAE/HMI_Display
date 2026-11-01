@@ -3,61 +3,100 @@
     "tasks": [
         {
             "label": "Build Simulator",
-            "type": "shell",
-            "command": "${workspaceFolder}/run_sim_mac.sh",
-            "args": ["--build-only"],
-            "group": { "kind": "build", "isDefault": true },
+            "type": "process",
+            "command": "bash",
+            "args": ["${workspaceFolder}/run_sim_mac.sh", "--build-only"],
+            "group": {"kind": "build", "isDefault": true},
             "problemMatcher": "$gcc",
-            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+            "presentation": {"reveal": "always", "panel": "shared", "clear": true},
+            "windows": {
+                "command": "powershell.exe",
+                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/windows_task.ps1", "-Action", "BuildSimulator"]
+            },
+            "options": {"cwd": "${workspaceFolder}"}
         },
         {
             "label": "Run Simulator",
-            "type": "shell",
-            "command": "${workspaceFolder}/run_sim_mac.sh",
-            "group": { "kind": "test", "isDefault": true },
+            "type": "process",
+            "command": "bash",
+            "group": {"kind": "test", "isDefault": true},
             "problemMatcher": "$gcc",
-            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
+            "windows": {
+                "command": "powershell.exe",
+                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/windows_task.ps1", "-Action", "RunSimulator"]
+            },
+            "options": {"cwd": "${workspaceFolder}"},
+            "args": ["${workspaceFolder}/run_sim_mac.sh"]
         },
         {
             "label": "Run Simulator (night)",
-            "type": "shell",
-            "command": "${workspaceFolder}/run_sim_mac.sh",
-            "args": ["--night"],
+            "type": "process",
+            "command": "bash",
+            "args": ["${workspaceFolder}/run_sim_mac.sh", "--night"],
             "problemMatcher": "$gcc",
-            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
+            "windows": {
+                "command": "powershell.exe",
+                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/windows_task.ps1", "-Action", "RunSimulator", "-Night"]
+            },
+            "options": {"cwd": "${workspaceFolder}"}
         },
         {
             "label": "Build Firmware",
-            "type": "shell",
-            "command": "${workspaceFolder}/build_fw.sh",
+            "type": "process",
+            "command": "bash",
             "group": "build",
             "problemMatcher": "$gcc",
-            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+            "presentation": {"reveal": "always", "panel": "shared", "clear": true},
+            "windows": {
+                "command": "powershell.exe",
+                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/windows_task.ps1", "-Action", "BuildFirmware"]
+            },
+            "options": {"cwd": "${workspaceFolder}"},
+            "args": ["${workspaceFolder}/build_fw.sh"]
         },
         {
             "label": "Rebuild Firmware (clean)",
-            "type": "shell",
-            "command": "${workspaceFolder}/build_fw.sh",
-            "args": ["clean"],
+            "type": "process",
+            "command": "bash",
+            "args": ["${workspaceFolder}/build_fw.sh", "clean"],
             "group": "build",
             "problemMatcher": "$gcc",
-            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+            "presentation": {"reveal": "always", "panel": "shared", "clear": true},
+            "windows": {
+                "command": "powershell.exe",
+                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/windows_task.ps1", "-Action", "BuildFirmware", "-Clean"]
+            },
+            "options": {"cwd": "${workspaceFolder}"}
         },
         {
             "label": "Flash Firmware (ST-Link)",
-            "type": "shell",
-            "command": "${workspaceFolder}/tools/flash_stlink.sh",
+            "type": "process",
+            "command": "bash",
             "problemMatcher": [],
-            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
+            "windows": {
+                "command": "powershell.exe",
+                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/windows_task.ps1", "-Action", "FlashFirmware"]
+            },
+            "options": {"cwd": "${workspaceFolder}"},
+            "args": ["${workspaceFolder}/tools/flash_stlink.sh"]
         },
         {
             "label": "Build & Flash Firmware (ST-Link)",
-            "type": "shell",
+            "type": "process",
             "dependsOn": "Build Firmware",
             "dependsOrder": "sequence",
-            "command": "${workspaceFolder}/tools/flash_stlink.sh",
+            "command": "bash",
             "problemMatcher": [],
-            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+            "presentation": {"reveal": "always", "panel": "dedicated", "clear": true},
+            "windows": {
+                "command": "powershell.exe",
+                "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/tools/windows_task.ps1", "-Action", "FlashFirmware"]
+            },
+            "options": {"cwd": "${workspaceFolder}"},
+            "args": ["${workspaceFolder}/tools/flash_stlink.sh"]
         }
     ]
 }

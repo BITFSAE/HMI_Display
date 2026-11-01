@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug Simulator (lldb)",
+            "name": "Debug Simulator",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/bin/main",
@@ -10,10 +10,15 @@
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "MIMode": "lldb",
-            "preLaunchTask": "Build Simulator"
+            "preLaunchTask": "Build Simulator",
+            "windows": {
+                "program": "${workspaceFolder}/bin/main.exe",
+                "MIMode": "gdb",
+                "miDebuggerPath": "gdb.exe"
+            }
         },
         {
-            "name": "Debug Simulator (lldb, night)",
+            "name": "Debug Simulator (night)",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/bin/main",
@@ -21,7 +26,12 @@
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "MIMode": "lldb",
-            "preLaunchTask": "Build Simulator"
+            "preLaunchTask": "Build Simulator",
+            "windows": {
+                "program": "${workspaceFolder}/bin/main.exe",
+                "MIMode": "gdb",
+                "miDebuggerPath": "gdb.exe"
+            }
         }
     ]
 }
