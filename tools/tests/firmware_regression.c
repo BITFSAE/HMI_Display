@@ -254,7 +254,7 @@ static void test_can_tx_recovery(void)
         test_can_idle_wake();
     }
     assert(test_tx_count==sent+USER_CAN_TX_QUEUE_CAPACITY+1U);
-    assert(test_tx_header.StdId==0x310U&&test_tx_header.DLC==8U&&test_tx_data[0]=='2');
+    assert(test_tx_header.StdId==0x310U&&test_tx_header.DLC==8U&&test_tx_data[0]==4U);
 
     /* 周期突发超过邮箱数时保留队尾，任务轮询后全部发完。 */
     sent=test_tx_count;
@@ -530,17 +530,27 @@ static void test_steering(void)
 {
     unsigned invalid=g_can_rx_invalid_count,relayed;
     Dashboard_UI_SubmitDriveMode(0);test_tick+=300;Dashboard_UI_Process();assert(g_drive_mode==DRIVE_MODE_ACCELERATION);
-    /* 0x310：只接受 mode + 48（47..51），包括默认模式请求。 */
+    /* 新 ECU 只接受数值 1..5；0、6 及旧 ASCII 编码必须拒绝。 */
+    static const uint8_t invalid_codes[]={0U,6U,47U,48U,49U,50U,51U,0xFFU};
     relayed=test_tx_id_count[0x310];
-    inject_wheel(0x310,8,0x35);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+1);
-    inject_wheel(0x310,8,0x2E);assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+2);
-    inject_wheel(0x310,8,0x31);assert(test_tx_id_count[0x310]==relayed+1&&test_tx_id_data[0x310][0]==0x31);
+    for(unsigned i=0;i<sizeof(invalid_codes);i++) {
+        inject_wheel(0x310,8,invalid_codes[i]);
+        assert(test_tx_id_count[0x310]==relayed&&g_can_rx_invalid_count==invalid+i+1U);
+    }
+    for(uint8_t code=1U;code<=5U;code++) {
+        inject_wheel(0x310,8,code);
+        assert(test_tx_id_count[0x310]==++relayed&&test_tx_id_data[0x310][0]==code);
+        assert(test_tx_header.StdId==0x310U&&test_tx_header.DLC==8U);
+        test_tick+=300;Dashboard_UI_Process();
+        assert(g_mode_index==(int32_t)code-2);
+    }
+    inject_wheel(0x310,8,3U);
     assert((g_dashboard_dirty_mask&DASH_DIRTY_MODE)!=0U&&g_pending_dashboard_data.mode_index==1);
     /* 计时锁生效：0x310 不转发，界面也不接受新模式，只请求 MODE LOCK 告警。 */
     test_tick+=300;Dashboard_UI_Process();assert(g_drive_mode==DRIVE_MODE_AUTOCROSS);
     g_lap_analysis_active=1U;
     relayed=test_tx_id_count[0x310];
-    inject_wheel(0x310,8,'2');
+    inject_wheel(0x310,8,4U);
     assert(test_tx_id_count[0x310]==relayed&&g_drive_mode==DRIVE_MODE_AUTOCROSS&&g_pending_mode_lock_alert==1U);
     g_lap_analysis_active=0U;g_pending_mode_lock_alert=0U;
     /* 0x703 由方向盘整帧组好，每个 DLC>=2 的帧都原样转发（ID、DLC、内容不变）。 */
@@ -549,9 +559,10 @@ static void test_steering(void)
     assert(test_tx_id_count[0x703]==commands+1&&test_tx_header.DLC==2&&test_tx_id_data[0x703][0]==5&&test_tx_id_data[0x703][1]==0);
     assert((g_dashboard_dirty_mask&DASH_DIRTY_SLIP)!=0U&&g_pending_dashboard_data.slip_level==5);
     /* DLC 不足 2 丢弃；滑级越界照常转发但不显示。 */
-    inject_wheel(0x703,1,3);assert(test_tx_id_count[0x703]==commands+1&&g_can_rx_invalid_count==invalid+3);
+    invalid=g_can_rx_invalid_count;
+    inject_wheel(0x703,1,3);assert(test_tx_id_count[0x703]==commands+1&&g_can_rx_invalid_count==invalid+1);
     inject_cmd(9,0);
-    assert(test_tx_id_count[0x703]==commands+2&&test_tx_id_data[0x703][0]==9&&g_can_rx_invalid_count==invalid+4);
+    assert(test_tx_id_count[0x703]==commands+2&&test_tx_id_data[0x703][0]==9&&g_can_rx_invalid_count==invalid+2);
     assert(g_pending_dashboard_data.slip_level==5);
     /* 0x700..0x702 已停用：即使到达也不处理、不转发。 */
     unsigned tx_before=test_tx_count;
@@ -1390,7 +1401,7 @@ static void hold_mode_tile(void)
 static void test_mode_touch(void)
 {
     static const int32_t modes[5]={1,2,3,-1,0};
-    static const uint8_t expected[5]={'1','2','3','/','0'};
+    static const uint8_t expected[5]={3U,4U,5U,1U,2U};
     unsigned mode_tx;
 
     assert(Dash_View_HitTest(56,106)==DASH_ZONE_MODE);
@@ -1432,7 +1443,7 @@ static void test_mode_touch(void)
     Dashboard_UI_SubmitDriveMode(-1);
     mode_tx=test_tx_id_count[0x310];
     hold_mode_tile();
-    assert(test_tx_id_count[0x310]==mode_tx+1U&&test_tx_id_data[0x310][0]=='0');
+    assert(test_tx_id_count[0x310]==mode_tx+1U&&test_tx_id_data[0x310][0]==2U);
     assert(g_drive_mode==DRIVE_MODE_ACCELERATION&&g_mode_index==0);
 
     /* 按下后 199 ms 松手，不切模式、不发送；松手后也不能补发。 */
@@ -1472,7 +1483,7 @@ static void test_mode_touch_release(void)
     for(int32_t mode=-1;mode<4;mode++) {
         hold_mode_tile();
         assert(g_mode_index==mode&&test_tx_id_count[0x310]==++mode_tx);
-        assert(test_tx_id_data[0x310][0]==(uint8_t)(48+mode));
+        assert(test_tx_id_data[0x310][0]==(uint8_t)(mode+2));
 
         /* 上一个 helper 已上报松手；不足 80 ms 的丢点不能让长按重新布防。 */
         test_tick+=10;Dashboard_UI_SubmitTouchState(56,106,1);
@@ -1569,7 +1580,7 @@ static void test_default_mode(void)
         if(expected==4) expected=-1;
         hold_mode_tile();
         assert(test_tx_id_count[0x310]==++mode_tx);
-        assert(test_tx_id_data[0x310][0]==(uint8_t)(expected+48));
+        assert(test_tx_id_data[0x310][0]==(uint8_t)(expected+2));
         assert(test_tx_header.DLC==8U);
         for(unsigned byte=1;byte<8;byte++) assert(test_tx_id_data[0x310][byte]==0U);
         const uint8_t feedback[5]={(uint8_t)((expected+1)<<4),0,0,0,0};
@@ -1580,7 +1591,7 @@ static void test_default_mode(void)
     /* 默认模式首次触摸请求 AC，重复的旧模式回报不撤销尚未应用的请求。 */
     hold_mode_tile();
     assert(g_mode_index==0&&test_tx_id_count[0x310]==mode_tx+1U);
-    assert(test_tx_id_data[0x310][0]=='0');
+    assert(test_tx_id_data[0x310][0]==2U);
     Dashboard_UI_RequestDriveMode(1);Dashboard_UI_SubmitDriveMode(0);
     test_tick+=300;Dashboard_UI_Process();assert(g_mode_index==1);
 
@@ -1593,9 +1604,9 @@ static void test_default_mode(void)
     /* 方向盘/网关发来的默认模式请求也按原 ID 和 DLC 转发。 */
     mode_tx=test_tx_id_count[0x310];
     Dashboard_UI_RequestDriveMode(3);test_tick+=300;Dashboard_UI_Process();
-    inject_wheel(0x310,8,47);test_tick+=300;Dashboard_UI_Process();
+    inject_wheel(0x310,8,1U);test_tick+=300;Dashboard_UI_Process();
     assert(g_mode_index==-1&&test_tx_id_count[0x310]==mode_tx+1U);
-    assert(test_tx_id_data[0x310][0]==47&&test_tx_header.DLC==8U);
+    assert(test_tx_id_data[0x310][0]==1U&&test_tx_header.DLC==8U);
 
     /* 邮箱阻塞并填满队列时，EN→DF 请求失败不得先改显示；恢复后再次点击可切换。 */
     Dashboard_UI_RequestDriveMode(3);test_tick+=300;Dashboard_UI_Process();

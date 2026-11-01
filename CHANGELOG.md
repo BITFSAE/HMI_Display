@@ -2,6 +2,13 @@
 
 ## 未发布
 
+### 2026-11-01 驾驶模式请求改为数值 1～5
+
+- 按 ECU 最新程序，HMI 触摸生成的 `0x310` byte0 从 47～51 改为数值 1～5（HEX `01`～`05`），对应 DF/AC/AX/8/EN；DLC 8、byte1～7 为 0。方向盘接收路径同样按 1～5 校验、转发和更新界面，拒绝 0、6 及旧 ASCII 编码。`0x509` 回报仍为 0～4。
+- 保留计时锁、发送队列满时不换档和五档轮转。更新 CAN、方向盘说明与回归，覆盖五档请求、旧编码拒绝、方向盘转发、两轮触摸请求与 ECU 回报；新增断言在修复前失败。
+- 验证：`python3 tools/run_firmware_tests.py`（ASan/UBSan）通过；`./build_fw.sh` 无警告，Flash 295,824 B、主 SRAM 109,632 B、CCM 61,440 B。模拟器未改动。
+- **未发布/待办**：中央接口库已同步为 [`adebd2f`](https://github.com/BITFSAE/vehicle-interfaces/commit/adebd2f)，方向盘及遥测网关发送端尚未同步；旧方向盘发送编码会被本版 HMI 拒绝。新固件尚未上板，需抓包核对新 ECU 五档响应；本机未找到 STM32CubeIDE 应用，未运行 CubeIDE 完整构建。
+
 ### 2026-11-01 修复 SOC 小数点显示为方框
 
 - SOC 改为一位小数后，`dash_font_xl`（56 px）字符集缺少 `.`，小数点显示为缺字方框。`tools/gen_dash_fonts.sh` 给该字体补入 `.` 并重新生成 `dash_font_xl.c`；其余字体重新生成结果不变。
