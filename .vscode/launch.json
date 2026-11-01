@@ -1,0 +1,27 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Simulator (lldb)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/bin/main",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "MIMode": "lldb",
+            "preLaunchTask": "Build Simulator"
+        },
+        {
+            "name": "Debug Simulator (lldb, night)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/bin/main",
+            "args": ["--night"],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "MIMode": "lldb",
+            "preLaunchTask": "Build Simulator"
+        }
+    ]
+}

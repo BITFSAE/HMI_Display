@@ -1,0 +1,63 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Simulator",
+            "type": "shell",
+            "command": "${workspaceFolder}/run_sim_mac.sh",
+            "args": ["--build-only"],
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "Run Simulator",
+            "type": "shell",
+            "command": "${workspaceFolder}/run_sim_mac.sh",
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+        },
+        {
+            "label": "Run Simulator (night)",
+            "type": "shell",
+            "command": "${workspaceFolder}/run_sim_mac.sh",
+            "args": ["--night"],
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+        },
+        {
+            "label": "Build Firmware",
+            "type": "shell",
+            "command": "${workspaceFolder}/build_fw.sh",
+            "group": "build",
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "Rebuild Firmware (clean)",
+            "type": "shell",
+            "command": "${workspaceFolder}/build_fw.sh",
+            "args": ["clean"],
+            "group": "build",
+            "problemMatcher": "$gcc",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "Flash Firmware (ST-Link)",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/flash_stlink.sh",
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+        },
+        {
+            "label": "Build & Flash Firmware (ST-Link)",
+            "type": "shell",
+            "dependsOn": "Build Firmware",
+            "dependsOrder": "sequence",
+            "command": "${workspaceFolder}/tools/flash_stlink.sh",
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+        }
+    ]
+}

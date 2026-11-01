@@ -49,7 +49,7 @@
 
 ### 构建产物与本机配置不入库
 
-`stm32_port/Debug/`、`stm32_port/build/`、`cmake-build-mac/`、`bin/` 和 Keil 的 `MDK-ARM/DATA_COLLECTION_INTEGRAL/` 都被 `.gitignore` 忽略；2026-10-10 前误入库的产物已改为不跟踪，旧版本仍可从 git 历史取回。固件请用 `./build_fw.sh` 或 CubeIDE 重新构建。`.vscode/` 和根目录 `.settings/` 是本机 IDE 配置，同样不入库。
+`stm32_port/Debug/`、`stm32_port/build/`、`cmake-build-mac/`、`bin/` 和 Keil 的 `MDK-ARM/DATA_COLLECTION_INTEGRAL/` 都被 `.gitignore` 忽略；2026-10-10 前误入库的产物已改为不跟踪，旧版本仍可从 git 历史取回。固件请用 `./build_fw.sh` 或 CubeIDE 重新构建。根目录 `.settings/` 是本机 IDE 状态，不入库；`.vscode/`（任务、调试、CMake 和扩展设置）入库，不写本机路径和串口号等个人信息。
 
 `stm32_port/MDK-ARM/` 的 Keil 工程只含 CubeMX 生成的文件（还包括已移除的 FatFs/SD），没有 LVGL 和 `gps.c`、`dashboard_*.c`、`odometer_flash.c` 等应用模块，**不能**构建当前固件，以 CubeIDE 工程和 `build_fw.sh` 为准。
 
@@ -89,7 +89,7 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 - 构建目录固定为 `cmake-build-mac/`，产物 `bin/main`。不要使用 `build/`：VS Code 的 STM32Cube 扩展会用 ARM 工具链自动配置该目录，与模拟器无关。
 - macOS 要求窗口与事件循环在主线程，故 macOS 下 `main()` 直接在主线程运行 LVGL 循环，不启动 FreeRTOS 调度器，且 `lv_conf.h` 中 `LV_USE_OS` 为 `LV_OS_NONE`；其他平台仍走 FreeRTOS 任务。
 - 若 `cmake-build-mac/` 曾被 VS Code 的 CMake Tools/STM32Cube 扩展用 ARM 工具链配置过，缓存里会残留 `arm-none-eabi-ar`，链接报 `archive member '//' not a mach-o file`；`run_sim_mac.sh` 检测到后会自动清目录重配，并显式指定 Apple 的 `ar/ranlib`。
-- VS Code（macOS）：直接打开仓库文件夹，在本机 `.vscode/`（已被 `.gitignore` 忽略）中配置 `Build Simulator`（⇧⌘B）、`Run Simulator`（任务 `Tasks: Run Test Task`）与 F5 `Debug Simulator (lldb)`，三者均调用 `run_sim_mac.sh`；需装 C/C++ 扩展，`cmake.configureOnOpen` 须关闭，且 `cmake.buildDirectory` 指向 `cmake-build-mac`，否则 STM32Cube 扩展会用 ARM 工具链污染 `build/`。首次 lldb 调试若提示开发者工具授权，按提示输入密码或执行 `sudo DevToolsSecurity -enable`。状态栏的 CMake Tools「Build/▷」按钮可能选到 ARM kit，请改用上述任务。
+- VS Code（macOS）：直接打开仓库文件夹，`.vscode/tasks.json` 与 `launch.json` 已配置 `Build Simulator`（⇧⌘B）、`Run Simulator`（任务 `Tasks: Run Test Task`）与 F5 `Debug Simulator (lldb)`，三者均调用 `run_sim_mac.sh`；需装 C/C++ 扩展。`.vscode/settings.json` 让 CMake Tools 指向固件工程 `stm32_port`，不会再用 ARM kit 去配置根目录的模拟器工程；状态栏的 CMake Build/▷ 按钮对应固件，模拟器请用上述任务。首次 lldb 调试若提示开发者工具授权，按提示输入密码或执行 `sudo DevToolsSecurity -enable`。
 
 ### 固件构建（VS Code / 命令行）
 
@@ -98,7 +98,7 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 **VS Code（STM32Cube 扩展包）：**
 
 1. 安装 STM32Cube for VS Code 扩展包（含 CMake Tools）。
-2. 用 `File > Open Folder` 打开 `stm32_port/`。打开仓库根目录时扩展会同时发现根目录的模拟器工程，需要只配置 `stm32_port`（模拟器仍用 `run_sim_mac.sh`），这一用法尚未实机确认，见 [CHANGELOG](CHANGELOG.md) 的待办。
+2. 直接打开仓库根目录即可。`.vscode/settings.json` 把 `cmake.sourceDirectory` 指向 `stm32_port` 并强制使用 `CMakePresets.json`，CMake Tools 因此以固件工程而不是根目录的模拟器工程为准，模拟器仍用 `run_sim_mac.sh`，二者互不影响。也可以用 `File > Open Folder` 只打开 `stm32_port/`。
 3. 扩展提示配置所发现的 CMake 工程时确认。它按 `stm32_port/.settings/bundles.store.json` 自动安装 CMake、Ninja、GNU Tools for STM32 和 clangd，并配置 `Debug` 预设；之后用状态栏的 Build 按钮或 `CMake: Build` 构建，产物在 `stm32_port/build/Debug/`。
 
 **命令行（macOS/Linux），不依赖 CubeIDE，在仓库根目录执行：**

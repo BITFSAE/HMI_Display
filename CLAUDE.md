@@ -23,6 +23,6 @@
 - 改引脚、外设、时序 → `docs/hardware.md`；改 CAN 接收/发送、超时 → `docs/can_interface.md`；改可调参数 → `docs/configuration.md`；改 GPS、圈速、冲刺 → `docs/gps_lap.md`。
 - 对外 CAN 帧（ID、DLC、周期、字段）以 `vehicle-interfaces` 仓库为准：先在该仓库评审，再修改本仓库实现和文档；未经授权不得声称已同步。
 - 每项详细事实只在一处维护，其他位置用链接。文档凝练，不重复强调，不写说教和空话。
-- 完成的工作和未验证项记入 `CHANGELOG.md`。及时 commit 和 push。构建产物和本机 IDE 配置（`.vscode/`、根目录 `.settings/`）不入库。
+- 完成的工作和未验证项记入 `CHANGELOG.md`。及时 commit 和 push。构建产物和根目录 `.settings/`（本机 IDE 状态）不入库；`.vscode/` 入库，不写本机路径、串口号等个人信息。
 
 DO NOT send optional commentary

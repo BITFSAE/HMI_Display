@@ -8,7 +8,9 @@
 - 源码目录与 LVGL 排除清单仍直接读 `.cproject`，与 CubeIDE 共用同一份；`.ioc` 的 Toolchain 保持 STM32CubeIDE，CubeMX 重新生成不会覆盖 CMake 文件。固件版本头改由 `cmake/fw_version.cmake` 生成。
 - `build_fw.sh` 改为调用该 CMake 工程（保留 `clean`、`FW_OPT`，新增 `PRESET`），删除 `build_fw.mk`。产物目录由 `stm32_port/build_vscode/` 改为 `stm32_port/build/<预设>/`，`tools/flash_stlink.sh` 默认路径、README、`docs/firmware_optimization.md` 同步；`tools/firmware_report.py` 去掉栈帧路径里的工作目录前缀。
 - 验证：`./build_fw.sh clean` 0 警告，Flash 295,752 B、主 SRAM 109,632 B、CCM 61,440 B，与改前同一提交的 `build_fw.mk` 构建完全一致；两份 ELF 符号表（名称、地址、大小）无差异，BIN 仅 `__TIME__` 字符串 3 字节不同。只复制已跟踪文件（无 `.git`、无构建目录）并用最小 `PATH` 全量构建结果相同。`PRESET=Release` 构建通过。`python3 tools/run_firmware_tests.py` 通过。
-- **未验证 / 待办**：未在干净机器上走一遍扩展的首次打开流程（发现工程、自动安装 bundles、选预设、状态栏构建），上述流程依据扩展自带文档和本机已装扩展的行为；打开仓库根目录时扩展会同时发现根目录的模拟器工程，是否只配置 `stm32_port` 待实机确认，确认前建议直接打开 `stm32_port/`。CubeIDE 完整构建未运行；`.vscode` 的 Cortex-Debug/SWD 调试配置未添加；上板未测。
+- `.vscode/` 改为入库（`.gitignore` 去掉该项，`CLAUDE.md`、`AGENTS.md` 的相应规则同步）：`settings.json`（`cmake.sourceDirectory` 指向 `stm32_port`、强制使用预设、`cube-cmake`、clangd 参数、烧写固件路径）、`tasks.json`、`launch.json`（模拟器）、新增 `extensions.json`。去掉模拟器专用的 `cmake.buildDirectory`、`configureSettings`、`automaticReconfigure`、`configureOnOpen: false`，以及本机串口号 `serialFlash.port`（个人串口请放用户设置）。固件任务的问题匹配器改为 `$gcc`，CMake 以绝对路径编译。此前直接打开仓库根目录时 CMake Tools 会用 ARM kit 配置根目录的模拟器工程并报 `-arch` 错误，STM32 扩展也找不到 `stm32_port`；设置 `cmake.sourceDirectory` 后解决。
+- 验证（补充）：本机 VS Code 打开仓库根目录后，经 `cube-cmake` 按 `Debug` 预设配置并构建成功，生成 ELF/HEX/BIN（用户确认；日志核对配置命令为 `cube-cmake -DCMAKE_TOOLCHAIN_FILE=…/gcc-arm-none-eabi.cmake -S stm32_port -B stm32_port/build/Debug -G Ninja`，工具链来自 bundles）。
+- **未验证 / 待办**：未在干净机器上走一遍首次打开流程（克隆后扩展自动安装 bundles、配置、构建）；去掉 `configureOnOpen: false` 后的首次打开行为未测；STM32 扩展日志仍有 `Cannot configure code indexing until an active project is set`，其 clangd 代码索引是否生效未确认。CubeIDE 完整构建未运行；固件的 Cortex-Debug/SWD 调试配置未添加；上板未测。
 
 ### 2026-10-31 SOC 显示一位小数
 

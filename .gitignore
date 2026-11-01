@@ -21,8 +21,7 @@ stm32_port/MDK-ARM/DATA_COLLECTION_INTEGRAL/
 *.uvguix.*
 *.bak
 
-# 本机 IDE 配置: VS Code 任务/设置与 STM32 VS Code 扩展的 bundles 状态(含本机路径), 不入库
-.vscode/
+# 本机 IDE 状态(含本机路径), 不入库; 固件的 stm32_port/.settings/*.store.json 与 .vscode/ 入库
 /.settings/
 
 # 外部接口仓库的本地克隆(仅作 DBC 与接口文档参考, 权威内容以该仓库为准, 不入库)
