@@ -7,9 +7,11 @@ cmake-build-*/
 tmp/
 
 # STM32CubeIDE / generated build outputs
-# 注: 构建产物已不入库(历史提交里仍有旧版本); 固件请用 ./build_fw.sh 或 CubeIDE 重新构建
+# 注: 构建产物已不入库(历史提交里仍有旧版本); 固件请用 ./build_fw.sh、VS Code 的 STM32Cube 扩展或 CubeIDE 重新构建
+# CMake 固件构建输出在 stm32_port/build/, 已被上面的 build/ 覆盖
 stm32_port/Debug/
 stm32_port/Release/
+# 旧版 build_fw.sh 的输出目录, 本机可能还有残留
 stm32_port/build_vscode/
 legacy/stm32_display/Debug/
 legacy/stm32_display/Release/

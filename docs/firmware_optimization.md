@@ -26,8 +26,8 @@ Flash 节省 197,556 B，剩余 296,584 B。
 FW_OPT=-O0 ./build_fw.sh  # 排查优化相关问题时使用；默认恢复为 -Os
 ```
 
-命令行构建需要 Python 3 生成内存报告。CubeMX 的堆大小、Idle 栈和主栈配置已同步。CubeIDE Debug 与命令行均使用 `-Os -g3`、Cortex-M4F 硬浮点。命令行构建在参数或工具链版本变化后自动重编对象。
-产物位于 `stm32_port/build_vscode/`，包括 ELF、BIN、HEX、MAP 和 `.memory.json`。BIN 的烧录地址为 `0x08000000`；HEX 自带地址。
+命令行构建需要 Python 3 生成内存报告。CubeMX 的堆大小、Idle 栈和主栈配置已同步。CubeIDE Debug 与 CMake 构建（`stm32_port/CMakeLists.txt`，VS Code 的 STM32Cube 扩展和 `build_fw.sh` 共用）均使用 `-Os -g3`、Cortex-M4F 硬浮点。
+产物位于 `stm32_port/build/Debug/`，包括 ELF、BIN、HEX、MAP 和 `.memory.json`。BIN 的烧录地址为 `0x08000000`；HEX 自带地址。
 历史提交中的 `stm32_port/Debug/` 产物未更新，使用 CubeIDE 时需重新构建。
 
 ## 执行方式

@@ -8,7 +8,7 @@
 | --- | --- |
 | `stm32_port/` | **车手屏固件**，CubeIDE 工程名仍沿用旧名 `DATA_COLLECTION_INTEGRAL`。外设配置源是 `DATA_COLLECTION_INTEGRAL.ioc`（本仓库的车手屏 `.ioc` 只有这一个），应用代码在 `Core/Src`，`Core/lvgl` 是固件用的 LVGL 副本 |
 | `src/`、`CMakeLists.txt`、`config/`、`lv_conf.h`、`run_sim_mac.sh` | PC/macOS 模拟器（SDL2 + FreeRTOS） |
-| `build_fw.sh`、`build_fw.mk` | 固件命令行构建 |
+| `build_fw.sh` | 固件命令行构建，调用 `stm32_port/` 下的 CMake 工程（`CMakeLists.txt`、`CMakePresets.json`、`cmake/`） |
 | `tools/` | 字体、Logo 和开屏位图生成（`gen_dash_splash.sh`）、开屏动画浏览器原型（`splash_preview/`）、固件内存报告、固件回归测试、GPS 测试数据生成（`gen_nmea.py`，输出 UM982 NMEA 测试语句）、ST-Link 烧写（`flash_stlink.sh`） |
 | `docs/` | 设计与参考文档，索引见下节 |
 | `legacy/` | 不参与构建的遗留与参考资料，含旧版 F103 板（另一个 `.ioc`），见 [legacy/README.md](legacy/README.md) |
@@ -38,7 +38,7 @@
 | 目录 | 版本 | 使用方 |
 | --- | --- | --- |
 | `lvgl/` | 9.5.0，完整源码树 | 模拟器（CMake） |
-| `stm32_port/Core/lvgl/` | 9.5.0，固件所需的裁剪子集；`src/` 与 `lvgl/src` 一致，仅 `lv_obj_style_gen.h` 一处缩进不同 | 固件（CubeIDE 与 `build_fw.sh`） |
+| `stm32_port/Core/lvgl/` | 9.5.0，固件所需的裁剪子集；`src/` 与 `lvgl/src` 一致，仅 `lv_obj_style_gen.h` 一处缩进不同 | 固件（CubeIDE 与 CMake） |
 | `FreeRTOS/` | V11.1.0 | 仅模拟器（Windows 用 MinGW 端口，其余用 POSIX 端口） |
 | `stm32_port/Middlewares/Third_Party/FreeRTOS/` | V10.3.1 | 固件，由 CubeMX 管理 |
 | `SDL2-2.32.10/` | 2.32.10 | 仅 Windows（MinGW）模拟器；macOS/Linux 使用系统安装的 SDL2 |
@@ -49,7 +49,7 @@
 
 ### 构建产物与本机配置不入库
 
-`stm32_port/Debug/`、`stm32_port/build_vscode/`、`cmake-build-mac/`、`bin/` 和 Keil 的 `MDK-ARM/DATA_COLLECTION_INTEGRAL/` 都被 `.gitignore` 忽略；2026-10-10 前误入库的产物已改为不跟踪，旧版本仍可从 git 历史取回。固件请用 `./build_fw.sh` 或 CubeIDE 重新构建。`.vscode/` 和根目录 `.settings/` 是本机 IDE 配置，同样不入库。
+`stm32_port/Debug/`、`stm32_port/build/`、`cmake-build-mac/`、`bin/` 和 Keil 的 `MDK-ARM/DATA_COLLECTION_INTEGRAL/` 都被 `.gitignore` 忽略；2026-10-10 前误入库的产物已改为不跟踪，旧版本仍可从 git 历史取回。固件请用 `./build_fw.sh` 或 CubeIDE 重新构建。`.vscode/` 和根目录 `.settings/` 是本机 IDE 配置，同样不入库。
 
 `stm32_port/MDK-ARM/` 的 Keil 工程只含 CubeMX 生成的文件（还包括已移除的 FatFs/SD），没有 LVGL 和 `gps.c`、`dashboard_*.c`、`odometer_flash.c` 等应用模块，**不能**构建当前固件，以 CubeIDE 工程和 `build_fw.sh` 为准。
 
@@ -91,21 +91,29 @@ LVGL 与 FreeRTOS 已作为普通文件纳入本仓库（非 git 子模块），
 - 若 `cmake-build-mac/` 曾被 VS Code 的 CMake Tools/STM32Cube 扩展用 ARM 工具链配置过，缓存里会残留 `arm-none-eabi-ar`，链接报 `archive member '//' not a mach-o file`；`run_sim_mac.sh` 检测到后会自动清目录重配，并显式指定 Apple 的 `ar/ranlib`。
 - VS Code（macOS）：直接打开仓库文件夹，在本机 `.vscode/`（已被 `.gitignore` 忽略）中配置 `Build Simulator`（⇧⌘B）、`Run Simulator`（任务 `Tasks: Run Test Task`）与 F5 `Debug Simulator (lldb)`，三者均调用 `run_sim_mac.sh`；需装 C/C++ 扩展，`cmake.configureOnOpen` 须关闭，且 `cmake.buildDirectory` 指向 `cmake-build-mac`，否则 STM32Cube 扩展会用 ARM 工具链污染 `build/`。首次 lldb 调试若提示开发者工具授权，按提示输入密码或执行 `sudo DevToolsSecurity -enable`。状态栏的 CMake Tools「Build/▷」按钮可能选到 ARM kit，请改用上述任务。
 
-### 固件命令行构建（macOS/Linux）
+### 固件构建（VS Code / 命令行）
 
-不依赖 CubeIDE，在仓库根目录执行：
+固件有两套互不影响的构建：CubeIDE 工程（`stm32_port/.cproject`）和 CMake 工程（`stm32_port/CMakeLists.txt`，与 `CAN2RS485` 等同级工程同一套机制）。CMake 工程的源码目录与 LVGL 排除清单直接读 `.cproject`，在 CubeIDE 里调整排除项或新增 `.c/.s` 后无需改 CMake 文件。`.ioc` 的 Toolchain 保持 STM32CubeIDE，CubeMX 重新生成不会覆盖 CMake 文件。
+
+**VS Code（STM32Cube 扩展包）：**
+
+1. 安装 STM32Cube for VS Code 扩展包（含 CMake Tools）。
+2. 用 `File > Open Folder` 打开 `stm32_port/`。打开仓库根目录时扩展会同时发现根目录的模拟器工程，需要只配置 `stm32_port`（模拟器仍用 `run_sim_mac.sh`），这一用法尚未实机确认，见 [CHANGELOG](CHANGELOG.md) 的待办。
+3. 扩展提示配置所发现的 CMake 工程时确认。它按 `stm32_port/.settings/bundles.store.json` 自动安装 CMake、Ninja、GNU Tools for STM32 和 clangd，并配置 `Debug` 预设；之后用状态栏的 Build 按钮或 `CMake: Build` 构建，产物在 `stm32_port/build/Debug/`。
+
+**命令行（macOS/Linux），不依赖 CubeIDE，在仓库根目录执行：**
 
 ```bash
 ./build_fw.sh         # 增量构建 STM32F407 固件，打印 text/data/bss
 ./build_fw.sh clean   # 全量重编
 ```
 
-- 规则在 `build_fw.mk`：编译参数与 `stm32_port/.cproject` 的 Debug 配置一致（`-Os -g3`，Cortex-M4F 硬浮点，链接 `STM32F407ZETX_FLASH.ld`），源码目录与 LVGL 排除清单直接读 `.cproject`，新增 `.c/.s` 无需改动。
-- 产物位于 `stm32_port/build_vscode/`，包括 ELF、BIN、HEX、MAP 和内存报告（已被 `.gitignore` 忽略）。构建会打印 Flash、主 SRAM、CCM 占用和最大单函数栈帧。参数或工具链变化时自动重编。不复用 CubeIDE 在 `stm32_port/Debug/` 生成的 makefile：旧版入库的那份缺 `Core/lvgl/**` 的 `subdir.mk`，且写死了 Windows 下的链接脚本绝对路径。
+- `build_fw.sh` 只是找到工具后执行 `cmake --preset Debug` 和 `cmake --build --preset Debug`。编译参数与 `.cproject` 的 Debug 配置一致（`-Os -g3`，Cortex-M4F 硬浮点，链接 `STM32F407ZETX_FLASH.ld`）。`PRESET=Release` 换预设，`FW_OPT=-O0` 临时换优化等级。
+- 产物位于 `stm32_port/build/<预设>/`，包括 ELF、BIN、HEX、MAP 和内存报告（已被 `.gitignore` 忽略）。构建会打印 Flash、主 SRAM、CCM 占用和最大单函数栈帧；报告脚本需要 Python 3。不复用 CubeIDE 在 `stm32_port/Debug/` 生成的 makefile：旧版入库的那份缺 `Core/lvgl/**` 的 `subdir.mk`，且写死了 Windows 下的链接脚本绝对路径。
 - 固件优化、任务栈、运行诊断和回归验证见 [固件资源与性能优化](docs/firmware_optimization.md)。CubeIDE 的 `Debug/` 不入库，克隆后需在 CubeIDE 里完整构建一次。
-- 工具链优先取 STM32 VS Code 扩展 bundles 里的 GNU Tools for STM32，否则用 PATH 中的 `arm-none-eabi-gcc`（已验证 ARM 官方 15.2.rel1 同样可构建）。
+- 工具链优先取 STM32 VS Code 扩展 bundles 里的 CMake、Ninja 和 GNU Tools for STM32，否则用 PATH 中的同名工具；扩展之外可用 `-DARM_GNU_TOOLCHAIN_BIN=<bin 目录>` 指定工具链。
 - VS Code 任务：`Build Firmware`、`Rebuild Firmware (clean)`（`Tasks: Run Task`），编译报错可点击跳转。
-- ST-Link 烧写：`tools/flash_stlink.sh [文件]` 用 STM32CubeProgrammer 命令行经 SWD 烧写 `build_vscode/DATA_COLLECTION_INTEGRAL.hex` 并回读校验、复位运行；只擦程序用到的扇区，里程记录保留。找工具的顺序见脚本头注释，也可用 `STM32_PROGRAMMER_CLI` 指定路径。VS Code 任务 `Flash Firmware (ST-Link)`、`Build & Flash Firmware (ST-Link)`（先 `Build Firmware` 再烧写）需在本机 `.vscode/tasks.json` 中配置。
+- ST-Link 烧写：`tools/flash_stlink.sh [文件]` 用 STM32CubeProgrammer 命令行经 SWD 烧写 `stm32_port/build/Debug/DATA_COLLECTION_INTEGRAL.hex` 并回读校验、复位运行；只擦程序用到的扇区，里程记录保留。找工具的顺序见脚本头注释，也可用 `STM32_PROGRAMMER_CLI` 指定路径。VS Code 任务 `Flash Firmware (ST-Link)`、`Build & Flash Firmware (ST-Link)`（先 `Build Firmware` 再烧写）需在本机 `.vscode/tasks.json` 中配置。
 - 模拟器与固件共用 `stm32_port/Core/Src/dashboard_view.c` 界面，只是数据换成动画演示，设计与约束见 [仪表盘界面](docs/dashboard_ui.md)。
 - 窗口内按键：空格循环模式，`D/A/X/8/E` 选 Default/Acceleration/Autocross/Skidpad/Endurance，`0`–`7` 滑移等级，`R` 圈速计时，`N` 夜间模式，`F` 推入演示告警，`Y` READY 横幅，`[` `]`/`G` 信号强度，`Esc` 退出。鼠标点击区域与触摸屏相同：顶栏开关计时，左上 Logo 重放开屏动画（开屏中点任意处跳过），驾驶模式色块轮转模式，告警条消除一条，眼睛按钮切换夜间。
 

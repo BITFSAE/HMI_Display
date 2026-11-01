@@ -57,7 +57,9 @@ def report(elf, prefix, stack_dir):
             for line in path.read_text().splitlines():
                 fields = line.split("\t")
                 if len(fields) == 3 and fields[1].isdigit():
-                    frames.append({"function": fields[0], "bytes": int(fields[1]), "kind": fields[2]})
+                    # CMake 以绝对路径编译，去掉工作目录前缀使输出保持相对路径
+                    function = fields[0].replace(f"{Path.cwd()}/", "")
+                    frames.append({"function": function, "bytes": int(fields[1]), "kind": fields[2]})
         result["largest_frames"] = sorted(frames, key=lambda frame: frame["bytes"], reverse=True)[:8]
         print("Largest individual stack frames (not full call-chain bounds):")
         for frame in result["largest_frames"]:

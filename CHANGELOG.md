@@ -2,6 +2,14 @@
 
 ## 未发布
 
+### 2026-10-31 固件改用 CMake 工程，VS Code 的 STM32Cube 扩展可自动配置
+
+- 新增 `stm32_port/CMakeLists.txt`、`CMakePresets.json`（Debug/Release）、`cmake/gcc-arm-none-eabi.cmake`、`cmake/fw_version.cmake`，以及与 `CAN2RS485` 同款的 `stm32_port/.settings/{bundles,bundles-lock,ide}.store.json`（CMake 4.2.3、Ninja 1.13.2、GNU Tools for STM32 14.3.1、clangd 21.1.0，器件 STM32F407ZET6）。克隆后用扩展打开即可按这些文件装工具并配置预设，不再依赖手写脚本找工具。
+- 源码目录与 LVGL 排除清单仍直接读 `.cproject`，与 CubeIDE 共用同一份；`.ioc` 的 Toolchain 保持 STM32CubeIDE，CubeMX 重新生成不会覆盖 CMake 文件。固件版本头改由 `cmake/fw_version.cmake` 生成。
+- `build_fw.sh` 改为调用该 CMake 工程（保留 `clean`、`FW_OPT`，新增 `PRESET`），删除 `build_fw.mk`。产物目录由 `stm32_port/build_vscode/` 改为 `stm32_port/build/<预设>/`，`tools/flash_stlink.sh` 默认路径、README、`docs/firmware_optimization.md` 同步；`tools/firmware_report.py` 去掉栈帧路径里的工作目录前缀。
+- 验证：`./build_fw.sh clean` 0 警告，Flash 295,752 B、主 SRAM 109,632 B、CCM 61,440 B，与改前同一提交的 `build_fw.mk` 构建完全一致；两份 ELF 符号表（名称、地址、大小）无差异，BIN 仅 `__TIME__` 字符串 3 字节不同。只复制已跟踪文件（无 `.git`、无构建目录）并用最小 `PATH` 全量构建结果相同。`PRESET=Release` 构建通过。`python3 tools/run_firmware_tests.py` 通过。
+- **未验证 / 待办**：未在干净机器上走一遍扩展的首次打开流程（发现工程、自动安装 bundles、选预设、状态栏构建），上述流程依据扩展自带文档和本机已装扩展的行为；打开仓库根目录时扩展会同时发现根目录的模拟器工程，是否只配置 `stm32_port` 待实机确认，确认前建议直接打开 `stm32_port/`。CubeIDE 完整构建未运行；`.vscode` 的 Cortex-Debug/SWD 调试配置未添加；上板未测。
+
 ### 2026-10-31 SOC 显示一位小数
 
 - 包状态支持 8 字节小数扩展和旧 7 字节整数帧；内部电量和条形图使用 0.1% 单位，显示如 77.9%。原有效位、超时及 20%/50% 颜色阈值保留，模拟器使用相同单位。

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # 经 ST-Link (SWD) 用 STM32CubeProgrammer 命令行烧写车手屏固件 (macOS/Linux)。
-#   tools/flash_stlink.sh                 # 烧写 ./build_fw.sh 的产物 stm32_port/build_vscode/DATA_COLLECTION_INTEGRAL.hex
+#   tools/flash_stlink.sh                 # 烧写 ./build_fw.sh 的产物 stm32_port/build/Debug/DATA_COLLECTION_INTEGRAL.hex
 #   tools/flash_stlink.sh path/to/fw.hex  # 烧写指定的 .hex 或 .elf (自带地址; 不支持裸 .bin)
 # 只擦程序用到的扇区, 不做整片擦除, 扇区 7 的里程记录得以保留 (见 docs/odometer_storage.md)。
 # 工具优先级: $STM32_PROGRAMMER_CLI > PATH > STM32 VS Code 扩展 bundles > CubeProgrammer/CubeIDE 安装目录。
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-firmware="${1:-$root/stm32_port/build_vscode/DATA_COLLECTION_INTEGRAL.hex}"
+firmware="${1:-$root/stm32_port/build/Debug/DATA_COLLECTION_INTEGRAL.hex}"
 
 if [ ! -s "$firmware" ]; then
     echo "烧写文件不存在或为空: $firmware；请先运行 ./build_fw.sh。" >&2

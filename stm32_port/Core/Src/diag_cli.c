@@ -11,7 +11,7 @@
 #include "cmsis_os2.h"
 #include <string.h>
 
-/* 固件版本由 build_fw.mk 生成的 fw_version.h 提供；CubeIDE 构建没有这个头，显示 unknown。 */
+/* 固件版本由 CMake 构建 (cmake/fw_version.cmake) 生成的 fw_version.h 提供；CubeIDE 构建没有这个头，显示 unknown。 */
 #if defined(__has_include)
 #if __has_include("fw_version.h")
 #include "fw_version.h"
