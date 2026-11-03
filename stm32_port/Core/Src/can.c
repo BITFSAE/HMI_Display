@@ -43,6 +43,7 @@ typedef struct {
   uint16_t id;
   uint8_t dlc, bus;
   uint8_t data[8];
+  uint32_t tick_ms;
 } User_CAN_RxItem_t;
 
 static StaticQueue_t g_can_rx_queue_control;
@@ -51,6 +52,7 @@ static QueueHandle_t g_can_rx_queue;
 static StaticTask_t g_can_task_control;
 static StackType_t g_can_task_stack[1024U];
 static brake_pedal_t g_brake_pedal;
+static gps_motion_imu_t g_can_yaw_rate;
 volatile uint32_t g_can_rx_drop_count;
 volatile uint32_t g_can_rx_invalid_count;
 volatile uint32_t g_can_rx_queue_peak;
@@ -92,6 +94,7 @@ static void User_CAN_ReceiveIRQ(CAN_HandleTypeDef *hcan, uint32_t fifo)
     frame.id = (uint16_t)header.StdId;
     frame.dlc = (uint8_t)header.DLC;
     frame.bus = hcan == &hcan2 ? 2U : 1U;
+    frame.tick_ms = HAL_GetTick();
     if(xQueueSendFromISR(g_can_rx_queue, &frame, &wake) != pdPASS) {
       g_can_rx_drop_count++;
     }
@@ -116,6 +119,8 @@ uint16_t CAN1_RX_MSG_ID_BANK3[4] = {SOP_ID_POWER, SOP_ID_CURRENT, SOP_ID_POWER, 
 uint16_t CAN1_RX_MSG_ID_BANK4[4] = {0x5A2, 0x001, 0x5A2, 0x001};
 /* Bank5: Tire-temperature cells 1..16, four cells per frame. */
 uint16_t CAN1_RX_MSG_ID_BANK5[4] = {0x071, 0x072, 0x073, 0x074};
+/* ECU 横摆角速度；只读取前两字节，其余字节不作假设。 */
+uint16_t CAN1_RX_MSG_ID_BANK6[4] = {0x720, 0x720, 0x720, 0x720};
 /* Bank14: Vehicle_CanB.dbc steering wheel on CAN2 - DriveMode_Request(0x310), SteeringCmd(0x703).
  * 16-bit ID list needs four entries; the two IDs are repeated. */
 uint16_t CAN2_RX_MSG_ID_BANK0[4] = {0x310, 0x703, 0x310, 0x703};
@@ -591,6 +596,13 @@ void CAN1_Filter_Config(void)
 	CAN_FilterInitStructure.FilterMaskIdHigh = CAN1_RX_MSG_ID_BANK5[2] << 5;
 	CAN_FilterInitStructure.FilterMaskIdLow = CAN1_RX_MSG_ID_BANK5[3] << 5;
 	HAL_CAN_ConfigFilter(&hcan1, &CAN_FilterInitStructure);
+
+	CAN_FilterInitStructure.FilterBank = 0x06;
+	CAN_FilterInitStructure.FilterIdHigh = CAN1_RX_MSG_ID_BANK6[0] << 5;
+	CAN_FilterInitStructure.FilterIdLow = CAN1_RX_MSG_ID_BANK6[1] << 5;
+	CAN_FilterInitStructure.FilterMaskIdHigh = CAN1_RX_MSG_ID_BANK6[2] << 5;
+	CAN_FilterInitStructure.FilterMaskIdLow = CAN1_RX_MSG_ID_BANK6[3] << 5;
+	HAL_CAN_ConfigFilter(&hcan1, &CAN_FilterInitStructure);
 }
 
 /*
@@ -874,6 +886,15 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
   if(frame->bus == 2U) {
     if(frame->dlc < 1U) { g_can_rx_invalid_count++; return; }
     User_CAN_HandleSteeringWheel(&RxHeader, frame->data);
+    return;
+  }
+  if(frame->id == 0x720U) {
+    if(frame->dlc < 2U) { g_can_rx_invalid_count++; return; }
+    taskENTER_CRITICAL();
+    g_can_yaw_rate.rate_cdeg_s = (int16_t)can_u16_le(frame->data, 0U);
+    g_can_yaw_rate.tick_ms = frame->tick_ms;
+    g_can_yaw_rate.valid = 1U;
+    taskEXIT_CRITICAL();
     return;
   }
   uint32_t min_dlc = 8U;
@@ -1206,6 +1227,26 @@ static void can_pack_u24_le(uint8_t * data, uint32_t value)
   data[0] = (uint8_t)(value & 0xFFU);
   data[1] = (uint8_t)((value >> 8) & 0xFFU);
   data[2] = (uint8_t)((value >> 16) & 0xFFU);
+}
+
+void CAN_GetYawRate(gps_motion_imu_t *out)
+{
+  if(out == NULL) return;
+  taskENTER_CRITICAL();
+  *out = g_can_yaw_rate;
+  taskEXIT_CRITICAL();
+}
+
+void CAN_SendCGVelocity(const gps_motion_output_t *motion)
+{
+  uint8_t data[8];
+  if(motion == NULL) return;
+  can_pack_u16_le(&data[0], (uint16_t)motion->vx_cms);
+  can_pack_u16_le(&data[2], (uint16_t)motion->vy_cms);
+  data[4] = motion->flags & 0x7FU;
+  data[5] = motion->sample_counter;
+  can_pack_u16_le(&data[6], motion->sample_age_ms);
+  User_CAN_SendDlc(0x069U, data, 8U);
 }
 
 /*

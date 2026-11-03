@@ -29,6 +29,7 @@ extern "C" {
 #include "main.h"
 
 /* USER CODE BEGIN Includes */
+#include "gps_motion.h"
 
 /* USER CODE END Includes */
 
@@ -82,6 +83,8 @@ uint8_t CAN_SendDriveModeRequest(int32_t mode_index);
 void CAN_ServiceTask(void *argument);
 void CAN_StartServiceTask(void);
 void CAN_SendGPSSpeed(int32_t speed_kmh_tenths);
+void CAN_GetYawRate(gps_motion_imu_t *out);
+void CAN_SendCGVelocity(const gps_motion_output_t *motion);
 void CAN_SendGPSTelemetry(const CAN_GPSTelemetry_t * telemetry, uint32_t frames);
 /* USER CODE END Prototypes */
 

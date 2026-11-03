@@ -32,6 +32,7 @@ static uint32_t g_isr_restart_tick;
 static uint32_t g_isr_restart_count;
 /* 速度与位置的有效性，屏幕、CAN、计时和 CLI 共用，只在 GPS 任务里修改。 */
 static gps_speed_state_t g_gps_speed_st;
+static gps_motion_t g_gps_motion;
 static GPS_Stats_t g_stats;
 static GPS_Window_t g_win;
 static uint32_t    g_service_tick;
@@ -321,6 +322,13 @@ static void gps_can_speed_tick(uint32_t now)
 
 	CAN_SendGPSSpeed((speed_kmh_centi + 5) / 10);
 	CAN_SendGPSTelemetry(&telemetry, frames);
+	{
+		gps_motion_imu_t imu;
+		gps_motion_output_t motion;
+		CAN_GetYawRate(&imu);
+		GPS_Motion_Get(&g_gps_motion, &imu, now, &motion);
+		CAN_SendCGVelocity(&motion);
+	}
 }
 
 static uint8_t nmea_checksum(const char * sentence)
@@ -563,6 +571,26 @@ static uint8_t nmea_parse_utc_ms(const char * buf, int32_t idx, uint32_t * out_m
 	}
 	if(*s != '\0') return 0U;
 	*out_ms = (((hh * 60U) + mm) * 60U + ss) * 1000U + ms;
+	return 1U;
+}
+
+/* 速度分解不能把缺失、乱码或越界角度当成正北 0°。仅接受 NMEA 十进制角度。 */
+static uint8_t gps_parse_angle(const char *sentence, int32_t index, float *angle)
+{
+	char field[32];
+	float value = 0.0f, fraction = 0.1f;
+	uint8_t dot = 0U, digits = 0U;
+	if(nmea_get_field(sentence, index, field, sizeof(field)) == NULL) return 0U;
+	for(const char *p = field; *p != '\0'; p++) {
+		if(*p == '.' && dot == 0U) { dot = 1U; continue; }
+		if(*p < '0' || *p > '9') return 0U;
+		digits = 1U;
+		if(dot) { value += (float)(*p - '0') * fraction; fraction *= 0.1f; }
+		else value = value * 10.0f + (float)(*p - '0');
+		if(value > 360.0f) return 0U;
+	}
+	if(!digits || !isfinite(value)) return 0U;
+	*angle = value == 360.0f ? 0.0f : value;
 	return 1U;
 }
 
@@ -846,6 +874,8 @@ static void parse_GNRMC(const char * sentence)
 	uint32_t epoch_ms = 0U;
 	float latitude = 0.0f;
 	float longitude = 0.0f;
+	float motion_track = 0.0f;
+	uint8_t motion_track_valid = 0U;
 	uint32_t now = HAL_GetTick();
 
 	(void)memset(&rmc, 0, sizeof(rmc));
@@ -863,6 +893,7 @@ static void parse_GNRMC(const char * sentence)
 		track_present = (uint8_t)((nmea_get_field(sentence, 8, fld, sizeof(fld)) != NULL) &&
 		                          (fld[0] != '\0'));
 		if(track_present != 0U) track_tenths = nmea_parse_track_int(sentence, 8);
+		motion_track_valid = gps_parse_angle(sentence, 8, &motion_track);
 	}
 	else {
 		track_present = 0U;
@@ -891,6 +922,7 @@ static void parse_GNRMC(const char * sentence)
 	}
 
 	if(verdict != GPS_RMC_ACCEPTED) {
+		if(verdict == GPS_RMC_NO_FIX) GPS_Motion_InvalidateRmc(&g_gps_motion);
 		if(verdict == GPS_RMC_NO_FIX) g_odometer_anchor_valid = 0U;
 		gps_capture_add(now, (uint8_t)verdict,
 		                (rmc.epoch_present != 0U) ? rmc.epoch_ms : GPS_CAPTURE_NO_EPOCH,
@@ -898,6 +930,8 @@ static void parse_GNRMC(const char * sentence)
 		                (int16_t)g_stats.shown_speed_kmh, g_gps_speed_st.prev_valid);
 		return;
 	}
+	GPS_Motion_OnRmc(&g_gps_motion, epoch_ms, (uint8_t)(rmc.epoch_present && fine),
+	                speed_centi, motion_track, motion_track_valid, now);
 
 	{
 		int32_t speed_kmh = (speed_centi + 50) / 100;
@@ -1073,6 +1107,16 @@ static void parse_GNHPR(const char * sentence)
 	g_gps_data.heading_valid = valid;
 	g_hpr_last_tick = HAL_GetTick();
 	taskEXIT_CRITICAL();
+	{
+		uint32_t epoch = 0U;
+		uint8_t fine = 0U;
+		float motion_heading = 0.0f;
+		uint8_t usable = (uint8_t)(valid && gps_parse_angle(sentence, 2, &motion_heading) &&
+			nmea_parse_utc_ms(sentence, 1, &epoch, &fine) && fine);
+		GPS_Motion_OnHeading(&g_gps_motion, epoch,
+		                    motion_heading + GPS_HEADING_INSTALL_OFFSET_DEG,
+		                    usable, HAL_GetTick());
+	}
 }
 
 static void invalidate_expired_gsv(void)
@@ -1531,6 +1575,7 @@ static void GPS_TaskFunc(void * argument)
 
 void GPS_Init(void)
 {
+	GPS_Motion_Init(&g_gps_motion);
 	uint32_t ndtr = __HAL_DMA_GET_COUNTER(&hdma_usart3_rx);
 	if(ndtr <= GPS_DMA_BUF_SIZE) {
 		g_gps_dma_last_pos = (GPS_DMA_BUF_SIZE - ndtr) % GPS_DMA_BUF_SIZE;

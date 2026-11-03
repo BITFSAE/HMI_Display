@@ -12,12 +12,12 @@
 | 门限调整所需连续慢间隔 | 3 | `GPS_SLOW_STREAK_ADAPT`（`gps_speed.h`） | 次 | 连续这么多次间隔都超过门限才抬高门限 |
 | CAN 车速过期 | 500 | `GPS_CAN_SPEED_STALE_MS` | ms | 速度数据龄期超过此值，`0x301` 车速报 0 且 `RMC_VALID` 清零；改为与本地门限一致需先在中央库评审 |
 | GGA 过期 | 3500 | `GPS_GGA_EXPIRE_MS` | ms | 超时按无定位处理（质量、卫星数清零），不再沿用最后一条 |
-| GPS 帧发送节拍 | 50 | `GPS_CAN_SPEED_PERIOD_MS` | ms | `0x301/0x067/0x068` 周期；改动需同步中央库登记 |
+| GPS 帧发送节拍 | 50 | `GPS_CAN_SPEED_PERIOD_MS` | ms | `0x301/0x067/0x068/0x069` 周期；改动需同步中央库登记 |
 | `0x7A0` 周期 | 10 拍 = 500 ms | `GPS_CAN_STATUS_TICKS` | 节拍数 | 同上 |
 | `0x7A1` 周期 | 4 拍 = 200 ms | `GPS_CAN_LAP_TICKS` | 节拍数 | 同上；两周期的公倍数 `GPS_CAN_SLOW_CYCLE_TICKS` = 20 须随之调整 |
 | 航向过期 | 1500 | `GPS_HPR_EXPIRE_MS` | ms | 双天线航向超过此时间未更新则无效；按 5 Hz 约 7.5 个周期，容忍输出率回落到 1 Hz，实测后可收紧 |
 | GSV 过期 | 12000 | `GPS_GSV_EXPIRE_MS` | ms | 信噪比过期后信号等级回落到卫星数估计或无信号 |
-| 航向安装偏置 | 0.0 | `GPS_HEADING_INSTALL_OFFSET_DEG` | 度，顺时针 | 从天线 1→2 基线到车头方向的夹角；影响圈速线和冲刺线方向。天线安装方向变化时必须修改 |
+| 航向安装偏置 | 0.0 | `GPS_HEADING_INSTALL_OFFSET_DEG` | 度，顺时针 | 从天线 1→2 基线到车头方向的夹角；影响圈速线、冲刺线和质心计算的车头方向。天线安装方向变化时必须修改 |
 | 信号等级阈值（平均信噪比） | 42 / 35 / 28 / 20 | `GPS_SNR_EXCELLENT/GOOD/FAIR/WEAK` | dB-Hz，≥ 判定 | 对应等级 4/3/2/1，低于 20 为 0 |
 | 信号等级回退（卫星数） | ≥16 / 12 / 8 / 4 | `gps_signal_level_from_sats` | 颗 | 仅在 GSV 缺失或过期时用 |
 | DMA 接收缓冲 | 512 | `GPS_DMA_BUF_SIZE` | B | 115200 baud 下约 44 ms 绕回一圈，GPS 任务须每 10 ms 内读取 |
@@ -31,6 +31,21 @@
 | 诊断串口 | USART2，9600 | `huart2`（`.ioc`） | — | 与圈速差输入共用，见 [串口诊断 CLI](diagnostics.md) |
 
 UM982 启动时依次发送（每条等待回执并继续读取 DMA，无回执则重发，见 [GPS 与圈速](gps_lap.md)）：`UNLOG`、`MODE ROVER AUTOMOTIVE`、`CONFIG HEADING FIXLENGTH`、`CONFIG HEADING LENGTH 111 10`、`GPRMC 0.05`（20 Hz）、`GPGGA 1`（1 s）、`GPHPR 0.2`（5 Hz）、`GPGSV 5`（5 s）。**不再每次上电 `SAVECONFIG`**：每次开机都重发这些命令，保存只是白写一次接收机非易失存储；需要持久保存时用 CLI 的 `gps save`。无参数的 `UNLOG` 停止接收端口上的全部输出（协议文档 §8.1），只保留这四类解析所需语句，总负载约为 115200 baud 的 1/5，避免 GSV 突发冲垮 512 B 的 DMA 环。请求统一用 GP 前缀（协议文档 §7.1：GBGSV、GLGSV 等为非法输入），返回语句的说话者（GN/GP/GB）由接收机按参与定位的系统决定，解析只按报文名匹配。
+
+## 质心速度（`gps_motion.h`）
+
+几何和 CAN 契约见中央库 [质心速度](https://github.com/BITFSAE/vehicle-interfaces/blob/main/docs/CANB接口.md#91-质心速度-0x069)；本表只维护可调常量。
+
+| 设置 | 当前值 | 符号 | 单位 | 影响 |
+| --- | --- | --- | --- | --- |
+| 质心到 Master 的纵向杆臂 | -0.512 | `GPS_MOTION_MASTER_X_M` | m，前正 | 改安装或质心位置时重测 |
+| 质心到 Master 的横向杆臂 | +0.080 | `GPS_MOTION_MASTER_Y_M` | m，左正 | 同上 |
+| IMU 新鲜度 | 100 | `GPS_MOTION_IMU_STALE_MS` | ms | 超过后回退 HPR 差分；不是已确认的 ECU 周期 |
+| RMC 新鲜度 | 150 | `GPS_MOTION_RMC_STALE_MS` | ms | 超过后质心速度无效 |
+| HPR 新鲜度和历元对齐上限 | 300 | `GPS_MOTION_HPR_STALE_MS` | ms | 接收龄期和 RMC/HPR 历元差都须在门限内 |
+| HPR 差分最大间隔 | 400 | `GPS_MOTION_HPR_GAP_MAX_MS` | ms | 超过后重建基准，至少再取得一条新 HPR 才能差分 |
+
+`GPS_HEADING_INSTALL_OFFSET_DEG` 同时作用于质心计算的车头航向；`0x068` 继续发送原始天线基线航向。以上门限改变时须同步中央库的有效性约定。
 
 ## 圈速与冲刺（`gps_lap.c`、`gps_lap.h`、`dashboard_ui.c`）
 
@@ -64,7 +79,7 @@ UM982 启动时依次发送（每条等待回执并继续读取 DMA，无回执�
 | 静止油压与容差 | 2135 ±10 | `BRAKE_PEDAL_OIL_REST_RAW`、`BRAKE_PEDAL_OIL_REST_TOLERANCE_RAW` | 0.001 kPa | 快速松开时最低实测约 2126，仍在容差内 |
 | 接收队列 / 发送队列 | 64 / 32 | `USER_CAN_RX_QUEUE_CAPACITY`、`USER_CAN_TX_QUEUE_CAPACITY` | 帧 | 满时丢新帧 |
 | 接收白名单 | 见 [CAN 接口](can_interface.md) | `CAN1_RX_MSG_ID_BANK*`、`CAN2_RX_MSG_ID_BANK0` | CAN ID | 新增接收 ID 必须同步修改，并更新 [CAN 接口](can_interface.md) |
-| GPS 帧 ID | `0x067/0x068/0x7A0/0x7A1`（另有 `0x301`） | `CAN_ID_GPS_*` | CAN ID | 对外帧，改动先走中央库评审 |
+| GPS 帧 ID | `0x067/0x068/0x069/0x7A0/0x7A1`（另有 `0x301`） | `CAN_ID_GPS_*` | CAN ID | 对外帧，改动先走中央库评审 |
 
 ## 显示与实时（`main.c`、`lv_conf.h`、`dashboard_ui.c`、`freertos.c`）
 

@@ -126,6 +126,7 @@ static BaseType_t test_can_task_receive(QueueHandle_t q,void *item,uint32_t time
 #include "../../stm32_port/Core/Src/odometer_flash.c"
 #include "../../stm32_port/Core/Src/gps_lap.c"
 #include "../../stm32_port/Core/Src/gps_speed.c"
+#include "../../stm32_port/Core/Src/gps_motion.c"
 #include "../../stm32_port/Core/Src/speed_trace.c"
 #include "../../stm32_port/Core/Src/gps.c"
 #include "../../stm32_port/Core/Src/diag_cli.c"
@@ -729,6 +730,7 @@ static void inject_line(const char *text)
 }
 static void gps_test_reset(void)
 {
+    GPS_Motion_Init(&g_gps_motion);memset(&g_can_yaw_rate,0,sizeof(g_can_yaw_rate));
     memset(&g_stats,0,sizeof(g_stats));memset(&g_cfg,0,sizeof(g_cfg));
     GPS_Speed_Init(&g_gps_speed_st);gps_window_clear(test_tick);
     g_stats.shown_speed_kmh=-1;g_stats.last_epoch_ms=GPS_CAPTURE_NO_EPOCH;g_ui_speed_shown=0;
@@ -783,7 +785,7 @@ static void test_gps(void)
     memset(test_tx_id_count,0,sizeof(test_tx_id_count));
     g_gps_can_last_tick=0;g_gps_can_slow_phase=0;g_gps_can_lap_count=0;g_odometer_total_m=12345; /* 123 x 0.1 km */
     gps_can_speed_tick(test_tick);assert(test_can_speed_tenths==720);
-    assert(test_tx_count==sent+5&&test_tx_id_count[0x7A0]==1&&test_tx_id_count[0x7A1]==1);
+    assert(test_tx_count==sent+6&&test_tx_id_count[0x7A0]==1&&test_tx_id_count[0x7A1]==1);
     assert(test_tx_id_data[0x7A0][0]==123&&test_tx_id_data[0x7A0][1]==0&&test_tx_id_data[0x7A0][2]==0);
     assert((test_tx_id_data[0x068][6]&0x08)!=0);                       /* RMC_VALID */
     sent=test_tx_count;gps_can_speed_tick(test_tick+49);assert(test_tx_count==sent);
@@ -792,6 +794,7 @@ static void test_gps(void)
         gps_can_speed_tick(test_tick);
     }
     assert(test_tx_id_count[0x301]==20&&test_tx_id_count[0x067]==20&&test_tx_id_count[0x068]==20);
+    assert(test_tx_id_count[0x069]==20);
     assert(test_tx_id_count[0x7A0]==2&&test_tx_id_count[0x7A1]==5);
     /* A lap-count change sends status and lap timing at once, off the slow slots. */
     unsigned status=test_tx_id_count[0x7A0],lap=test_tx_id_count[0x7A1];
@@ -1864,9 +1867,11 @@ static void test_can_tx_sustained(void)
     printf("CAN TX sustained: 10 s, sent=%u, pending=%u, drops=%u, queue peak=%u\n",
            test_tx_count-sent,g_user_can_tx_count,g_user_can_tx_drop_count-drops,peak);
     assert(g_user_can_tx_drop_count==drops);
-    assert(test_tx_count==sent+670U&&g_user_can_tx_count==0U);
+    assert(test_tx_count==sent+870U&&g_user_can_tx_count==0U);
     test_can_free_mailboxes=-1;
 }
+
+#include "gps_motion_regression.inc"
 
 int main(int argc,char **argv)
 {
@@ -1879,6 +1884,6 @@ int main(int argc,char **argv)
     else test_splash();
 #endif
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_default_mode();test_ui();test_motor_peak();test_can_tx_sustained();return 0;
+    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_default_mode();test_ui();test_motor_peak();test_gps_motion();test_can_tx_sustained();return 0;
 }
 /* USER CODE END Firmware_Regression */
