@@ -104,7 +104,7 @@ static uint32_t g_lap_analysis_blink_tick = 0U;
 #define DASH_DIRTY_FANS     (1UL << 14)
 #define DASH_DIRTY_SOP      (1UL << 15)
 #define DASH_DIRTY_STEER    (1UL << 16)
-#define DASH_DIRTY_MOTORS  (DASH_DIRTY_MOTOR_0 | DASH_DIRTY_MOTOR_1 | \
+#define DASH_DIRTY_MOTORS   (DASH_DIRTY_MOTOR_0 | DASH_DIRTY_MOTOR_1 | \
                              DASH_DIRTY_MOTOR_2 | DASH_DIRTY_MOTOR_3)
 #define DASH_DIRTY_TIRES    (DASH_DIRTY_TIRE_0 | DASH_DIRTY_TIRE_1 | \
                              DASH_DIRTY_TIRE_2 | DASH_DIRTY_TIRE_3)
