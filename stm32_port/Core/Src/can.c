@@ -159,6 +159,7 @@ typedef enum {
   CAN_SRC_BMS,
   CAN_SRC_APS,
   CAN_SRC_MECH_BRAKE,
+  CAN_SRC_STEER,
   CAN_SRC_BRAKE_ANGLE,
   CAN_SRC_TORQUE,
   CAN_SRC_RPM,
@@ -197,6 +198,7 @@ static const struct {
   [CAN_SRC_BMS]        = {DASH_VALID_SOC | DASH_VALID_HV_V | DASH_VALID_HV_I, CAN_TIMEOUT_BMS_MS},
   [CAN_SRC_APS]        = {DASH_VALID_APS,        CAN_TIMEOUT_ECU_MS},
   [CAN_SRC_MECH_BRAKE] = {DASH_VALID_BRAKE,      CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_STEER]      = {DASH_VALID_STEER,      CAN_TIMEOUT_ECU_MS},
   [CAN_SRC_BRAKE_ANGLE] = {DASH_VALID_REGEN,     CAN_TIMEOUT_BRAKE_ANGLE_MS},
   [CAN_SRC_TORQUE]     = {DASH_VALID_TORQUE,     CAN_TIMEOUT_ECU_MS},
   [CAN_SRC_RPM]        = {DASH_VALID_RPM,        CAN_TIMEOUT_ECU_MS},
@@ -1005,8 +1007,11 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
      * 左路 L（Byte6..7）当前不使用，DLC=8 帧也只取前 6 字节。 */
     case 0x305:
     {
-      /* SG_ SteeringWheelAngle: 0|16@1- (0.1,0) deg, stored as the raw 0.1 deg count */
+      /* SG_ SteeringWheelAngle: 0|16@1- (0.1,0) deg, stored as the raw 0.1 deg count;
+       * 左转为正。与油门同帧，单独计新鲜度，由界面显示转角环。 */
       g_can_dashboard_data.steering_angle = (int32_t)(int16_t)can_u16_le(CAN_RxData, 0U);
+      User_CAN_NoteRx(CAN_SRC_STEER, now);
+      User_CAN_SetValid(DASH_VALID_STEER, 1U);
       /* SG_ APS_OpenPct: 16|16@1+ (0.1,0) %, store integer pct */
       g_can_dashboard_data.aps_open_pct = (int32_t)(can_u16_le(CAN_RxData, 2U) / 10U);
       /* SG_ OilPressure_R: 32|16@1+ (0.001,0) Kpa, raw count */

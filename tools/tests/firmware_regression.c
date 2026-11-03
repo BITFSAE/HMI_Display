@@ -197,7 +197,7 @@ static void test_can(void)
     puts("CAN: bounded FIFO, queue saturation, short/remote frames, valid DLCs and steering relay passed");
 }
 /* Every DASH_VALID_* bit, for tests that feed hand-built telemetry to the UI. */
-#define TEST_ALL_VALID ((DASH_VALID_REGEN<<1)-1U)
+#define TEST_ALL_VALID ((DASH_VALID_STEER<<1)-1U)
 static void inject(uint16_t id,unsigned dlc,const uint8_t *bytes)
 {
     memset(test_rx_data,0,8);memcpy(test_rx_data,bytes,dlc);
@@ -439,6 +439,17 @@ static void test_can_decode(void)
             assert(d->oil_pressure==cases[i].oil&&d->aps_open_pct==50);          /* 油门仍取 byte2..3 */
         }
     }
+    /* 0x305 方向盘转角：byte0..1 小端有符号 0.1°，左转为正；与油门同帧，独立有效位。 */
+    {
+        struct {uint8_t lo,hi;int32_t raw;} const cases[]={{0x00,0x00,0},{0x72,0x05,1394},{0x8E,0xFA,-1394},
+                                                           {0xFF,0x7F,32767},{0x00,0x80,-32768}};
+        for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
+            const uint8_t f[6]={cases[i].lo,cases[i].hi, 0xF4,0x01, 0x57,0x08};
+            inject(0x305,6,f);
+            assert((d->valid_mask&DASH_VALID_STEER)!=0&&d->steering_angle==cases[i].raw);
+            assert(d->aps_open_pct==50&&d->oil_pressure==2135);                 /* 其余字段不受影响 */
+        }
+    }
     /* Silence drops the valid bits: ECU frames after 1 s, BMS after 2 s, never-seen sources stay invalid. */
     {
         const uint8_t fan[8]={0x08,0x00, 0x08,0x00, 0x08,0x00, 40,41};
@@ -452,7 +463,7 @@ static void test_can_decode(void)
         assert((d->valid_mask&DASH_VALID_FAN)==0&&(d->valid_mask&DASH_VALID_SOC)!=0);
         test_tick+=500;User_CAN_ServiceTimeouts(test_tick);
         assert((d->valid_mask&(DASH_VALID_SOC|DASH_VALID_HV_V|DASH_VALID_HV_I))==0);
-        assert((d->valid_mask&(DASH_VALID_BRAKE|DASH_VALID_APS))==0);               /* 0x305 timed out */
+        assert((d->valid_mask&(DASH_VALID_BRAKE|DASH_VALID_APS|DASH_VALID_STEER))==0); /* 0x305 timed out */
         assert((d->valid_mask&DASH_VALID_REGEN)==0);                                /* encoder also timed out */
         Dashboard_UI_Process();test_tick+=300;Dashboard_UI_Process();
         assert((Dashboard_UI_GetCurrentData()->valid_mask&DASH_VALID_SOC)==0);       /* and the UI copy follows */
@@ -1657,6 +1668,50 @@ static void test_ui(void)
     lv_mem_monitor_t m;lv_mem_monitor(&m);assert(m.free_size>1024);
     printf("UI: 400 telemetry/mode/alert cycles, identical-value skip and 120 KiB host pool passed (peak %zu, free %zu)\n",m.max_used,m.free_size);
 }
+/* 方向盘转角环：UI 副本与有效位、圆弧方向（左转为正，自 12 点逆时针）、±180° 限幅、无效时清空。
+ * 环心 (558,83)、外半径 25、环宽 5，取环上 9/3/6 点钟及 12 点钟两侧的像素判断是否为白色圆弧；
+ * 探针避开 90° 整数边界（9/3 点钟取上移 3 px），免得落在圆弧端点的抗锯齿边上。 */
+static void test_steering_ring(void)
+{
+    enum {CX=558,CY=83,R=22};
+    #define RING_WHITE(dx,dy) (frame_pixels[(CY+(dy))*800+CX+(dx)]==0xFFFFU)
+    struct {int32_t raw;unsigned valid;int nine,three,six_left,six_right,top_left,top_right;} const cases[]={
+        /*  0.1°    valid  9点 3点 6点左 6点右 12点左 12点右 */
+        {  900,    1,     1,  0,   0,    0,    1,     0},   /* 左转 90°：圆弧在左半环 */
+        { -900,    1,     0,  1,   0,    0,    0,     1},   /* 右转 90° */
+        { 1800,    1,     1,  0,   1,    0,    1,     0},   /* 左转 180°：到 6 点钟为止 */
+        { 3000,    1,     1,  0,   1,    0,    1,     0},   /* 300° 限幅为 180°，不绕到右半环 */
+        {-3000,    1,     0,  1,   0,    1,    0,     1},
+        {    0,    1,     0,  0,   0,    0,    0,     0},   /* 回正：只剩灰色底环 */
+        {   -4,    1,     0,  0,   0,    0,    0,     0},   /* 0.4° 四舍五入为 0° */
+        {  900,    0,     0,  0,   0,    0,    0,     0},   /* 数据失效：清空圆弧并显示 -- */
+        {32767,    1,     1,  0,   1,    0,    1,     0},   /* int16 极值不溢出 */
+        {-32768,   1,     0,  1,   0,    1,    0,     1},
+    };
+    for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
+        dashboard_data_t data=*Dashboard_UI_GetCurrentData();
+        data.valid_mask=TEST_ALL_VALID&~(cases[i].valid?0U:DASH_VALID_STEER);
+        data.steering_angle=cases[i].raw;
+        Dashboard_UI_SubmitData(&data);test_tick+=300;Dashboard_UI_Process();lv_refr_now(NULL);
+        assert(Dashboard_UI_GetCurrentData()->steering_angle==cases[i].raw);
+        assert(((Dashboard_UI_GetCurrentData()->valid_mask&DASH_VALID_STEER)!=0U)==(cases[i].valid!=0U));
+        assert(RING_WHITE(-R,-3)==cases[i].nine&&RING_WHITE(R,-3)==cases[i].three);
+        assert(RING_WHITE(-3,R)==cases[i].six_left&&RING_WHITE(3,R)==cases[i].six_right);
+        assert(RING_WHITE(-4,-R)==cases[i].top_left&&RING_WHITE(4,-R)==cases[i].top_right);
+    }
+    /* 再次提交同一角度不得触发任何重绘。 */
+    {
+        dashboard_data_t data=*Dashboard_UI_GetCurrentData();
+        data.valid_mask|=DASH_VALID_STEER;data.steering_angle=-32768;
+        Dashboard_UI_SubmitData(&data);test_tick+=300;Dashboard_UI_Process();lv_refr_now(NULL);
+        flushes=0;Dash_View_SetSteering(-32768);lv_refr_now(NULL);assert(flushes==0);
+    }
+    /* 视图接口本身接受任意 int32（含无效哨兵），不得溢出。 */
+    Dash_View_SetSteering(INT32_MAX);Dash_View_SetSteering(INT32_MIN+1);Dash_View_SetSteering(DASH_VIEW_INVALID);
+    lv_refr_now(NULL);
+    #undef RING_WHITE
+    puts("Steering ring: CAN sign, direction, clamp, rounding, invalid and identical-value skip passed");
+}
 /* Representative telemetry for screenshots: one frame per drive mode plus an
  * alert frame (mode-4), the S-mode READY banner (mode-5) and the no-data frame (mode-6). */
 static void save_frame(const char *directory,unsigned index)
@@ -1672,7 +1727,7 @@ static void render_modes(const char *directory)
     dashboard_data_t data=*Dashboard_UI_GetCurrentData();
     data.valid_mask=TEST_ALL_VALID;data.soc=760;data.sum_voltage=386;data.sum_current=-118;
     data.sum_voltage_dv=3860;data.sum_current_da=-1180;data.max_temperature=74;
-    data.aps_open_pct=62;data.brake_pct=0;data.regen_pct=38;
+    data.aps_open_pct=62;data.brake_pct=0;data.regen_pct=38;data.steering_angle=280;
     data.lv_bus_voltage_mV=13820;data.lv_bus_current_cA=-1240;data.lv_bus_power_dW=1712;
     data.fan_rpm[0]=2376;data.fan_rpm[1]=2316;data.fan_rpm[2]=2196;data.fan_pwm_duty[0]=49;data.fan_pwm_duty[1]=49;
     data.sop_discharge_power_dkw=740;data.sop_charge_power_dkw=40;data.sop_discharge_current_da=1800;data.sop_charge_current_da=80;
@@ -1867,6 +1922,6 @@ int main(int argc,char **argv)
     else test_splash();
 #endif
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_default_mode();test_ui();test_motor_peak();test_gps_motion();test_can_tx_sustained();return 0;
+    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_default_mode();test_ui();test_steering_ring();test_motor_peak();test_gps_motion();test_can_tx_sustained();return 0;
 }
 /* USER CODE END Firmware_Regression */

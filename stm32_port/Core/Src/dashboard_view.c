@@ -4,7 +4,7 @@
  * Layout (px):
  *   0..52    top bar: logo image | BEST | LAST | delta | LAP | LEFT | ODO | GPS
  *   52..376  left 0..200: mode tile, slip, tyre map, night button
- *            centre 200..600: lap time, alert banner, speed, pedal bars
+ *            centre 200..600: lap time, steering ring, alert banner, speed, pedal bars
  *            right 600..800: SOC, HV, power, max temp, LV bus, fans
  *   376..480 four motor columns FL | FR | RL | RR
  *
@@ -83,6 +83,16 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 #define MECH_X       243
 #define BRAKE_PEDAL_W 26
 #define THROTTLE_X   542
+
+/* 方向盘转角环：在圈速时间右侧、油门条正上方（圆心与油门条同一竖线），
+ * 底边留 2 px 给 y=110 起的告警横幅。圆弧自 12 点起按 1:1 的实际转角绘制，
+ * 限幅 ±180°；环内文字为整数度，限幅 ±999 以保证放得进环内。 */
+#define STEER_D      50
+#define STEER_X      (THROTTLE_X + PEDAL_W / 2 - STEER_D / 2)
+#define STEER_Y      58
+#define STEER_W      5
+#define STEER_ARC_MAX_DEG 180
+#define STEER_TEXT_MAX_DEG 999
 
 #define TIRE_W       40
 #define TIRE_H       62
@@ -164,6 +174,8 @@ static struct {
     lv_obj_t * regen_pct;
     lv_obj_t * throttle_bar;
     lv_obj_t * throttle_pct;
+    lv_obj_t * steer_ring;
+    lv_obj_t * steer_value;
     lv_obj_t * soc;
     lv_obj_t * soc_bar;
     lv_obj_t * hv_voltage;
@@ -200,6 +212,7 @@ static dash_bar_t s_regen_bar = {0, 100, C_BLUE, 1, 1};
 static dash_bar_t s_throttle_bar = {0, 100, C_GREEN, 1, 1};
 static dash_bar_t s_soc_bar = {0, 1000, C_GREEN, 0, 0};
 static int32_t s_delta;
+static int32_t s_steer_deg = DASH_VIEW_INVALID;  /* 整数度，左转为正 */
 static int32_t s_slip = -1;
 static int32_t s_signal = -1;
 static int32_t s_speed = -1;
@@ -385,6 +398,40 @@ static void delta_draw_cb(lv_event_t * e)
     if(s_delta < 0) fill_rect(layer, centre + 1, a.y1, centre + fill, a.y2, C_GREEN);
     else if(s_delta > 0) fill_rect(layer, centre - fill, a.y1, centre - 1, a.y2, C_RED);
     fill_rect(layer, centre - 1, a.y1 - 3, centre + 1, a.y2 + 3, C_TEXT);
+}
+
+/* Steering ring: grey track plus a white arc from 12 o'clock towards the turn
+ * direction (left = counter-clockwise, as the rim moves). LVGL angles count
+ * clockwise from 3 o'clock, so 12 o'clock is 270. A black notch marks centre. */
+static void steer_draw_cb(lv_event_t * e)
+{
+    lv_layer_t * layer = lv_event_get_layer(e);
+    lv_draw_arc_dsc_t dsc;
+    lv_area_t a;
+    int32_t sweep = s_steer_deg;
+
+    lv_obj_get_coords(lv_event_get_current_target_obj(e), &a);
+    lv_draw_arc_dsc_init(&dsc);
+    dsc.center.x = a.x1 + lv_area_get_width(&a) / 2;
+    dsc.center.y = a.y1 + lv_area_get_height(&a) / 2;
+    dsc.radius = (uint16_t)(lv_area_get_width(&a) / 2);
+    dsc.width = STEER_W;
+    dsc.color = lv_color_hex(C_TRACK);
+    dsc.start_angle = 0;
+    dsc.end_angle = 360;
+    lv_draw_arc(layer, &dsc);
+
+    if(sweep != DASH_VIEW_INVALID) {
+        if(sweep > STEER_ARC_MAX_DEG) sweep = STEER_ARC_MAX_DEG;
+        if(sweep < -STEER_ARC_MAX_DEG) sweep = -STEER_ARC_MAX_DEG;
+        if(sweep != 0) {
+            dsc.color = lv_color_hex(C_TEXT);
+            dsc.start_angle = (sweep > 0) ? (270 - sweep) : 270;
+            dsc.end_angle = (sweep > 0) ? 270 : (270 - sweep);
+            lv_draw_arc(layer, &dsc);
+        }
+    }
+    fill_rect(layer, dsc.center.x - 1, a.y1, dsc.center.x, a.y1 + STEER_W - 1, C_BG);
 }
 
 static void slip_draw_cb(lv_event_t * e)
@@ -591,6 +638,12 @@ static void create_centre(lv_obj_t * scr)
                          &st_aux_value, 234, 44, &ui.brake_pct);
     ui.throttle_bar = pedal(scr, THROTTLE_X, PEDAL_W, &s_throttle_bar, "THROTTLE", C_GREEN,
                             &st_value, THROTTLE_X - 26, 84, &ui.throttle_pct);
+
+    ui.steer_ring = make_box(scr, STEER_X, STEER_Y, STEER_D, STEER_D);
+    lv_obj_add_event_cb(ui.steer_ring, steer_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
+    ui.steer_value = make_label(scr, &st_aux_value, STEER_X, STEER_Y + (STEER_D - 17) / 2,
+                                STEER_D, &st_center, "--");
+    lv_obj_set_style_text_color(ui.steer_value, lv_color_hex(C_DIM), 0);
 
     /* Created last so the banner paints over the lap-time row edges. */
     ui.alert_box = make_box(scr, ALERT_X, ALERT_Y, ALERT_W, ALERT_H);
@@ -821,6 +874,31 @@ void Dash_View_SetPedals(int32_t throttle_pct, int32_t mechanical_brake_pct,
     set_pedal(ui.throttle_bar, &s_throttle_bar, ui.throttle_pct, throttle_pct);
     set_pedal(ui.brake_bar, &s_brake_bar, ui.brake_pct, mechanical_brake_pct);
     set_pedal(ui.regen_bar, &s_regen_bar, ui.regen_pct, regen_pct);
+}
+
+void Dash_View_SetSteering(int32_t angle_deci)
+{
+    char buf[8];
+    int32_t deg = DASH_VIEW_INVALID;
+
+    if(angle_deci != DASH_VIEW_INVALID) {
+        /* 先限幅再四舍五入到整数度（远离零），避免极端输入在取反或加 5 时溢出。 */
+        const int32_t limit = STEER_TEXT_MAX_DEG * 10;
+        if(angle_deci > limit) angle_deci = limit;
+        if(angle_deci < -limit) angle_deci = -limit;
+        deg = (angle_deci >= 0) ? (angle_deci + 5) / 10 : -((-angle_deci + 5) / 10);
+    }
+    if(deg == s_steer_deg) return;
+    s_steer_deg = deg;
+    lv_obj_invalidate(ui.steer_ring);
+    if(deg == DASH_VIEW_INVALID) {
+        set_text(ui.steer_value, "--");
+        set_text_color(ui.steer_value, C_DIM);
+        return;
+    }
+    lv_snprintf(buf, sizeof(buf), "%s%ld" DEG, (deg > 0) ? "+" : "", (long)deg);
+    set_text(ui.steer_value, buf);
+    set_text_color(ui.steer_value, C_TEXT);
 }
 
 void Dash_View_SetBattery(int32_t soc_pct, int32_t voltage_v, int32_t current_a)

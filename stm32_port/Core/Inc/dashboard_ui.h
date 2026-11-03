@@ -28,6 +28,7 @@ extern "C" {
 #define DASH_VALID_SOP_POWER   (1UL << 15)  /* 0x4A0, LimitsValid=1 且 CRC/版本通过 */
 #define DASH_VALID_SOP_CURRENT (1UL << 16)  /* 0x4A3, 版本通过且 InputHealth bit7=1 */
 #define DASH_VALID_REGEN       (1UL << 17)  /* 0x001 踏板编码器位置帧新鲜 */
+#define DASH_VALID_STEER       (1UL << 18)  /* 0x305 方向盘转角，与油门同帧同超时 */
 
 typedef struct {
 	/* Display speed in integer km/h; -1 = no trusted speed (shown as "--").
@@ -60,7 +61,8 @@ typedef struct {
 	int32_t motor_temp[4];
 	/* DBC BO_773 DataLogger: APS_OpenPct (0.1,0) % */
 	int32_t aps_open_pct;
-	/* DBC BO_773 DataLogger: SteeringWheelAngle (0.1,0) deg */
+	/* DBC BO_773 DataLogger: SteeringWheelAngle (0.1,0) deg，保存 0.1° 原始计数；
+	 * 左转为正、右转为负（用户确认），DBC 量程 -3276.8..3276.7°。 */
 	int32_t steering_angle;
 	/* DBC BO_773 DataLogger: OilPressure_R (0.001,0) Kpa，机械制动条取后油压 */
 	int32_t oil_pressure;

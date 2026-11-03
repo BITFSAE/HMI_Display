@@ -103,12 +103,14 @@ static uint32_t g_lap_analysis_blink_tick = 0U;
 #define DASH_DIRTY_LOWVOLTAGE (1UL << 13)
 #define DASH_DIRTY_FANS     (1UL << 14)
 #define DASH_DIRTY_SOP      (1UL << 15)
-#define DASH_DIRTY_MOTORS   (DASH_DIRTY_MOTOR_0 | DASH_DIRTY_MOTOR_1 | \
+#define DASH_DIRTY_STEER    (1UL << 16)
+#define DASH_DIRTY_MOTORS  (DASH_DIRTY_MOTOR_0 | DASH_DIRTY_MOTOR_1 | \
                              DASH_DIRTY_MOTOR_2 | DASH_DIRTY_MOTOR_3)
 #define DASH_DIRTY_TIRES    (DASH_DIRTY_TIRE_0 | DASH_DIRTY_TIRE_1 | \
                              DASH_DIRTY_TIRE_2 | DASH_DIRTY_TIRE_3)
 #define DASH_DIRTY_FAST     (DASH_DIRTY_MODE | DASH_DIRTY_PEDALS | DASH_DIRTY_MOTORS | \
-                             DASH_DIRTY_SLIP | DASH_DIRTY_TIRES | DASH_DIRTY_FANS)
+                             DASH_DIRTY_SLIP | DASH_DIRTY_TIRES | DASH_DIRTY_FANS | \
+                             DASH_DIRTY_STEER)
 #define DASH_DIRTY_SLOW     (DASH_DIRTY_BATTERY | DASH_DIRTY_ODOMETER | \
                              DASH_DIRTY_LOWVOLTAGE | DASH_DIRTY_SOP)
 #define DASH_DIRTY_ALL      (DASH_DIRTY_FAST | DASH_DIRTY_SLOW)
@@ -695,6 +697,9 @@ static void dashboard_apply_data(uint32_t dirty_mask)
                             ((valid & DASH_VALID_BRAKE) != 0U) ? g_dashboard_data.brake_pct : DASH_VIEW_INVALID,
                             ((valid & DASH_VALID_REGEN) != 0U) ? g_dashboard_data.regen_pct : DASH_VIEW_INVALID);
     }
+    if((dirty_mask & DASH_DIRTY_STEER) != 0U) {
+        Dash_View_SetSteering(((valid & DASH_VALID_STEER) != 0U) ? g_dashboard_data.steering_angle : DASH_VIEW_INVALID);
+    }
     if((dirty_mask & DASH_DIRTY_LOWVOLTAGE) != 0U) {
         /* DBC BO_1440 PDM_LowVoltageBus: mV/cA/dW raw engineering units */
         if((valid & DASH_VALID_LV_BUS) != 0U) {
@@ -764,6 +769,10 @@ void Dashboard_UI_SubmitData(const dashboard_data_t * data)
        ((valid_changed & DASH_VALID_PEDAL_GROUP) != 0U)) {
         dirty_mask |= DASH_DIRTY_PEDALS;
     }
+    if((g_pending_dashboard_data.steering_angle != data->steering_angle) ||
+       ((valid_changed & DASH_VALID_STEER) != 0U)) {
+        dirty_mask |= DASH_DIRTY_STEER;
+    }
     if((g_pending_dashboard_data.lv_bus_voltage_mV != data->lv_bus_voltage_mV) ||
        (g_pending_dashboard_data.lv_bus_current_cA != data->lv_bus_current_cA) ||
        (g_pending_dashboard_data.lv_bus_power_dW != data->lv_bus_power_dW) ||
@@ -811,6 +820,7 @@ void Dashboard_UI_SubmitData(const dashboard_data_t * data)
     g_pending_dashboard_data.sum_current_da = data->sum_current_da;
     g_pending_dashboard_data.max_temperature = data->max_temperature;
     g_pending_dashboard_data.aps_open_pct = data->aps_open_pct;
+    g_pending_dashboard_data.steering_angle = data->steering_angle;
     g_pending_dashboard_data.lv_bus_voltage_mV = data->lv_bus_voltage_mV;
     g_pending_dashboard_data.lv_bus_current_cA = data->lv_bus_current_cA;
     g_pending_dashboard_data.lv_bus_power_dW = data->lv_bus_power_dW;
@@ -1380,6 +1390,10 @@ void Dashboard_UI_Process(void)
             g_dashboard_data.brake_pct = g_pending_dashboard_data.brake_pct;
             g_dashboard_data.regen_pct = g_pending_dashboard_data.regen_pct;
             dashboard_copy_valid(DASH_VALID_PEDAL_GROUP);
+        }
+        if((dashboard_mask & DASH_DIRTY_STEER) != 0U) {
+            g_dashboard_data.steering_angle = g_pending_dashboard_data.steering_angle;
+            dashboard_copy_valid(DASH_VALID_STEER);
         }
         if((dashboard_mask & DASH_DIRTY_LOWVOLTAGE) != 0U) {
             g_dashboard_data.lv_bus_voltage_mV = g_pending_dashboard_data.lv_bus_voltage_mV;

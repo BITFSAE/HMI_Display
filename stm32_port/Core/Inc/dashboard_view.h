@@ -74,6 +74,9 @@ void Dash_View_SetSlip(int32_t level);
 /* 三条独立开度条：油门、机械制动（油压）、能量回收（踏板转角）。 */
 void Dash_View_SetPedals(int32_t throttle_pct, int32_t mechanical_brake_pct,
                          int32_t regen_pct);
+/* 方向盘转角环，单位 0.1°，左转为正、右转为负；DASH_VIEW_INVALID 显示 "--" 并清空圆弧。
+ * 圆弧自 12 点起按 1:1 的实际转角绘制，超过 ±180° 的部分只限幅圆弧，数字仍显示实际值。 */
+void Dash_View_SetSteering(int32_t angle_deci);
 void Dash_View_SetBattery(int32_t soc_pct_x10, int32_t voltage_v, int32_t current_a);
 /* peak_kw: highest discharge power since power-on; DASH_VIEW_INVALID until
  * the first valid sample. */

@@ -126,6 +126,8 @@ static void demo_timer_cb(lv_timer_t * timer)
     regen = (g_tick % 200U) >= 100U ? triangle(g_tick, 100U, 100) : 0;
     Dash_View_SetSpeed(speed);
     Dash_View_SetPedals(throttle, brake, regen);
+    /* 20 s 内由右极限摆到左极限再回来：0.1° 单位，峰值 ±137°，左转为正。 */
+    Dash_View_SetSteering(triangle(g_tick, 200U, 2740) - 1370);
 
     soc = 1000 - (int32_t)((g_tick / 5U) % 1000U);
     current = throttle * 3;
