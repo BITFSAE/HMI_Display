@@ -109,10 +109,8 @@ static void User_CAN_ReceiveIRQ(CAN_HandleTypeDef *hcan, uint32_t fifo)
 uint16_t CAN1_RX_MSG_ID_BANK0[4] = {0x4B0, 0x305, 0x502, 0x505};
 /* Bank1: Debug6_MotorTemp(0x506 BO_1286), Debug9_Status(0x509 BO_1289), Debug8_IGBT(0x508 BO_1288), Debug7_Inverter(0x507 BO_1287) */
 uint16_t CAN1_RX_MSG_ID_BANK1[4] = {0x506, 0x509, 0x508, 0x507};
-/* Bank2: Debug3_Diag12(0x503 BO_1283), Debug4_Diag34(0x504 BO_1284) */
-/* Bank2: Debug3_Diag12(0x503 BO_1283), Debug4_Diag34(0x504 BO_1284),
- * PDM_LowVoltageBus(0x5A0 BO_1440), PDM_LowVoltageBattery(0x5A1 BO_1441) */
-uint16_t CAN1_RX_MSG_ID_BANK2[4] = {0x503, 0x504, 0x5A0, 0x5A1};
+/* 四轮诊断码合并到 0x503，重复一次填满列表；其余两项为 PDM。 */
+uint16_t CAN1_RX_MSG_ID_BANK2[4] = {0x503, 0x503, 0x5A0, 0x5A1};
 /* Bank3: BMS SOP V2 — BMS_SOPLimits(0x4A0 BO_1184), BMS_SOPStatus(0x4A3 BO_1187). 车手屏不收 ECU 的 0x4A4 确认 */
 uint16_t CAN1_RX_MSG_ID_BANK3[4] = {SOP_ID_POWER, SOP_ID_CURRENT, SOP_ID_POWER, SOP_ID_CURRENT};
 /* Bank4: FanController_Status(0x5A2 BO_1442) 与 BRT 踏板编码器自动上报帧 0x001 */
@@ -168,8 +166,7 @@ typedef enum {
   CAN_SRC_INV_TEMP,
   CAN_SRC_IGBT_TEMP,
   CAN_SRC_AMK_STATE,
-  CAN_SRC_DIAG_RL_RR,
-  CAN_SRC_DIAG_FL_FR,
+  CAN_SRC_DIAG,
   CAN_SRC_PDM_BUS,
   CAN_SRC_FAN,
   CAN_SRC_SOP_POWER,
@@ -207,8 +204,7 @@ static const struct {
   [CAN_SRC_INV_TEMP]   = {DASH_VALID_INV_TEMP,   CAN_TIMEOUT_ECU_MS},
   [CAN_SRC_IGBT_TEMP]  = {DASH_VALID_IGBT_TEMP,  CAN_TIMEOUT_ECU_MS},
   [CAN_SRC_AMK_STATE]  = {DASH_VALID_AMK_EN,     CAN_TIMEOUT_ECU_MS},
-  [CAN_SRC_DIAG_RL_RR] = {DASH_VALID_DIAG_RL_RR, CAN_TIMEOUT_ECU_MS},
-  [CAN_SRC_DIAG_FL_FR] = {DASH_VALID_DIAG_FL_FR, CAN_TIMEOUT_ECU_MS},
+  [CAN_SRC_DIAG]       = {DASH_VALID_DIAG_RL_RR | DASH_VALID_DIAG_FL_FR, CAN_TIMEOUT_ECU_MS},
   [CAN_SRC_PDM_BUS]    = {DASH_VALID_LV_BUS,     CAN_TIMEOUT_PDM_MS},
   [CAN_SRC_FAN]        = {DASH_VALID_FAN,        CAN_TIMEOUT_FAN_MS},
   [CAN_SRC_SOP_POWER]  = {DASH_VALID_SOP_POWER,  CAN_TIMEOUT_SOP_POWER_MS},
@@ -285,12 +281,6 @@ static uint16_t can_u16_le(const uint8_t * d, uint32_t i)
 static uint16_t can_u16_be(const uint8_t * d, uint32_t i)
 {
   return (uint16_t)(((uint16_t)d[i] << 8) | (uint16_t)d[i + 1U]);
-}
-
-static uint32_t can_u32_le(const uint8_t * d, uint32_t i)
-{
-  return (uint32_t)d[i] | ((uint32_t)d[i + 1U] << 8) |
-         ((uint32_t)d[i + 2U] << 16) | ((uint32_t)d[i + 3U] << 24);
 }
 
 static int32_t User_CAN_DecodeTireTemperatureCenti(uint8_t integer_part,
@@ -564,8 +554,7 @@ void CAN1_Filter_Config(void)
 	CAN_FilterInitStructure.FilterMaskIdLow = CAN1_RX_MSG_ID_BANK1[3] << 5;
 	HAL_CAN_ConfigFilter(&hcan1, &CAN_FilterInitStructure);
 
-	/* Bank 2: Debug3_Diag12(0x503), Debug4_Diag34(0x504),
-	 * PDM_LowVoltageBus(0x5A0 BO_1440), PDM_LowVoltageBattery(0x5A1 BO_1441) */
+	/* Bank 2: 四轮诊断码 0x503 和 PDM 两帧。 */
 	CAN_FilterInitStructure.FilterBank = 0x02;
 	CAN_FilterInitStructure.FilterIdHigh = CAN1_RX_MSG_ID_BANK2[0] << 5;
 	CAN_FilterInitStructure.FilterIdLow = CAN1_RX_MSG_ID_BANK2[1] << 5;
@@ -751,7 +740,7 @@ void CAN_ServiceTask(void *argument)
  * Message-ID mapping: DBC decimal -> HEX
  *   BO_1289 Debug9=0x509, BO_1288 Debug8=0x508, BO_1287 Debug7=0x507,
  *   BO_1286 Debug6=0x506, BO_1285 Debug5=0x505, BO_1282 Debug2=0x502,
- *   BO_1284 Debug4=0x504, BO_1283 Debug3=0x503,
+ *   BO_1283 Debug3=0x503 (four uint16 diagnostic codes),
  *   BO_773  DataLogger=0x305 (油门、油压；机械制动条由油压推算),
  *   BRT25 踏板编码器自动上报 0x001 (单圈绝对值，供能量回收条),
  *   BO_769 GPS_Speed=0x301(Display->ECU),
@@ -1110,25 +1099,14 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
       break;
     }
 
-    /* DBC BO_1284 Debug4 0x504: Diagnostic_number_3(0|32), Diagnostic_number_4(32|32).
-     * Diagnostic_number_1..4 are AMK1..4 = RL, RR, FL, FR (archive/.../cana_canb_protocol.md),
-     * i.e. the same wheel order as the other per-wheel frames. */
-    case 0x504:
-    {
-      g_can_dashboard_data.diag_num[k_can_dbc_to_dash[2]] = can_u32_le(CAN_RxData, 0U);
-      g_can_dashboard_data.diag_num[k_can_dbc_to_dash[3]] = can_u32_le(CAN_RxData, 4U);
-      User_CAN_NoteRx(CAN_SRC_DIAG_FL_FR, now);
-      User_CAN_SetValid(DASH_VALID_DIAG_FL_FR, 1U);
-      break;
-    }
-
-    /* DBC BO_1283 Debug3 0x503: Diagnostic_number_1(0|32) = RL, Diagnostic_number_2(32|32) = RR */
+    /* 四个 uint16 小端故障码，RL、RR、FL、FR；同帧更新、同时超时。 */
     case 0x503:
     {
-      g_can_dashboard_data.diag_num[k_can_dbc_to_dash[0]] = can_u32_le(CAN_RxData, 0U);
-      g_can_dashboard_data.diag_num[k_can_dbc_to_dash[1]] = can_u32_le(CAN_RxData, 4U);
-      User_CAN_NoteRx(CAN_SRC_DIAG_RL_RR, now);
-      User_CAN_SetValid(DASH_VALID_DIAG_RL_RR, 1U);
+      for(uint32_t wheel = 0U; wheel < 4U; wheel++) {
+        g_can_dashboard_data.diag_num[k_can_dbc_to_dash[wheel]] = can_u16_le(CAN_RxData, wheel * 2U);
+      }
+      User_CAN_NoteRx(CAN_SRC_DIAG, now);
+      User_CAN_SetValid(DASH_VALID_DIAG_RL_RR | DASH_VALID_DIAG_FL_FR, 1U);
       break;
     }
 

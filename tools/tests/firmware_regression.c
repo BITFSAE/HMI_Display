@@ -380,12 +380,27 @@ static void test_can_decode(void)
     /* Nothing is valid before the first frame. */
     assert((d->valid_mask&(DASH_VALID_SOC|DASH_VALID_LV_BUS|DASH_VALID_FAN|DASH_VALID_TORQUE))==0);
 
-    /* 0x503/0x504 carry AMK1..4 = RL, RR, FL, FR; dashboard order is LF, LR, RF, RR. */
+    /* 0x503 一帧四个 uint16：RL、RR、FL、FR；界面为 LF、LR、RF、RR。 */
     {
-        const uint8_t a[8]={0x31,0x02,0,0, 0x22,0,0,0},b[8]={0x33,0,0,0, 0x44,0,0,0};
-        inject(0x503,8,a);inject(0x504,8,b);
-        assert(d->diag_num[1]==0x231&&d->diag_num[3]==0x22);   /* LR=RL=#1, RR=RR=#2 */
-        assert(d->diag_num[0]==0x33&&d->diag_num[2]==0x44);    /* LF=FL=#3, RF=FR=#4 */
+        const uint8_t codes[8]={0x31,0x02,0x22,0x80,0xff,0xff,0x44,0};
+        inject(0x503,8,codes);
+        assert(d->diag_num[1]==0x231&&d->diag_num[3]==0x8022);
+        assert(d->diag_num[0]==65535&&d->diag_num[2]==0x44);
+        assert((d->valid_mask&(DASH_VALID_DIAG_RL_RR|DASH_VALID_DIAG_FL_FR))==(DASH_VALID_DIAG_RL_RR|DASH_VALID_DIAG_FL_FR));
+        uint32_t received=g_can_src_tick[CAN_SRC_DIAG];
+        unsigned invalid=g_can_rx_invalid_count;
+        const uint8_t zero[8]={0};
+        test_tick+=10;inject(0x503,7,zero);
+        assert(g_can_rx_invalid_count==invalid+1&&g_can_src_tick[CAN_SRC_DIAG]==received);
+        inject(0x504,8,zero); /* 旧帧既不覆盖数值，也不刷新故障码超时。 */
+        assert(d->diag_num[0]==65535&&d->diag_num[3]==0x8022&&g_can_src_tick[CAN_SRC_DIAG]==received);
+        for(unsigned j=0;j<4;j++)assert(CAN1_RX_MSG_ID_BANK2[j]!=0x504);
+        User_CAN_CheckTimeouts(received+CAN_TIMEOUT_ECU_MS);
+        assert((d->valid_mask&(DASH_VALID_DIAG_RL_RR|DASH_VALID_DIAG_FL_FR))==(DASH_VALID_DIAG_RL_RR|DASH_VALID_DIAG_FL_FR));
+        User_CAN_CheckTimeouts(received+CAN_TIMEOUT_ECU_MS+1);
+        assert(!(d->valid_mask&(DASH_VALID_DIAG_RL_RR|DASH_VALID_DIAG_FL_FR)));
+        inject(0x503,8,zero);
+        for(unsigned i=0;i<4;i++)assert(d->diag_num[i]==0);
         assert((d->valid_mask&(DASH_VALID_DIAG_RL_RR|DASH_VALID_DIAG_FL_FR))==(DASH_VALID_DIAG_RL_RR|DASH_VALID_DIAG_FL_FR));
     }
     /* Per-wheel 0x506 temperatures and MAX T over fresh sources only. */
