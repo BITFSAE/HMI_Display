@@ -900,7 +900,8 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
   switch(RxHeader.StdId)
   {
     /* BRT25-C0M4096-RT1 自动上报：ID=0x001，DLC=7。
-     * DLC=4 的命令应答和其他 FUNC 不进入位置跟踪；编码器只收不发。 */
+     * HMI 只接收位置帧，不发送配置命令；传感器已在释放位清零，不做在线零点跟踪。
+     * DLC=4 的命令应答和其他 FUNC 不进入位置解码。 */
     case 0x001:
     {
       uint16_t count;
@@ -999,17 +1000,19 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
       break;
     }
 
-    /* DBC BO_773 DataLogger 0x305: SteeringWheelAngle(0|16@1-), APS_OpenPct(16|16@1+), OilPressure_Kpa(32|16@1+) */
+    /* DBC BO_773 DataLogger 0x305: SteeringWheelAngle(0|16@1-), APS_OpenPct(16|16@1+),
+     * OilPressure_R(32|16@1+), OilPressure_L(48|16@1+). 机械制动条取后油压 R（Byte4..5）；
+     * 左路 L（Byte6..7）当前不使用，DLC=8 帧也只取前 6 字节。 */
     case 0x305:
     {
       /* SG_ SteeringWheelAngle: 0|16@1- (0.1,0) deg, stored as the raw 0.1 deg count */
       g_can_dashboard_data.steering_angle = (int32_t)(int16_t)can_u16_le(CAN_RxData, 0U);
       /* SG_ APS_OpenPct: 16|16@1+ (0.1,0) %, store integer pct */
       g_can_dashboard_data.aps_open_pct = (int32_t)(can_u16_le(CAN_RxData, 2U) / 10U);
-      /* SG_ OilPressure_Kpa: 32|16@1+ (0.001,0) Kpa, raw count */
-      const uint16_t oil_raw = can_u16_le(CAN_RxData, 4U);
-      g_can_dashboard_data.oil_pressure = (int32_t)oil_raw;
-      BrakePedal_OnOil(&g_brake_pedal, oil_raw, now);
+      /* SG_ OilPressure_R: 32|16@1+ (0.001,0) Kpa, raw count */
+      const uint16_t rear_oil_raw = can_u16_le(CAN_RxData, 4U);
+      g_can_dashboard_data.oil_pressure = (int32_t)rear_oil_raw;
+      BrakePedal_OnOil(&g_brake_pedal, rear_oil_raw, now);
       User_CAN_NoteRx(CAN_SRC_APS, now);
       User_CAN_SetValid(DASH_VALID_APS, 1U);
       /* 机械制动条继续由油压推算；与油门同帧同新鲜度。 */

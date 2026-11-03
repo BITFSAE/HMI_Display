@@ -269,21 +269,11 @@ static void test_can_tx_recovery(void)
     puts("CAN TX: full queue recovery without interrupts and five-frame bursts passed");
 }
 
-static void feed_encoder(brake_pedal_t *p,uint16_t count,uint16_t oil,uint32_t *now,unsigned samples)
-{
-    for(unsigned i=0;i<samples;i++) {
-        BrakePedal_OnOil(p,oil,*now);
-        BrakePedal_OnEncoder(p,count,*now);
-        *now+=10U;
-    }
-}
-
 static void test_brake_pedal_module(void)
 {
     brake_pedal_t p;
     uint32_t now=1000U;
     uint16_t count=0;
-    int32_t rest=0;
     const uint8_t position[7]={7,1,1,0xF2,0x0F,0,0};             /* 4082 = 358.8 deg */
     uint8_t bad[7]={7,1,1,0,0x10,0,0};                          /* count 4096 is out of range */
 
@@ -294,84 +284,62 @@ static void test_brake_pedal_module(void)
     bad[2]=1;bad[1]=2;assert(!BrakePedal_DecodePosition(bad,7,&count));
     assert(!BrakePedal_DecodePosition(position,6,&count));
 
-    /* No rest zero means --, not 0 %; 1.5 s of stable counts at 2.135 kPa creates it. */
-    BrakePedal_OnOil(&p,2135U,now);
+    /* 释放位为 0 count；没有位置帧时显示 --，而不是 0 %。 */
     assert(BrakePedal_GetRegenPct(&p,now)==-1);
-    feed_encoder(&p,4082U,2135U,&now,151U);
-    assert(BrakePedal_GetRestCount(&p,&rest)&&rest==-14);
-    assert(BrakePedal_GetRegenPct(&p,now-10U)==0);
-
-    /* 0.3 deg dead band, 7 deg full scale, saturated above 7 deg. */
-    BrakePedal_OnEncoder(&p,4086U,now);                          /* +4 counts = 0.35 deg */
+    BrakePedal_OnEncoder(&p,0U,now);
     assert(BrakePedal_GetRegenPct(&p,now)==0);
-    BrakePedal_OnEncoder(&p,4090U,now);                          /* +8 counts = 0.70 deg */
-    assert(BrakePedal_GetRegenPct(&p,now)==6);
-    BrakePedal_OnEncoder(&p,4162U,now);                          /* +80 counts = 7.03 deg */
+
+    /* 0.3 deg 死区，20 deg 满量程；1 count = 360/4096 deg。 */
+    BrakePedal_OnEncoder(&p,4U,now);                             /* 0.35 deg */
+    assert(BrakePedal_GetRegenPct(&p,now)==0);
+    BrakePedal_OnEncoder(&p,8U,now);                             /* 0.70 deg */
+    assert(BrakePedal_GetRegenPct(&p,now)==2);
+    BrakePedal_OnEncoder(&p,114U,now);                           /* 10.0 deg */
+    assert(BrakePedal_GetRegenPct(&p,now)==49);
+    BrakePedal_OnEncoder(&p,228U,now);                           /* 20.0 deg */
     assert(BrakePedal_GetRegenPct(&p,now)==100);
+    BrakePedal_OnEncoder(&p,4095U,now);                          /* -1 count，释放位下方 */
+    assert(BrakePedal_GetRegenPct(&p,now)==0);
 
-    /* A lower resting position is adopted after the 1.5 s window. */
-    feed_encoder(&p,4060U,2135U,&now,152U);
-    assert(BrakePedal_GetRestCount(&p,&rest)&&rest==-36);
-    assert(BrakePedal_GetRegenPct(&p,now-10U)==0);
+    /* 编码器 150 ms 超时；油压新鲜度不影响 REG。 */
+    BrakePedal_OnEncoder(&p,0U,now);
+    assert(BrakePedal_GetRegenPct(&p,now+150U)==0);
+    assert(BrakePedal_GetRegenPct(&p,now+151U)==-1);
 
-    /* A higher position must hold for 5 s: 4.9 s keeps the old zero, 5.1 s replaces it. */
-    feed_encoder(&p,4065U,2135U,&now,151U);
-    assert(BrakePedal_GetRestCount(&p,&rest)&&rest==-36);
-    feed_encoder(&p,4065U,2135U,&now,340U);
-    assert(BrakePedal_GetRestCount(&p,&rest)&&rest==-36);
-    feed_encoder(&p,4065U,2135U,&now,20U);
-    assert(BrakePedal_GetRestCount(&p,&rest)&&rest==-31);
-
-    /* Oil outside the rest band prevents calibration, but does not erase an existing zero. */
-    feed_encoder(&p,4060U,2150U,&now,151U);
-    assert(BrakePedal_GetRestCount(&p,&rest)&&rest==-31);
-
-    /* Mechanical brake keeps the oil calibration and its own 1 s freshness. */
+    /* 机械制动仍用油压标定和 1 s 新鲜度。 */
     {
         struct {uint16_t oil;int pct;} const cases[]={{0,0},{2099,0},{2100,0},{3500,45},
                                                        {4900,90},{5200,99},{5300,100},{65535,100}};
         for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
             BrakePedal_OnOil(&p,cases[i].oil,now);
             assert(BrakePedal_GetMechanicalPct(&p,now)==cases[i].pct);
-            now+=100U;
         }
-        assert(BrakePedal_GetMechanicalPct(&p,now)==100);
-        assert(BrakePedal_GetMechanicalPct(&p,now+901U)==-1);
+        assert(BrakePedal_GetMechanicalPct(&p,now+1001U)==-1);
     }
 
-    /* Encoder silence invalidates the regen bar at 150 ms, not at the oil timeout. */
-    BrakePedal_OnOil(&p,2135U,now);
-    BrakePedal_OnEncoder(&p,4082U,now);
-    assert(BrakePedal_GetRegenPct(&p,now+150U)>=0);
-    assert(BrakePedal_GetRegenPct(&p,now+151U)==-1);
-    puts("Brake pedal: frame validation, rest median, asymmetric zero update, 7 deg scaling and both timeouts passed");
+    puts("Brake pedal: frame validation, fixed zero, 20 deg scaling and both timeouts passed");
 }
 
 static void test_brake_pedal_can(void)
 {
     const dashboard_data_t *d=&g_can_dashboard_data;
-    const uint8_t oil[6]={0,0,0xF4,0x01,0x57,0x08};              /* APS 50 %, oil 2.135 kPa */
-    const uint8_t position[7]={7,1,1,0xF2,0x0F,0,0};
-    uint8_t moved[7]={7,1,1,0xFA,0x0F,0,0};                     /* 4090: +0.70 deg */
+    const uint8_t oil[6]={0,0,0xF4,0x01,0x57,0x08};              /* APS 50 %, rear oil 2.135 kPa */
+    const uint8_t position[7]={7,1,1,0,0,0,0};                   /* 释放位 = 0 count */
+    uint8_t moved[7]={7,1,1,0xE4,0,0,0};                         /* 228 counts = 20.0 deg */
 
     inject(0x305,6,oil);
-    for(unsigned i=1;i<151U;i++) {
-        if((i%10U)==0U) inject(0x305,6,oil);
-        inject(0x001,7,position);
-        test_tick+=10U;
-    }
     inject(0x001,7,position);
     assert((d->valid_mask&DASH_VALID_REGEN)!=0U&&d->regen_pct==0);
     inject(0x001,7,moved);
-    assert((d->valid_mask&DASH_VALID_REGEN)!=0U&&d->regen_pct==6);
+    assert((d->valid_mask&DASH_VALID_REGEN)!=0U&&d->regen_pct==100);
 
     /* ACK and non-position FUNC frames are ignored without disturbing the last value. */
     inject(0x001,4,(const uint8_t[]){4,1,0,0});
-    assert((d->valid_mask&DASH_VALID_REGEN)!=0U&&d->regen_pct==6);
+    assert((d->valid_mask&DASH_VALID_REGEN)!=0U&&d->regen_pct==100);
     test_tick+=151U;User_CAN_ServiceTimeouts(test_tick);
     assert((d->valid_mask&DASH_VALID_REGEN)==0U);
     inject(0x001,7,moved);
-    assert((d->valid_mask&DASH_VALID_REGEN)!=0U&&d->regen_pct==6);
+    assert((d->valid_mask&DASH_VALID_REGEN)!=0U&&d->regen_pct==100);
 }
 
 static void test_can_decode(void)
