@@ -222,6 +222,13 @@ static void screen_press_cb(lv_event_t * e)
         case DASH_ZONE_NIGHT:
             set_night(g_night_mode ? 0U : 1U);
             break;
+        case DASH_ZONE_GPS: {
+            /* 模拟器没有 GPS 任务：点击只切换右上角标记，便于查看单天线模式的外观。 */
+            static uint8_t single_antenna = 0U;
+            single_antenna = (single_antenna != 0U) ? 0U : 1U;
+            Dash_View_SetAntennaMode(single_antenna);
+            break;
+        }
         default:
             break;
     }

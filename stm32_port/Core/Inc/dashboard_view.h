@@ -31,7 +31,8 @@ typedef enum {
     DASH_ZONE_MODE,     /* mode tile: cycle DF -> AC -> AX -> 8 -> EN -> DF */
     DASH_ZONE_ALERT,    /* alert banner: dismiss the oldest alert */
     DASH_ZONE_NIGHT,    /* night button: toggle backlight dimming */
-    DASH_ZONE_LOGO      /* top-left logo: replay the splash animation */
+    DASH_ZONE_LOGO,     /* top-left logo: replay the splash animation */
+    DASH_ZONE_GPS       /* top-right GPS signal bars: long-press toggles single-antenna mode */
 } dash_zone_t;
 
 /* Pass as a value to the setters below to show "--" for that field. */
@@ -105,6 +106,8 @@ void Dash_View_SetLapCounter(int32_t count, int32_t remaining);
 void Dash_View_SetDelta(int32_t delta);
 /* GPS signal level 0..4. */
 void Dash_View_SetSignal(int32_t level);
+/* 单天线模式标记：GPS 标题由 "GPS" 变为琥珀色 "GPS 1"；双天线时恢复。 */
+void Dash_View_SetAntennaMode(uint8_t single);
 /* Blinking lap-timing state dot next to the lap time. */
 void Dash_View_SetTimingDot(uint8_t visible, uint32_t color_hex);
 /* text: oldest pending alert (NULL/"" = none); count: queue length.

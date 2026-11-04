@@ -82,6 +82,8 @@ static uint32_t g_lap_analysis_blink_tick = 0U;
 #define DASHBOARD_UI_FAST_PERIOD_MS 50U
 #define DASHBOARD_UI_SLOW_PERIOD_MS 200U
 #define DASHBOARD_MODE_TOUCH_HOLD_MS 200U
+/* 切换单天线模式要持续按住 GPS 信号条 1 s：只在副天线故障时临时使用，避免误触。 */
+#define DASHBOARD_GPS_TOUCH_HOLD_MS 1000U
 #define DASHBOARD_TOUCH_RELEASE_MS 80U
 #define LAP_START_MIN_SPEED_KMH     5.0f
 #define DELTA_TEXT_LIMIT_HUNDREDTHS 3000
@@ -141,6 +143,7 @@ static uint8_t g_sprint_ready_visible = 0U;
 static uint32_t g_mode_lock_alert_last_tick = 0U;
 /* Night mode: 0 = day (100% backlight), 1 = night (45% backlight). */
 static volatile uint8_t g_pending_night_toggle = 0U;
+static volatile uint8_t g_pending_antenna_toggle = 0U;
 static uint8_t g_night_mode = 0U;
 
 /* 开屏动画：触摸任务只置位，由 Dashboard 任务启动/跳过；g_splash_active 供触摸侧判断是否吞掉点击。 */
@@ -431,7 +434,8 @@ static void dashboard_toggle_lap_analysis(void)
     }
     else {
         if(gps_data.speed_kmh < LAP_START_MIN_SPEED_KMH) {
-            Dashboard_UI_PushAlert("wait heading or move");
+            Dashboard_UI_PushAlert(GPS_IsSingleAntenna() != 0U ? "move above 5 km/h"
+                                                              : "wait heading or move");
             return;
         }
         line_heading = gps_data.track_angle;
@@ -1185,9 +1189,24 @@ void Dashboard_UI_Process(void)
        (g_sprint_ready_dirty == 0U) &&
        (g_pending_alert_count == 0U) && (g_pending_alert_pop_count == 0U) &&
        (g_pending_lap_toggle == 0U) && (g_pending_night_toggle == 0U) &&
+       (g_pending_antenna_toggle == 0U) &&
        (g_pending_alert_clear == 0U) && (g_pending_mode_cycle == 0U) &&
        (g_pending_mode_lock_alert == 0U) && (g_pending_disable_alert == 0U)) {
         return;
+    }
+
+    if(g_pending_antenna_toggle != 0U) {
+        uint8_t single;
+        primask = __get_PRIMASK();
+        __disable_irq();
+        g_pending_antenna_toggle = 0U;
+        if(primask == 0U) {
+            __enable_irq();
+        }
+        single = (GPS_IsSingleAntenna() != 0U) ? 0U : 1U;
+        GPS_SetSingleAntenna(single);
+        Dash_View_SetAntennaMode(single);
+        Dashboard_UI_PushAlert(single != 0U ? "single antenna" : "dual antenna");
     }
 
     if(g_pending_night_toggle != 0U) {
@@ -1514,6 +1533,7 @@ void Dashboard_UI_Init(void)
     update_alert_ui();
     dashboard_backlight_init();
     update_night_mode_ui();
+    Dash_View_SetAntennaMode(GPS_IsSingleAntenna());
     Splash_View_Start(SPLASH_BOOT);
     g_splash_active = 1U;
     g_dashboard_initialized = 1U;
@@ -1527,6 +1547,8 @@ void Dashboard_UI_SubmitTouchState(uint16_t x, uint16_t y, uint8_t pressed)
     static uint32_t release_tick = 0U;
     static uint8_t mode_hold_armed = 0U;
     static uint32_t mode_hold_tick = 0U;
+    static uint8_t gps_hold_armed = 0U;
+    static uint32_t gps_hold_tick = 0U;
     static uint32_t last_lap_toggle_tick = 0U;
     static uint32_t last_alert_touch_tick = 0U;
     static uint32_t last_night_toggle_tick = 0U;
@@ -1537,6 +1559,7 @@ void Dashboard_UI_SubmitTouchState(uint16_t x, uint16_t y, uint8_t pressed)
      * 松手只上报一次时，在下一次按下补做稳定松手确认。 */
     if(pressed == 0U) {
         mode_hold_armed = 0U;
+        gps_hold_armed = 0U;
         if((last_pressed != 0U) && (release_pending == 0U)) {
             release_pending = 1U;
             release_tick = now;
@@ -1576,6 +1599,10 @@ void Dashboard_UI_SubmitTouchState(uint16_t x, uint16_t y, uint8_t pressed)
                 mode_hold_armed = 1U;
                 mode_hold_tick = now;
                 break;
+            case DASH_ZONE_GPS:
+                gps_hold_armed = 1U;
+                gps_hold_tick = now;
+                break;
             case DASH_ZONE_ALERT:
                 if((now - last_alert_touch_tick) >= 200U) {
                     last_alert_touch_tick = now;
@@ -1606,6 +1633,17 @@ void Dashboard_UI_SubmitTouchState(uint16_t x, uint16_t y, uint8_t pressed)
         else if((now - mode_hold_tick) >= DASHBOARD_MODE_TOUCH_HOLD_MS) {
             mode_hold_armed = 0U;
             Dashboard_UI_RequestDriveModeCycle();
+        }
+    }
+
+    /* 同样的持续按住规则：移出信号条即取消，按满门限只发一次，必须先松手才能再次触发。 */
+    if(gps_hold_armed != 0U) {
+        if((g_splash_active != 0U) || (Dash_View_HitTest(x, y) != DASH_ZONE_GPS)) {
+            gps_hold_armed = 0U;
+        }
+        else if((now - gps_hold_tick) >= DASHBOARD_GPS_TOUCH_HOLD_MS) {
+            gps_hold_armed = 0U;
+            g_pending_antenna_toggle = 1U;
         }
     }
 }

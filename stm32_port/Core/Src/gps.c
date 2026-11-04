@@ -53,6 +53,8 @@ static uint32_t    g_gsv_signal_ui_last_tick;
 static uint8_t     g_gga_signal_level;
 static uint32_t    g_gga_tick;
 static uint32_t    g_hpr_last_tick;
+/* 单天线模式开关：界面任务写，GPS 任务和界面任务读；单字节读写，无需临界区。 */
+static volatile uint8_t g_single_antenna;
 static uint32_t    g_gps_can_last_tick;
 static uint8_t     g_gps_can_slow_phase;
 static uint8_t     g_gps_can_lap_count;
@@ -326,6 +328,10 @@ static void gps_can_speed_tick(uint32_t now)
 		gps_motion_imu_t imu;
 		gps_motion_output_t motion;
 		CAN_GetYawRate(&imu);
+		/* 单天线模式下清掉已缓存的航向，切换后质心速度立即失效，不必等下一条 HPR。 */
+		if(g_single_antenna != 0U) {
+			GPS_Motion_OnHeading(&g_gps_motion, 0U, 0.0f, 0U, now);
+		}
 		GPS_Motion_Get(&g_gps_motion, &imu, now, &motion);
 		CAN_SendCGVelocity(&motion);
 	}
@@ -1095,6 +1101,8 @@ static void parse_GNHPR(const char * sentence)
 	int32_t quality = nmea_field_atoi(sentence, 5);
 	uint8_t valid = ((quality == 4) || (quality == 5)) ? 1U : 0U;
 
+	/* 单天线模式：副天线坏时 HPR 可能时有时无甚至给出错误航向，一律不采信。 */
+	if(g_single_antenna != 0U) valid = 0U;
 	if(!isfinite(heading) || heading < 0.0f || heading > 360.0f) {
 		heading = 0.0f;
 		valid = 0U;
@@ -1645,6 +1653,8 @@ void GPS_GetData(GPS_Data_t * out)
 	    ((now - g_hpr_last_tick) > GPS_HPR_EXPIRE_MS))) {
 		out->heading_valid = 0U;
 	}
+	/* 切换瞬间已缓存的有效航向也要立即作废。 */
+	if(g_single_antenna != 0U) out->heading_valid = 0U;
 	taskEXIT_CRITICAL();
 
 	out->speed_valid = view.valid;
@@ -1652,6 +1662,16 @@ void GPS_GetData(GPS_Data_t * out)
 	out->speed_age_ms = (view.age_ms > 65535U) ? 65535U : (uint16_t)view.age_ms;
 	out->speed_kmh = (view.valid != 0U) ? ((float)view.speed_centi / 100.0f) : 0.0f;
 	if(position_fresh == 0U) out->valid = 0U;
+}
+
+void GPS_SetSingleAntenna(uint8_t enable)
+{
+	g_single_antenna = (enable != 0U) ? 1U : 0U;
+}
+
+uint8_t GPS_IsSingleAntenna(void)
+{
+	return g_single_antenna;
 }
 
 void GPS_GetSpeedView(uint32_t max_age_ms, gps_speed_view_t * out)

@@ -158,6 +158,12 @@ void GPS_Init(void);
 void GPS_ISR_Notify(void);
 void GPS_GetData(GPS_Data_t * out);
 
+/* 单天线模式：副天线故障时临时使用。开启后丢弃 GPHPR 航向（heading_valid 恒为 0，质心速度
+ * 不再取 HPR），圈速线方向只用 RMC 航迹。只改固件的取用方式，不向接收机发命令；上电默认
+ * 关闭（双天线），不写入 Flash。可从任意任务调用。 */
+void GPS_SetSingleAntenna(uint8_t enable);
+uint8_t GPS_IsSingleAntenna(void);
+
 /* 供 CAN 发送使用：以给定门限（ms）判断速度是否有效，0 表示用本地新鲜度门限。 */
 void GPS_GetSpeedView(uint32_t max_age_ms, gps_speed_view_t * out);
 

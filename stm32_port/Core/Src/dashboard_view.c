@@ -63,6 +63,10 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 /* 顶栏左端到分隔线（x=164）为 Logo 区：点它重放开屏动画，不触发计时。 */
 #define LOGO_ZONE_W  164
 
+/* 顶栏右端 GPS 信号条的触摸区（长按切换单天线模式）：从计时区中划出，短按不开始计时。
+ * 左边界在 ODO 数值块（x<714）之外，右边界到屏幕边缘。 */
+#define GPS_ZONE_X   716
+
 #define ALERT_X      214
 #define ALERT_Y      110
 #define ALERT_W      372
@@ -153,6 +157,8 @@ static struct {
     lv_obj_t * left_value;
     lv_obj_t * odometer;
     lv_obj_t * signal;
+    lv_obj_t * gps_caption;
+    lv_obj_t * gps_caption_single;
     lv_obj_t * mode_tile;
     lv_obj_t * mode_letter;
     lv_obj_t * mode_name;
@@ -195,6 +201,7 @@ static struct {
 } ui;
 
 static lv_style_t st_caption;   /* small grey uppercase captions */
+static lv_style_t st_caption_warn; /* 同上，琥珀色：单天线模式标记 */
 static lv_style_t st_value;     /* 18 px white values */
 static lv_style_t st_aux_value; /* 14 px values for the compact brake bars */
 static lv_style_t st_value_m;   /* 22 px white values */
@@ -533,7 +540,11 @@ static void create_top(lv_obj_t * scr)
     ui.left_value = top_block(scr, 566, 56, "LEFT", &ui.left_caption);
     ui.odometer = top_block(scr, 630, 84, "ODO KM", NULL);
 
-    make_label(scr, &st_caption, 730, 7, 0, NULL, "GPS");
+    ui.gps_caption = make_label(scr, &st_caption, 730, 7, 0, NULL, "GPS");
+    /* 单天线标记：两个标签都在建界面时分配好，切换只改隐藏标志。真机 LVGL 池只有 60 KB，
+     * 池耗尽会断言死循环，所以不能在运行中换文字或加本地样式。 */
+    ui.gps_caption_single = make_label(scr, &st_caption_warn, 730, 7, 0, NULL, "GPS 1");
+    lv_obj_add_flag(ui.gps_caption_single, LV_OBJ_FLAG_HIDDEN);
     ui.signal = make_box(scr, 730, 24, 44, 20);
     lv_obj_add_event_cb(ui.signal, signal_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
 
@@ -739,6 +750,8 @@ void Dash_View_Create(void)
 
     init_style(&st_caption, &dash_font_xs, C_DIM);
     lv_style_set_text_letter_space(&st_caption, 1);
+    init_style(&st_caption_warn, &dash_font_xs, C_AMBER);
+    lv_style_set_text_letter_space(&st_caption_warn, 1);
     init_style(&st_value, &dash_font_s, C_TEXT);
     init_style(&st_aux_value, &dash_font_xs, C_TEXT);
     init_style(&st_value_m, &dash_font_m, C_TEXT);
@@ -774,7 +787,8 @@ void Dash_View_Create(void)
 dash_zone_t Dash_View_HitTest(int32_t x, int32_t y)
 {
     if((y >= 0) && (y < TOP_H) && (x >= 0) && (x < LOGO_ZONE_W)) return DASH_ZONE_LOGO;
-    if((y >= 0) && (y < TOP_H) && (x >= LOGO_ZONE_W) && (x < DASH_SCREEN_W)) return DASH_ZONE_LAP;
+    if((y >= 0) && (y < TOP_H) && (x >= GPS_ZONE_X) && (x < DASH_SCREEN_W)) return DASH_ZONE_GPS;
+    if((y >= 0) && (y < TOP_H) && (x >= LOGO_ZONE_W) && (x < GPS_ZONE_X)) return DASH_ZONE_LAP;
     if((x >= MODE_X - MODE_TOUCH_PAD) && (x < MODE_X + MODE_W + MODE_TOUCH_PAD) &&
        (y >= MODE_Y - MODE_TOUCH_PAD) && (y < MODE_Y + MODE_H + MODE_TOUCH_PAD)) return DASH_ZONE_MODE;
     if((x >= ALERT_X - 8) && (x < ALERT_X + ALERT_W + 8) &&
@@ -1205,6 +1219,12 @@ void Dash_View_SetSignal(int32_t level)
     if(level == s_signal) return;
     s_signal = level;
     lv_obj_invalidate(ui.signal);
+}
+
+void Dash_View_SetAntennaMode(uint8_t single)
+{
+    set_hidden(ui.gps_caption, single != 0U);
+    set_hidden(ui.gps_caption_single, single == 0U);
 }
 
 void Dash_View_SetTimingDot(uint8_t visible, uint32_t color_hex)

@@ -89,6 +89,7 @@ UM982 启动时依次发送（每条等待回执并继续读取 DMA，无回执�
 | Dashboard 循环延时 | 5..20（启动期 ≤16） | `freertos.c` | ms | 取 `lv_timer_handler` 返回值并限幅 |
 | 告警队列 | 6 条，每条 ≤32 字符 | `DASHBOARD_ALERT_MAX`、`DASHBOARD_ALERT_TEXT_MAX` | — | |
 | 触摸松手确认 | 80 | `DASHBOARD_TOUCH_RELEASE_MS`（`dashboard_ui.c`） | ms | 连续松手达到门限后才允许下一次触摸；模式色块还须满足长按门限，短暂丢点不会重新触发 |
+| 单天线模式长按门限 | 1000 | `DASHBOARD_GPS_TOUCH_HOLD_MS`（`dashboard_ui.c`） | ms | 持续按住顶栏 GPS 信号条（`GPS_ZONE_X` = 716 起，`dashboard_view.c`）达到门限才切换单天线/双天线；规则同模式色块：只触发一次，移出即取消 |
 | 驾驶模式色块长按门限 | 200 | `DASHBOARD_MODE_TOUCH_HOLD_MS`（`dashboard_ui.c`） | ms | 从本次按下计时，持续按住达到门限只切一档；提前松手或移出色块即取消，须稳定松手后才能再次触发；不阻挡方向盘 `0x310` |
 | 转角环圆弧限幅 / 数字限幅 | 180 / 999 | `STEER_ARC_MAX_DEG`、`STEER_TEXT_MAX_DEG`（`dashboard_view.c`） | 度 | 圆弧自 12 点按 1:1 实际转角绘制，超过 ±180° 只限幅圆弧；环内整数度超过 ±999 限幅，保证放得进环内。符号约定见 [CAN 接口](can_interface.md) |
 | 温度着色阈值 | 70 / 85 | `TEMP_WARN_C`、`TEMP_HOT_C`（`dashboard_view.c`） | ℃ | 琥珀 / 红；MOT、INV、TMAX 共用 |

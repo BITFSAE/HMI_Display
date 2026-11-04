@@ -1530,6 +1530,80 @@ static void test_mode_touch_release(void)
     puts("UI mode hold: five modes, hold/release boundaries, no repeat, interrupted hold, slide cancellation and tick wrap passed");
 }
 
+/* 单天线模式：GPS 信号条长按 1 s 才切换；开启后不采信 HPR（含已缓存的航向和质心速度输入），
+ * 圈速线只用 RMC 航迹；再次长按恢复。 */
+static void hold_gps_zone(uint32_t hold_ms)
+{
+    Dashboard_UI_SubmitTouchState(750,30,0);
+    test_tick+=100;Dashboard_UI_SubmitTouchState(750,30,1);
+    test_tick+=hold_ms;Dashboard_UI_SubmitTouchState(750,30,1);
+}
+static void release_gps_zone(void)
+{
+    Dashboard_UI_SubmitTouchState(750,30,0);
+    test_tick+=100;Dashboard_UI_SubmitTouchState(750,30,0);
+}
+static void test_single_antenna(void)
+{
+    GPS_Data_t d;
+    gps_test_reset();GPS_SetSingleAntenna(0);Dash_View_SetAntennaMode(0);
+    test_tick=400000;
+    /* 触摸区：信号条区从计时区划出，左侧仍是计时区。 */
+    assert(Dash_View_HitTest(716,0)==DASH_ZONE_GPS&&Dash_View_HitTest(799,51)==DASH_ZONE_GPS);
+    assert(Dash_View_HitTest(715,30)==DASH_ZONE_LAP&&Dash_View_HitTest(750,52)==DASH_ZONE_NONE);
+
+    /* HPR 采信：双天线正常；开启后已缓存航向立即作废，新的 HPR 不再提交给质心速度。 */
+    nmea("GPHPR,120000.20,123.4,0,0,4");GPS_GetData(&d);
+    assert(d.heading_valid&&g_gps_motion.heading_seen);
+    GPS_SetSingleAntenna(1);GPS_GetData(&d);assert(!d.heading_valid&&GPS_IsSingleAntenna());
+    gps_can_speed_tick(test_tick);                       /* CAN 发送节拍同时清掉质心速度用的航向 */
+    assert(!g_gps_motion.heading_seen);
+    nmea("GPHPR,120000.40,123.4,0,0,4");GPS_GetData(&d);
+    assert(!d.heading_valid&&d.heading_quality==4&&!g_gps_motion.heading_seen);
+    GPS_SetSingleAntenna(0);
+    nmea("GPHPR,120000.60,123.4,0,0,4");GPS_GetData(&d);
+    assert(d.heading_valid&&g_gps_motion.heading_seen&&!GPS_IsSingleAntenna());
+
+    /* 圈速起线：没有航向时要求 5 km/h 以上，单天线模式提示直接说明。 */
+    gps_test_reset();g_pending_alert_count=0;test_tick=500000;
+    nmea("GNGGA,120000.00,3200.0000,N,11800.0000,E,1,12,0.8,50.0,M,0,M,,");
+    for(unsigned i=0;i<10;i++) {rmc(43200000UL+i*50U,'A',"0.00");test_tick+=50;}
+    GPS_GetData(&d);assert(d.valid&&d.speed_valid&&!d.heading_valid);
+    g_drive_mode=DRIVE_MODE_AUTOCROSS;
+    dashboard_toggle_lap_analysis();
+    assert(alert_pending("wait heading or move")&&!alert_pending("move above 5 km/h"));
+    g_pending_alert_count=0;GPS_SetSingleAntenna(1);
+    dashboard_toggle_lap_analysis();
+    assert(alert_pending("move above 5 km/h")&&!alert_pending("wait heading or move"));
+    GPS_SetSingleAntenna(0);g_pending_alert_count=0;g_lap_analysis_active=0;
+    GPS_Lap_Reset();GPS_Sprint_Reset();
+
+    /* 长按 1 s：未满、短按、移出信号条都不切换，也不触发计时。 */
+    g_pending_antenna_toggle=0U;g_pending_lap_toggle=0U;g_pending_alert_count=0;
+    hold_gps_zone(DASHBOARD_GPS_TOUCH_HOLD_MS-1U);
+    assert(g_pending_antenna_toggle==0U&&g_pending_lap_toggle==0U);
+    release_gps_zone();
+    hold_gps_zone(200U);release_gps_zone();assert(g_pending_antenna_toggle==0U);
+    Dashboard_UI_SubmitTouchState(750,30,0);
+    test_tick+=100;Dashboard_UI_SubmitTouchState(750,30,1);
+    test_tick+=500;Dashboard_UI_SubmitTouchState(600,30,1);         /* 移到计时区：取消 */
+    test_tick+=1500;Dashboard_UI_SubmitTouchState(750,30,1);          /* 回到信号条也不能重启 */
+    assert(g_pending_antenna_toggle==0U);
+    release_gps_zone();
+
+    /* 满门限只触发一次，切到单天线并提示；松手后再次长按恢复双天线。 */
+    hold_gps_zone(DASHBOARD_GPS_TOUCH_HOLD_MS);
+    assert(g_pending_antenna_toggle==1U);
+    test_tick+=2000;Dashboard_UI_SubmitTouchState(750,30,1);assert(g_pending_antenna_toggle==1U);
+    ui_pass();
+    assert(g_pending_antenna_toggle==0U&&GPS_IsSingleAntenna()&&alert_shown("single antenna"));
+    release_gps_zone();
+    g_pending_alert_count=0;g_alert_count=0;
+    hold_gps_zone(DASHBOARD_GPS_TOUCH_HOLD_MS);ui_pass();
+    assert(!GPS_IsSingleAntenna()&&alert_shown("dual antenna"));
+    release_gps_zone();g_pending_alert_count=0;g_alert_count=0;ui_pass();
+    puts("Single antenna: zone split, 1 s hold gating, HPR rejection, motion heading reset and lap-start hint passed");
+}
 static void test_default_mode(void)
 {
     unsigned mode_tx=test_tx_id_count[0x310];
@@ -1922,6 +1996,6 @@ int main(int argc,char **argv)
     else test_splash();
 #endif
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_default_mode();test_ui();test_steering_ring();test_motor_peak();test_gps_motion();test_can_tx_sustained();return 0;
+    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_single_antenna();test_default_mode();test_ui();test_steering_ring();test_motor_peak();test_gps_motion();test_can_tx_sustained();return 0;
 }
 /* USER CODE END Firmware_Regression */
