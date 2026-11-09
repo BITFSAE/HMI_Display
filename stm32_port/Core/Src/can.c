@@ -1003,8 +1003,8 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
     }
 
     /* DBC BO_773 DataLogger 0x305: SteeringWheelAngle(0|16@1-), APS_OpenPct(16|16@1+),
-     * OilPressure_R(32|16@1+), OilPressure_L(48|16@1+). 机械制动条取后油压 R（Byte4..5）；
-     * 左路 L（Byte6..7）当前不使用，DLC=8 帧也只取前 6 字节。 */
+     * OilPressure_R(32|16@1+), OilPressure_F(48|16@1+). 机械制动条取后油压 R（Byte4..5）；
+     * 前路 F（Byte6..7）当前不使用，DLC=8 帧也只取前 6 字节。 */
     case 0x305:
     {
       /* SG_ SteeringWheelAngle: 0|16@1- (0.1,0) deg, stored as the raw 0.1 deg count;
@@ -1014,7 +1014,7 @@ static void User_CAN_ProcessFifo0(const User_CAN_RxItem_t *frame)
       User_CAN_SetValid(DASH_VALID_STEER, 1U);
       /* SG_ APS_OpenPct: 16|16@1+ (0.1,0) %, store integer pct */
       g_can_dashboard_data.aps_open_pct = (int32_t)(can_u16_le(CAN_RxData, 2U) / 10U);
-      /* SG_ OilPressure_R: 32|16@1+ (0.001,0) Kpa, raw count */
+      /* 后制动油压按 0.001 MPa/LSB 保存原始计数，避免浮点换算。 */
       const uint16_t rear_oil_raw = can_u16_le(CAN_RxData, 4U);
       g_can_dashboard_data.oil_pressure = (int32_t)rear_oil_raw;
       BrakePedal_OnOil(&g_brake_pedal, rear_oil_raw, now);

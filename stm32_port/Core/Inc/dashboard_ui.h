@@ -64,7 +64,7 @@ typedef struct {
 	/* DBC BO_773 DataLogger: SteeringWheelAngle (0.1,0) deg，保存 0.1° 原始计数；
 	 * 左转为正、右转为负（用户确认），DBC 量程 -3276.8..3276.7°。 */
 	int32_t steering_angle;
-	/* DBC BO_773 DataLogger: OilPressure_R (0.001,0) Kpa，机械制动条取后油压 */
+	/* 后制动油压 OilPressure_R，保存 0.001 MPa/LSB 原始计数。 */
 	int32_t oil_pressure;
 	/* DBC BO_1288 Debug8: RL/RR/FL/FR_IGBT_temperature (0.1,0) degC */
 	/* Wheel order: 0=LF, 1=LR, 2=RF, 3=RR */
@@ -81,7 +81,7 @@ typedef struct {
 	uint8_t alert_active;
 	/* 非DBC: 里程(0.1km) */
 	int32_t odometer_tenths;
-	/* 机械制动开度 %，0..100。由 0x305 油压推算：2.1 kPa→0%，4.9 kPa→90%。 */
+	/* 机械制动开度 %，0..100。由后油压按 brake_pedal.h 的标定换算。 */
 	int32_t brake_pct;
 	/* 能量回收开度 %，0..100。踏板转角按释放位 0 count、0.3° 死区、20° 满量程换算。 */
 	int32_t regen_pct;

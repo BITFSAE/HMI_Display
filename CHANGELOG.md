@@ -2,6 +2,14 @@
 
 ## 未发布
 
+### 2026-11-09 后制动油压改用 MPa 并更新标定
+
+- 按用户确认的最新 ECU DBC 截图，先在中央库提交 [fb0baab](https://github.com/BITFSAE/vehicle-interfaces/commit/fb0baab) 登记并校验 `0x305`：`OilPressure_R` 为后制动油压，Byte6..7 改名为前制动油压 `OilPressure_F`，两路单位均为 MPa。HMI 保留后油压 0.001 MPa/LSB 原始计数，前油压不参与机械制动条。
+- 机械制动条改为 0.5 MPa → 0%、10 MPa → 100%，线性换算、整数百分比向下取整，范围外限幅。6 字节兼容帧和 8 字节完整帧均使用后油压，转角、油门和 1 s 超时行为保持原值。参数见 [配置表](docs/configuration.md)。
+- 回归覆盖标定端点、整数取整、限幅、6/8 字节帧、前后油压隔离及实采负载。2026-11-09 抓包后油压峰值为 1.930 MPa，新标定显示 15%。
+- 验证：`python3 tools/run_firmware_tests.py` 全部通过（ASan/UBSan）；`./build_fw.sh` 无警告；`./run_sim_mac.sh --build-only` 通过。Flash 298,876 / 393,216 B，主 SRAM 108,832 / 131,072 B，CCM 61,440 / 65,536 B；`git diff --check` 通过。
+- **未验证 / 待办**：本机未安装 CubeIDE，未完成 CubeIDE 完整构建；尚未烧录，需上板核对油压来源、0.5 / 10 MPa 标定与实屏制动条。
+
 ### 2026-11-04 增加单天线模式（副天线故障时临时使用）
 
 - 仪表顶栏持续按住 GPS 信号条 1 s 切换单天线/双天线；信号条区（x ≥ 716）从计时区划出，短按不再开始计时。开启后 `GPS_SetSingleAntenna`：`parse_GNHPR` 丢弃航向，`GPS_GetData` 的 `heading_valid` 恒为 0，CAN 发送节拍同时清掉质心速度用的缓存航向；圈速线只用 RMC 航迹（≥ 5 km/h，提示改为 `move above 5 km/h`）。界面标题变为琥珀色 `GPS 1`（两个标签建界面时分配、切换只改隐藏标志，运行中不占 LVGL 池），切换时提示 `single antenna` / `dual antenna`。上电默认双天线，不写 Flash，不向接收机发命令，不改任何 CAN 帧定义。

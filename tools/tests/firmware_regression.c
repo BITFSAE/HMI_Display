@@ -306,14 +306,16 @@ static void test_brake_pedal_module(void)
     assert(BrakePedal_GetRegenPct(&p,now+150U)==0);
     assert(BrakePedal_GetRegenPct(&p,now+151U)==-1);
 
-    /* 机械制动仍用油压标定和 1 s 新鲜度。 */
+    /* 后油压 0.5..10 MPa 线性映射，整数百分比向下取整；1 s 内有效。 */
     {
-        struct {uint16_t oil;int pct;} const cases[]={{0,0},{2099,0},{2100,0},{3500,45},
-                                                       {4900,90},{5200,99},{5300,100},{65535,100}};
+        struct {uint16_t oil;int pct;} const cases[]={{0,0},{499,0},{500,0},{501,0},
+            {594,0},{595,1},{1930,15},{2135,17},{5250,50},{9905,99},
+            {9999,99},{10000,100},{10001,100},{65535,100}};
         for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
             BrakePedal_OnOil(&p,cases[i].oil,now);
             assert(BrakePedal_GetMechanicalPct(&p,now)==cases[i].pct);
         }
+        assert(BrakePedal_GetMechanicalPct(&p,now+1000U)==100);
         assert(BrakePedal_GetMechanicalPct(&p,now+1001U)==-1);
     }
 
@@ -323,11 +325,12 @@ static void test_brake_pedal_module(void)
 static void test_brake_pedal_can(void)
 {
     const dashboard_data_t *d=&g_can_dashboard_data;
-    const uint8_t oil[6]={0,0,0xF4,0x01,0x57,0x08};              /* APS 50 %, rear oil 2.135 kPa */
+    const uint8_t oil[6]={0,0,0xF4,0x01,0x57,0x08};              /* 油门 50%，后油压 2.135 MPa */
     const uint8_t position[7]={7,1,1,0,0,0,0};                   /* 释放位 = 0 count */
     uint8_t moved[7]={7,1,1,0xE4,0,0,0};                         /* 228 counts = 20.0 deg */
 
     inject(0x305,6,oil);
+    assert((d->valid_mask&DASH_VALID_BRAKE)!=0U&&d->brake_pct==17);
     inject(0x001,7,position);
     assert((d->valid_mask&DASH_VALID_REGEN)!=0U&&d->regen_pct==0);
     inject(0x001,7,moved);
@@ -429,15 +432,31 @@ static void test_can_decode(void)
         inject(0x5A0,8,off);assert((d->valid_mask&DASH_VALID_LV_BUS)==0&&d->lv_bus_voltage_mV==32767);
         inject(0x5A0,8,on);assert((d->valid_mask&DASH_VALID_LV_BUS)!=0&&d->lv_bus_voltage_mV==13820);
     }
-    /* 0x305 油压推算刹车条：2.1 kPa(2100)→0%，4.9 kPa(4900)→90%，线性并限幅到 0..100。 */
+    /* 后油压标定覆盖 6 字节兼容帧及完整 8 字节帧，前油压不能影响机械制动条。 */
     {
-        struct {uint16_t oil;int pct;} const cases[]={{0,0},{2099,0},{2100,0},{3500,45},{4900,90},{5200,99},{5300,100},{65535,100}};
-        for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
-            const uint8_t f[6]={0,0, 0xF4,0x01, (uint8_t)(cases[i].oil&0xFF),(uint8_t)(cases[i].oil>>8)};
-            inject(0x305,6,f);
-            assert((d->valid_mask&DASH_VALID_BRAKE)!=0&&d->brake_pct==cases[i].pct);
-            assert(d->oil_pressure==cases[i].oil&&d->aps_open_pct==50);          /* 油门仍取 byte2..3 */
+        struct {uint16_t oil;int pct;} const cases[]={{0,0},{499,0},{500,0},{501,0},
+            {594,0},{595,1},{1930,15},{2135,17},{5250,50},{9905,99},
+            {9999,99},{10000,100},{10001,100},{65535,100}};
+        for(uint8_t dlc=6U;dlc<=8U;dlc+=2U) {
+            for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
+                const uint16_t front=(uint16_t)(65535U-cases[i].oil);
+                const uint8_t f[8]={0,0, 0xF4,0x01,
+                    (uint8_t)(cases[i].oil&0xFF),(uint8_t)(cases[i].oil>>8),
+                    (uint8_t)(front&0xFF),(uint8_t)(front>>8)};
+                inject(0x305,dlc,f);
+                assert((d->valid_mask&DASH_VALID_BRAKE)!=0&&d->brake_pct==cases[i].pct);
+                assert(d->oil_pressure==cases[i].oil&&d->aps_open_pct==50);      /* 油门仍取 byte2..3 */
+            }
         }
+    }
+    /* 2026-11-09 实采负载：转角有符号，1.930 MPa 后油压显示 15%。 */
+    {
+        const uint8_t idle[8]={0xEC,0xFF,0,0,0x32,0,0x0A,0};
+        const uint8_t pressed[8]={0xED,0xFF,0,0,0x8A,0x07,0x9D,0x08};
+        inject(0x305,8,idle);
+        assert(d->steering_angle==-20&&d->aps_open_pct==0&&d->oil_pressure==50&&d->brake_pct==0);
+        inject(0x305,8,pressed);
+        assert(d->steering_angle==-19&&d->aps_open_pct==0&&d->oil_pressure==1930&&d->brake_pct==15);
     }
     /* 0x305 方向盘转角：byte0..1 小端有符号 0.1°，左转为正；与油门同帧，独立有效位。 */
     {

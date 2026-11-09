@@ -70,7 +70,7 @@ UM982 启动时依次发送（每条等待回执并继续读取 DMA，无回执�
 | 超时检查间隔 | 50 | `CAN_TIMEOUT_POLL_MS` | ms | 编码器 150 ms 超时最多约晚一个检查周期反映到界面 |
 | 发送轮询间隔 | 10 | `CAN_TX_POLL_MS` | ms | CAN 任务等待接收队列的上限；无接收报文时也继续发送积压帧，与接收超时检查分开 |
 | 方向盘按键重复间隔 | 300 | `CAN_BUTTON_REPEAT_GAP_MS` | ms | 判定 `0x703` 各按键位的「新按下」；方向盘单键只在松开的那一帧置 1，两次单键之间没有其他 `0x703` 帧时，该值是两次按下的最小间隔，待抓包确认 |
-| 机械制动条油压标定 | 2100 → 0%；4900 → 90% | `BRAKE_OIL_ZERO_RAW`、`BRAKE_OIL_FULL_RAW`、`BRAKE_OIL_FULL_PCT`（`brake_pedal.h`） | 0.001 kPa（即 2.1 / 4.9 kPa）；百分比 | `0x305` 后油压（`OilPressure_R`，Byte4..5）线性换算为机械制动条，限幅 0..100；静止油压 2135 显示 1% |
+| 机械制动条油压标定 | 500 → 0%；10000 → 100% | `BRAKE_OIL_ZERO_RAW`、`BRAKE_OIL_FULL_RAW`、`BRAKE_OIL_FULL_PCT`（`brake_pedal.h`） | 0.001 MPa（即 0.5 / 10 MPa）；百分比 | `0x305` 后油压（`OilPressure_R`，Byte4..5）线性换算，整数百分比向下取整；≤0.5 MPa 显示 0%，≥10 MPa 显示 100%，5.25 MPa 显示 50%；前油压不参与 |
 | 能量回收满量程 | 20.0 | `BRAKE_PEDAL_REGEN_FULL_SCALE_MDEG` | 度 | 相对释放位 0 count 达到 20° 即 100%，以上不再细分 |
 | 能量回收死区 | 0.3 | `BRAKE_PEDAL_REGEN_DEADBAND_MDEG` | 度 | 死区内显示 0%；1 count ≈ 0.088° |
 | 踏板编码器超时 | 150 | `BRAKE_PEDAL_ENCODER_TIMEOUT_MS` | ms | 编码器 5 ms 一帧；超时后回收条显示 `--` |

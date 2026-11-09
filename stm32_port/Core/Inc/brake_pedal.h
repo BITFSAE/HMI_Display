@@ -15,10 +15,10 @@ extern "C" {
 #define BRAKE_PEDAL_ENCODER_TIMEOUT_MS       150U
 #define BRAKE_PEDAL_OIL_TIMEOUT_MS           1000U
 
-/* 油压原始值 0.001 kPa/LSB。 */
-#define BRAKE_OIL_ZERO_RAW                   2100U
-#define BRAKE_OIL_FULL_RAW                   4900U
-#define BRAKE_OIL_FULL_PCT                   90U
+/* 后制动油压为 0.001 MPa/LSB；0.5 MPa 以下显示 0%，10 MPa 起显示 100%。 */
+#define BRAKE_OIL_ZERO_RAW                   500U
+#define BRAKE_OIL_FULL_RAW                   10000U
+#define BRAKE_OIL_FULL_PCT                   100U
 
 /* 能量回收满量程与死区，单位 0.001 度。传感器释放位为 0 count。 */
 #define BRAKE_PEDAL_REGEN_DEADBAND_MDEG       300
