@@ -1,4 +1,3 @@
-/* USER CODE BEGIN Dashboard_View_H */
 #ifndef DASHBOARD_VIEW_H
 #define DASHBOARD_VIEW_H
 
@@ -121,4 +120,3 @@ void Dash_View_SetNight(uint8_t night);
 #endif
 
 #endif
-/* USER CODE END Dashboard_View_H */

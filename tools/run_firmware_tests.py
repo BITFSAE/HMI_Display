@@ -5,7 +5,7 @@
                  (6 boot frames + 1 replay frame) to PNG
 --compare-ref R  require the rendered frames to match git ref R pixel for pixel
                  (R must already contain dashboard_view.c)
---lvgl-pool-kib N override the host LVGL pool to stress the firmware memory budget
+--lvgl-pool-kib N constrain the current build's host LVGL pool; the baseline uses its default
 """
 import argparse
 from contextlib import nullcontext
@@ -53,7 +53,7 @@ def main():
     parser.add_argument('--compare-ref', help='Git ref whose UI pixels should remain unchanged')
     parser.add_argument('--png', type=Path, help='Write rendered dashboard frames as PNG into this directory')
     parser.add_argument('--build-dir', type=Path, help='Reuse a local build directory')
-    parser.add_argument('--lvgl-pool-kib', type=int, help='Host LVGL pool size in KiB (default: twice the firmware pool)')
+    parser.add_argument('--lvgl-pool-kib', type=int, help='Current build host pool in KiB (default: twice the firmware pool; baseline unchanged)')
     args = parser.parse_args()
     if args.lvgl_pool_kib is not None and args.lvgl_pool_kib < 2:
         parser.error('--lvgl-pool-kib must be at least 2')
@@ -93,7 +93,9 @@ def main():
             target_pool = re.search(r'#define\s+LV_MEM_SIZE\s+\((\d+)\s*\*\s*1024U\)', config)
             if target_pool is None:
                 raise ValueError('Cannot determine firmware LVGL pool size')
-            host_pool_kib = args.lvgl_pool_kib if args.lvgl_pool_kib is not None else int(target_pool[1]) * 2
+            host_pool_kib = int(target_pool[1]) * 2
+            if label == 'current' and args.lvgl_pool_kib is not None:
+                host_pool_kib = args.lvgl_pool_kib
             config = config.replace('#endif /*LV_CONF_H*/', f'\n#undef LV_MEM_SIZE\n#define LV_MEM_SIZE ({host_pool_kib} * 1024U)\n#undef LV_MEM_ADR\n#define LV_MEM_ADR 0\n#undef LV_ASSERT_HANDLER_INCLUDE\n#define LV_ASSERT_HANDLER_INCLUDE "firmware_diag.h"\n#undef LV_ASSERT_HANDLER\n#define LV_ASSERT_HANDLER Firmware_Diag_LvglAssert();\n#endif /*LV_CONF_H*/')
             write_changed(conf, config)
             directory = work / label

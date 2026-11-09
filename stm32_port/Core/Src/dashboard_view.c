@@ -1,4 +1,3 @@
-/* USER CODE BEGIN Dashboard_View */
 /* Dashboard view for the 800x480 SSD1963 panel (RGB565, partial FSMC flush).
  *
  * Layout (px):
@@ -125,6 +124,11 @@ extern const lv_image_dsc_t dash_logo; /* 140x29 A8, tools/gen_dash_logo.sh */
 #define RIGHT_COL_X  614
 #define RIGHT_VAL_X  656
 #define RIGHT_END_X  786
+#define RIGHT_TOP_Y  148
+#define RIGHT_LV_Y   247
+#define RIGHT_FAN_Y  302
+#define MOTOR_COL_W  200
+#define MOTOR_VALUES_Y (BOTTOM_Y + 30)
 
 typedef struct {
     int32_t value;
@@ -135,7 +139,6 @@ typedef struct {
 } dash_bar_t;
 
 typedef struct {
-    lv_obj_t * name;
     lv_obj_t * bolt;
     lv_obj_t * diag;
     lv_obj_t * torque;
@@ -359,14 +362,14 @@ static void background_draw_cb(lv_event_t * e)
         {RIGHT_COL_X, 240, RIGHT_END_X - RIGHT_COL_X, 1},
         {RIGHT_COL_X, 295, RIGHT_END_X - RIGHT_COL_X, 1},
         {0, BOTTOM_Y, DASH_SCREEN_W, 1},
-        {200, BOTTOM_Y + 10, 1, DASH_SCREEN_H - BOTTOM_Y - 20},
-        {400, BOTTOM_Y + 10, 1, DASH_SCREEN_H - BOTTOM_Y - 20},
-        {600, BOTTOM_Y + 10, 1, DASH_SCREEN_H - BOTTOM_Y - 20},
+        {MOTOR_COL_W, BOTTOM_Y + 10, 1, DASH_SCREEN_H - BOTTOM_Y - 20},
+        {2 * MOTOR_COL_W, BOTTOM_Y + 10, 1, DASH_SCREEN_H - BOTTOM_Y - 20},
+        {3 * MOTOR_COL_W, BOTTOM_Y + 10, 1, DASH_SCREEN_H - BOTTOM_Y - 20},
     };
     static const struct {
         const char * text;
         int16_t x, y, w;
-        uint8_t centered, unit, line_space;
+        uint8_t centered, large_font, line_space;
     } captions[] = {
         {"BEST", 176, 7, 86, 0, 0, 0}, {"LAST", 266, 7, 86, 0, 0, 0},
         {"ODO KM", 630, 7, 84, 0, 0, 0}, {"SLIP", 114, 66, 0, 0, 0, 0},
@@ -377,22 +380,22 @@ static void background_draw_cb(lv_event_t * e)
         {"MECH", 234, PEDAL_Y + PEDAL_H + 28, 44, 1, 0, 0},
         {"THROTTLE", THROTTLE_X - 26, PEDAL_Y + PEDAL_H + 28, 84, 1, 0, 0},
         {"SOC", RIGHT_COL_X, 60, 0, 0, 0, 0},
-        {"HV", RIGHT_COL_X, 152, 0, 0, 0, 0},
-        {"PWR", RIGHT_COL_X, 152 + RIGHT_ROW_H, 0, 0, 0, 0},
-        {"PK", RIGHT_COL_X, 152 + 2 * RIGHT_ROW_H, 0, 0, 0, 0},
-        {"TMAX", RIGHT_COL_X, 152 + 3 * RIGHT_ROW_H, 0, 0, 0, 0},
-        {"LV", RIGHT_COL_X, 251, 0, 0, 0, 0},
-        {"FAN1", RIGHT_COL_X, 306, 0, 0, 0, 0},
-        {"FAN2", RIGHT_COL_X, 306 + RIGHT_ROW_H, 0, 0, 0, 0},
-        {"FAN3", RIGHT_COL_X, 306 + 2 * RIGHT_ROW_H, 0, 0, 0, 0},
-        {"TQ\nkW\nMOT", 10, BOTTOM_Y + 34, 0, 0, 0, 10},
-        {"RPM\nPK\nINV", 106, BOTTOM_Y + 34, 0, 0, 0, 10},
-        {"TQ\nkW\nMOT", 210, BOTTOM_Y + 34, 0, 0, 0, 10},
-        {"RPM\nPK\nINV", 306, BOTTOM_Y + 34, 0, 0, 0, 10},
-        {"TQ\nkW\nMOT", 410, BOTTOM_Y + 34, 0, 0, 0, 10},
-        {"RPM\nPK\nINV", 506, BOTTOM_Y + 34, 0, 0, 0, 10},
-        {"TQ\nkW\nMOT", 610, BOTTOM_Y + 34, 0, 0, 0, 10},
-        {"RPM\nPK\nINV", 706, BOTTOM_Y + 34, 0, 0, 0, 10},
+        {"HV", RIGHT_COL_X, RIGHT_TOP_Y + 4, 0, 0, 0, 0},
+        {"PWR", RIGHT_COL_X, RIGHT_TOP_Y + RIGHT_ROW_H + 4, 0, 0, 0, 0},
+        {"PK", RIGHT_COL_X, RIGHT_TOP_Y + 2 * RIGHT_ROW_H + 4, 0, 0, 0, 0},
+        {"TMAX", RIGHT_COL_X, RIGHT_TOP_Y + 3 * RIGHT_ROW_H + 4, 0, 0, 0, 0},
+        {"LV", RIGHT_COL_X, RIGHT_LV_Y + 4, 0, 0, 0, 0},
+        {"FAN1", RIGHT_COL_X, RIGHT_FAN_Y + 4, 0, 0, 0, 0},
+        {"FAN2", RIGHT_COL_X, RIGHT_FAN_Y + RIGHT_ROW_H + 4, 0, 0, 0, 0},
+        {"FAN3", RIGHT_COL_X, RIGHT_FAN_Y + 2 * RIGHT_ROW_H + 4, 0, 0, 0, 0},
+        {"TQ\nkW\nMOT", 10, MOTOR_VALUES_Y + 4, 0, 0, 0, 10},
+        {"RPM\nPK\nINV", 106, MOTOR_VALUES_Y + 4, 0, 0, 0, 10},
+        {"TQ\nkW\nMOT", MOTOR_COL_W + 10, MOTOR_VALUES_Y + 4, 0, 0, 0, 10},
+        {"RPM\nPK\nINV", MOTOR_COL_W + 106, MOTOR_VALUES_Y + 4, 0, 0, 0, 10},
+        {"TQ\nkW\nMOT", 2 * MOTOR_COL_W + 10, MOTOR_VALUES_Y + 4, 0, 0, 0, 10},
+        {"RPM\nPK\nINV", 2 * MOTOR_COL_W + 106, MOTOR_VALUES_Y + 4, 0, 0, 0, 10},
+        {"TQ\nkW\nMOT", 3 * MOTOR_COL_W + 10, MOTOR_VALUES_Y + 4, 0, 0, 0, 10},
+        {"RPM\nPK\nINV", 3 * MOTOR_COL_W + 106, MOTOR_VALUES_Y + 4, 0, 0, 0, 10},
     };
     lv_layer_t * layer = lv_event_get_layer(e);
     lv_area_t origin;
@@ -406,7 +409,7 @@ static void background_draw_cb(lv_event_t * e)
         fill_rect(layer, a.x1, a.y1, a.x2, a.y2, C_LINE);
     }
     for(uint32_t i = 0U; i < sizeof(captions) / sizeof(captions[0]); i++) {
-        const lv_font_t * font = captions[i].unit ? &dash_font_s : &dash_font_xs;
+        const lv_font_t * font = captions[i].large_font ? &dash_font_s : &dash_font_xs;
         const int32_t top = origin.y1 + captions[i].y;
         /* 先按单行高度剔除；多行标题保守延伸到屏底，再用实际文字尺寸裁剪。 */
         const int32_t bottom = captions[i].line_space ? origin.y2 : top + font->line_height - 1;
@@ -417,7 +420,7 @@ static void background_draw_cb(lv_event_t * e)
         dsc.text = captions[i].text;
         dsc.font = font;
         dsc.color = lv_color_hex(C_DIM);
-        dsc.letter_space = captions[i].unit ? 0 : 1;
+        dsc.letter_space = captions[i].large_font ? 0 : 1;
         dsc.line_space = captions[i].line_space;
         dsc.align = captions[i].centered ? LV_TEXT_ALIGN_CENTER : LV_TEXT_ALIGN_LEFT;
         lv_text_get_size(&size, dsc.text, dsc.font, dsc.letter_space, dsc.line_space,
@@ -744,16 +747,16 @@ static void create_right(lv_obj_t * scr)
     ui.soc_bar = make_box(scr, RIGHT_COL_X, 126, RIGHT_END_X - RIGHT_COL_X, 10);
     lv_obj_add_event_cb(ui.soc_bar, bar_draw_cb, LV_EVENT_DRAW_MAIN, &s_soc_bar);
 
-    ui.hv_voltage = right_row(scr, 148, &ui.hv_current);
-    ui.power_live = right_row(scr, 148 + RIGHT_ROW_H, NULL);
+    ui.hv_voltage = right_row(scr, RIGHT_TOP_Y, &ui.hv_current);
+    ui.power_live = right_row(scr, RIGHT_TOP_Y + RIGHT_ROW_H, NULL);
     /* PK: highest power and highest discharge current since power-on. */
-    ui.power_peak = right_row(scr, 148 + 2 * RIGHT_ROW_H, &ui.current_peak);
-    ui.max_temp = right_row(scr, 148 + 3 * RIGHT_ROW_H, NULL);
-    ui.lv_voltage = right_row(scr, 247, &ui.lv_current);
-    ui.lv_power = right_row(scr, 247 + RIGHT_ROW_H, NULL);
+    ui.power_peak = right_row(scr, RIGHT_TOP_Y + 2 * RIGHT_ROW_H, &ui.current_peak);
+    ui.max_temp = right_row(scr, RIGHT_TOP_Y + 3 * RIGHT_ROW_H, NULL);
+    ui.lv_voltage = right_row(scr, RIGHT_LV_Y, &ui.lv_current);
+    ui.lv_power = right_row(scr, RIGHT_LV_Y + RIGHT_ROW_H, NULL);
     {
         for(uint32_t fan = 0U; fan < 3U; fan++) {
-            ui.fan_duty[fan] = right_row(scr, 302 + (int32_t)fan * RIGHT_ROW_H,
+            ui.fan_duty[fan] = right_row(scr, RIGHT_FAN_Y + (int32_t)fan * RIGHT_ROW_H,
                                          &ui.fan_rpm[fan]);
         }
     }
@@ -766,10 +769,10 @@ static void create_bottom(lv_obj_t * scr)
 
     for(uint32_t wheel = 0U; wheel < 4U; wheel++) {
         dash_motor_ui_t * m = &ui.motors[wheel];
-        int32_t x = (int32_t)column[wheel] * 200;
-        int32_t y = BOTTOM_Y + 30;
+        int32_t x = (int32_t)column[wheel] * MOTOR_COL_W;
+        int32_t y = MOTOR_VALUES_Y;
 
-        m->name = make_label(scr, &st_value_m, x + 12, BOTTOM_Y + 4, 0, NULL, names[wheel]);
+        make_label(scr, &st_value_m, x + 12, BOTTOM_Y + 4, 0, NULL, names[wheel]);
         m->bolt = make_label(scr, &st_value, x + 44, BOTTOM_Y + 7, 0, NULL, LV_SYMBOL_CHARGE);
         m->diag = make_label(scr, &st_value, x + 110, BOTTOM_Y + 6, 80, &st_right, "OK");
         lv_obj_set_style_pad_hor(m->diag, 6, 0);
@@ -1323,5 +1326,3 @@ void Dash_View_SetNight(uint8_t night)
     set_text(ui.night_icon, night ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
     set_text_color(ui.night_icon, night ? C_AMBER : C_DIM);
 }
-
-/* USER CODE END Dashboard_View */

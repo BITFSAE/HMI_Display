@@ -1762,6 +1762,64 @@ static void test_ui(void)
     printf("UI: 400 telemetry/mode/alert cycles, identical-value skip and %u KiB host pool passed (peak %zu, free %zu, largest %zu)\n",
            (unsigned)(LV_MEM_SIZE/1024U),m.max_used,m.free_size,m.free_biggest_size);
 }
+static unsigned check_partial_redraw(const lv_area_t *area,const uint16_t *reference,unsigned index)
+{
+    memcpy(frame_pixels,reference,sizeof(frame_pixels));
+    /* 模拟 GRAM 中局部像素丢失，只有本次失效范围的重绘能恢复它们。 */
+    for(int32_t y=area->y1;y<=area->y2;y++) {
+        for(int32_t x=area->x1;x<=area->x2;x++) frame_pixels[y*800+x]^=0xFFFFU;
+    }
+    lv_obj_invalidate_area(lv_screen_active(),area);lv_refr_now(NULL);
+    unsigned quantized=0;
+    for(unsigned i=0;i<800U*480U;i++) {
+        uint16_t actual=frame_pixels[i],expected=reference[i];
+        if(actual==expected) continue;
+        /* LVGL 的 RGB565 反锯齿在极窄裁剪时有尾像素量化差；旧版也可复现。
+         * 每个颜色通道最多相差一个量化级，丢绘或颜色错误仍会失败。 */
+        if(abs((int)(actual>>11)-(int)(expected>>11))>1 ||
+           abs((int)((actual>>5)&63U)-(int)((expected>>5)&63U))>1 ||
+           abs((int)(actual&31U)-(int)(expected&31U))>1) {
+            fprintf(stderr,"Partial redraw %u failed: (%ld,%ld)..(%ld,%ld), pixel (%u,%u): %04X expected %04X\n",
+                    index,(long)area->x1,(long)area->y1,(long)area->x2,(long)area->y2,
+                    i%800U,i/800U,actual,expected);
+            abort();
+        }
+        quantized++;
+    }
+    return quantized;
+}
+
+static void test_partial_redraw(void)
+{
+    static uint16_t reference[800*480];
+    uint32_t random=0x7B21U;
+    unsigned cases=0,quantized=0;
+    lv_obj_invalidate(lv_screen_active());lv_refr_now(NULL);
+    memcpy(reference,frame_pixels,sizeof(reference));
+    /* 每一像素行、跨绘制缓冲边界的单像素列，以及不规则小矩形。 */
+    for(int32_t y=0;y<480;y++) {
+        const lv_area_t area={0,y,799,y};
+        quantized+=check_partial_redraw(&area,reference,cases++);
+    }
+    for(int32_t x=0;x<800;x+=7) {
+        const lv_area_t area={x,0,x,479};
+        quantized+=check_partial_redraw(&area,reference,cases++);
+    }
+    for(unsigned i=0;i<128U;i++) {
+        random=random*1664525U+1013904223U;
+        int32_t x=(int32_t)(random%800U);
+        random=random*1664525U+1013904223U;
+        int32_t y=(int32_t)(random%480U);
+        random=random*1664525U+1013904223U;
+        int32_t x2=x+(int32_t)(random%31U),y2=y+(int32_t)((random>>8)%23U);
+        const lv_area_t area={x,y,x2<800?x2:799,y2<480?y2:479};
+        quantized+=check_partial_redraw(&area,reference,cases++);
+    }
+    memcpy(frame_pixels,reference,sizeof(frame_pixels));
+    printf("UI partial redraw: %u row/column/random regions passed, %u pixels within one RGB565 level\n",cases,quantized);
+    assert(cases==723U);
+}
+
 /* 方向盘转角环：UI 副本与有效位、圆弧方向（左转为正，自 12 点逆时针）、±180° 限幅、无效时清空。
  * 环心 (558,83)、外半径 25、环宽 5，取环上 9/3/6 点钟及 12 点钟两侧的像素判断是否为白色圆弧；
  * 探针避开 90° 整数边界（9/3 点钟取上移 3 px），免得落在圆弧端点的抗锯齿边上。 */
@@ -2016,7 +2074,7 @@ int main(int argc,char **argv)
     else test_splash();
 #endif
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_single_antenna();test_default_mode();test_ui();test_steering_ring();test_motor_peak();test_gps_motion();test_can_tx_sustained();
+    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_single_antenna();test_default_mode();test_ui();test_partial_redraw();test_steering_ring();test_motor_peak();test_gps_motion();test_can_tx_sustained();
     /* 完整负载后检查分配器和连续余量，受限池测试也走同一条路径。 */
     lv_mem_monitor_t memory;lv_mem_monitor(&memory);
     assert(lv_mem_test()==LV_RESULT_OK&&memory.free_biggest_size>=4096U);

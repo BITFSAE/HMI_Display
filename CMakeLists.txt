@@ -1,4 +1,11 @@
 cmake_minimum_required(VERSION 3.12.4)
+# 支持库回溯查找的链接器无需重复静态库；传统链接器仍保留循环依赖所需的重复项。
+if(POLICY CMP0156)
+    cmake_policy(SET CMP0156 NEW)
+endif()
+if(POLICY CMP0179)
+    cmake_policy(SET CMP0179 NEW)
+endif()
 project(lvgl C CXX)
 
 # Select a FreeRTOS port suitable for the host build environment

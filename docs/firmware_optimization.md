@@ -3,20 +3,7 @@
 ## 构建与占用
 
 目标为 STM32F407ZET6、SSD1963 和 800×480 屏幕。Flash 为 512 KiB，其中最后一个 128 KiB 扇区存放里程（[里程存储](odometer_storage.md)），程序区上限 384 KiB；主 SRAM 为 128 KiB，CCM 为 64 KiB。
-基线是 `5f36b74`，两次固件构建均使用 GNU Tools for STM32 14.3.1。Flash 按 ELF 的最高装载地址计算，包含对齐和 `.data` 初值。
-
-| 项目 | 优化前 | 优化后 |
-| --- | ---: | ---: |
-| Flash | 425,260 B（81.1%） | 227,704 B（43.4%） |
-| 主 SRAM 预算 | 78,664 B | 96,520 B（73.6%） |
-| MSP 栈预留 | 1 KiB | 8 KiB |
-| Dashboard 栈 | 8 KiB | 12 KiB |
-| FreeRTOS 堆 | 32 KiB | 16 KiB |
-| LVGL 内存池 | CCM 中 60 KiB | CCM 中 60 KiB |
-
-Flash 节省 197,556 B，剩余 296,584 B。
-
-上表为早期优化记录；后续功能已改变资源占用。当前值以 `./build_fw.sh` 的内存报告为准，各次改动的验证结果见[更新记录](../CHANGELOG.md)。
+当前占用以 `./build_fw.sh` 的内存报告为准。Flash 按 ELF 的最高装载地址计算，包含对齐和 `.data` 初值；各次改动的对比见[更新记录](../CHANGELOG.md)。
 
 主 SRAM 预算包含静态变量、FreeRTOS 堆和链接器预留。任务栈已经计入静态变量或 FreeRTOS 堆，不应重复相加。CCM 内存池通过 `LV_MEM_ADR` 指定地址，普通 `size` 输出不会列出它；CCM 的剩余 4 KiB 尚未分配。链接器禁止其他 `.ccmram` 数据覆盖内存池，并检查主 SRAM 能否容纳堆和 MSP 预留。
 
@@ -28,7 +15,7 @@ FW_OPT=-O0 ./build_fw.sh  # 排查优化相关问题时使用；默认恢复为 
 
 命令行构建需要 Python 3 生成内存报告。CubeMX 的堆大小、Idle 栈和主栈配置已同步。CubeIDE Debug 与 CMake 构建（`stm32_port/CMakeLists.txt`，VS Code 的 STM32Cube 扩展和 `build_fw.sh` 共用）均使用 `-Os -g3`、Cortex-M4F 硬浮点。
 产物位于 `stm32_port/build/Debug/`，包括 ELF、BIN、HEX、MAP 和 `.memory.json`。BIN 的烧录地址为 `0x08000000`；HEX 自带地址。
-历史提交中的 `stm32_port/Debug/` 产物未更新，使用 CubeIDE 时需重新构建。
+CubeIDE 使用独立构建目录，需另做完整构建。
 
 ## CCM 预留与运行用量
 
@@ -84,13 +71,14 @@ GPS 每 10 ms 读取循环 DMA，优先级高于绘制任务。配置接收机�
 
 上板时同时运行 CAN、20 Hz GPS、触摸、告警切换和里程保存。检查各任务栈余量、LVGL 最大空闲块、队列丢帧计数及 GPS 最长读取间隔；里程写入造成的短暂停转应不使 `g_gps_poll_gap_max_ms` 接近 44 ms。实际帧率、栈最低余量和电气时序需要真机数据确认。
 
-## 已执行的验证
+## 验证方法与范围
 
 ```bash
-python3 tools/run_firmware_tests.py --png /tmp/dash   # 另存六帧界面截图
+python3 tools/run_firmware_tests.py --png /tmp/dash   # 八帧仪表与七帧开屏截图
+python3 tools/run_firmware_tests.py --lvgl-pool-kib 64 --compare-ref d4f8465
 ./run_sim_mac.sh --build-only
 ```
 
-固件全量构建、增量构建和模拟器构建通过。切换 `-O0` 后对象会重编，恢复 `-Os` 的 BIN 与此前逐字节一致。主机回归直接编译固件应用代码与固件 LVGL，外设和 RTOS 使用模拟实现，并启用 AddressSanitizer、UndefinedBehaviorSanitizer。验证范围包括 CAN 队列饱和与异常帧、帧解码与轮位映射、0x4B0 有效位与功率符号、PDM 离线占位、接收超时与恢复、方向盘帧上升沿和非法参数；BMS SOP 的 `0x4A0/0x4A3`（CRC、版本、保留位、超时）；里程 Flash 的空扇区、重启恢复、写入中断、编程失败、残留数据、写满后启动擦除和擦除失败；GPS 异常数值和时钟回绕；400 轮遥测、模式和告警更新；驾驶模式色块的命中区、五档轮转、0x310 内容、长按与松手抖动、发送队列满后的恢复和计时锁。并渲染五种模式、告警、READY 和上电无数据共八帧 800×480 RGB565 图像。
+主机回归直接编译固件应用代码与固件 LVGL，外设和 RTOS 使用模拟实现，并启用 AddressSanitizer、UndefinedBehaviorSanitizer。验证范围包括 CAN 队列饱和与异常帧、帧解码与轮位映射、0x4B0 有效位与功率符号、PDM 离线占位、接收超时与恢复、方向盘帧上升沿和非法参数；BMS SOP 的 `0x4A0/0x4A3`（CRC、版本、保留位、超时）；里程 Flash 的空扇区、重启恢复、写入中断、编程失败、残留数据、写满后启动擦除和擦除失败；GPS 异常数值和时钟回绕；400 轮遥测、模式和告警更新；驾驶模式色块的命中区、五档轮转、0x310 内容、长按与松手抖动、发送队列满后的恢复和计时锁。局部重绘测试覆盖单像素行列和随机小区域。截图对比覆盖八帧仪表及七帧开屏；压力池参数只限制当前版本，旧版基线沿用自身默认池。
 
 主机指针为 64 位，默认测试池是固件池的两倍；`--lvgl-pool-kib 64` 可用受限池运行完整回归。主机结果不代表 STM32 的池余量，也不验证真实中断时序或 RTOS 竞争。目标内存余量由上板诊断确认。`.su` 报告只列单函数栈帧，不等于完整调用链所需栈。
