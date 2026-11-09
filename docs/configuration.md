@@ -84,7 +84,7 @@ UM982 启动时依次发送（每条等待回执并继续读取 DMA，无回执�
 | --- | --- | --- | --- | --- |
 | LVGL 刷新周期 | 16 | `main.c` `lv_timer_set_period` | ms | 新车速最多等一个周期上屏；模拟器仍为 33 ms |
 | LVGL 绘制缓冲 | 800×10 行 RGB565 = 16,000 | `g_lvgl_draw_buf` | B，主 SRAM | 行数增大减少刷新次数但占 RAM |
-| LVGL 内存池 | 60 KiB，CCM `0x10000000` | `LV_MEM_SIZE`、`LV_MEM_ADR`（`stm32_port/Core/lv_conf.h`） | B | CCM 共 64 KiB，仅剩 4 KiB；耗尽触发 LVGL 断言停机。链接脚本禁止其他数据占用该区 |
+| LVGL 内存池 | 60 KiB，CCM `0x10000000` | `LV_MEM_SIZE`、`LV_MEM_ADR`（`stm32_port/Core/lv_conf.h`） | B | 固定预留容量，不是实时分配量；池耗尽触发 LVGL 断言。运行余量见[资源与诊断](firmware_optimization.md#ccm-预留与运行用量) |
 | 夜间背光 | 45 | `BACKLIGHT_NIGHT_COMPARE` / `BACKLIGHT_PWM_PERIOD` = 450 / 1000 | 占空比，‰ | 模拟器用 55% 黑色遮罩模拟 |
 | Dashboard 循环延时 | 5..20（启动期 ≤16） | `freertos.c` | ms | 取 `lv_timer_handler` 返回值并限幅 |
 | 告警队列 | 6 条，每条 ≤32 字符 | `DASHBOARD_ALERT_MAX`、`DASHBOARD_ALERT_TEXT_MAX` | — | |

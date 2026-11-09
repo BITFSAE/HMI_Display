@@ -209,10 +209,8 @@ static lv_style_t st_large;     /* 36 px */
 static lv_style_t st_xl;        /* 56 px */
 static lv_style_t st_mode_name; /* 14 px drive-mode name inside the tile */
 static lv_style_t st_speed;     /* 180 px digits */
-static lv_style_t st_unit;      /* 18 px grey units */
 static lv_style_t st_right;
 static lv_style_t st_center;
-static lv_style_t st_line;      /* 1 px divider */
 
 static dash_bar_t s_brake_bar = {0, 100, C_RED, 1, 1};
 static dash_bar_t s_regen_bar = {0, 100, C_BLUE, 1, 1};
@@ -323,11 +321,6 @@ static lv_obj_t * make_box(lv_obj_t * parent, int32_t x, int32_t y, int32_t w, i
     return obj;
 }
 
-static void make_line(lv_obj_t * parent, int32_t x, int32_t y, int32_t w, int32_t h)
-{
-    lv_obj_add_style(make_box(parent, x, y, w, h), &st_line, 0);
-}
-
 /* width > 0 gives a fixed-width label aligned by align_style (may be NULL). */
 static lv_obj_t * make_label(lv_obj_t * parent, lv_style_t * style, int32_t x, int32_t y,
                              int32_t width, lv_style_t * align_style, const char * text)
@@ -353,6 +346,90 @@ static void init_style(lv_style_t * style, const lv_font_t * font, uint32_t colo
 }
 
 /* ------------------------------------------------------- draw callbacks */
+
+/* 固定分隔线和标题只参与绘制，不保留 LVGL 对象、局部样式和子对象表项。
+ * 描述表留在 Flash；动态数值仍使用独立控件，保持局部失效范围。 */
+static void background_draw_cb(lv_event_t * e)
+{
+    static const struct {int16_t x, y, w, h;} lines[] = {
+        {164, 10, 1, TOP_H - 20}, {0, TOP_H, DASH_SCREEN_W, 1},
+        {TIRE_LX + TIRE_W + 9, TIRE_FY + 8, 2, TIRE_RY + TIRE_H - TIRE_FY - 16},
+        {LEFT_W, MID_Y, 1, BOTTOM_Y - MID_Y},
+        {RIGHT_X, MID_Y, 1, BOTTOM_Y - MID_Y},
+        {RIGHT_COL_X, 240, RIGHT_END_X - RIGHT_COL_X, 1},
+        {RIGHT_COL_X, 295, RIGHT_END_X - RIGHT_COL_X, 1},
+        {0, BOTTOM_Y, DASH_SCREEN_W, 1},
+        {200, BOTTOM_Y + 10, 1, DASH_SCREEN_H - BOTTOM_Y - 20},
+        {400, BOTTOM_Y + 10, 1, DASH_SCREEN_H - BOTTOM_Y - 20},
+        {600, BOTTOM_Y + 10, 1, DASH_SCREEN_H - BOTTOM_Y - 20},
+    };
+    static const struct {
+        const char * text;
+        int16_t x, y, w;
+        uint8_t centered, unit, line_space;
+    } captions[] = {
+        {"BEST", 176, 7, 86, 0, 0, 0}, {"LAST", 266, 7, 86, 0, 0, 0},
+        {"ODO KM", 630, 7, 84, 0, 0, 0}, {"SLIP", 114, 66, 0, 0, 0, 0},
+        {"km/h", 268, 302, 276, 1, 1, 0},
+        {"DISCH", SOP_X, SOP_Y + 4, SOP_CAP_W, 1, 0, 0},
+        {"CHG", SOP_X, SOP_Y + SOP_ROW_H + 4, SOP_CAP_W, 1, 0, 0},
+        {"REG", 200, PEDAL_Y + PEDAL_H + 28, 44, 1, 0, 0},
+        {"MECH", 234, PEDAL_Y + PEDAL_H + 28, 44, 1, 0, 0},
+        {"THROTTLE", THROTTLE_X - 26, PEDAL_Y + PEDAL_H + 28, 84, 1, 0, 0},
+        {"SOC", RIGHT_COL_X, 60, 0, 0, 0, 0},
+        {"HV", RIGHT_COL_X, 152, 0, 0, 0, 0},
+        {"PWR", RIGHT_COL_X, 152 + RIGHT_ROW_H, 0, 0, 0, 0},
+        {"PK", RIGHT_COL_X, 152 + 2 * RIGHT_ROW_H, 0, 0, 0, 0},
+        {"TMAX", RIGHT_COL_X, 152 + 3 * RIGHT_ROW_H, 0, 0, 0, 0},
+        {"LV", RIGHT_COL_X, 251, 0, 0, 0, 0},
+        {"FAN1", RIGHT_COL_X, 306, 0, 0, 0, 0},
+        {"FAN2", RIGHT_COL_X, 306 + RIGHT_ROW_H, 0, 0, 0, 0},
+        {"FAN3", RIGHT_COL_X, 306 + 2 * RIGHT_ROW_H, 0, 0, 0, 0},
+        {"TQ\nkW\nMOT", 10, BOTTOM_Y + 34, 0, 0, 0, 10},
+        {"RPM\nPK\nINV", 106, BOTTOM_Y + 34, 0, 0, 0, 10},
+        {"TQ\nkW\nMOT", 210, BOTTOM_Y + 34, 0, 0, 0, 10},
+        {"RPM\nPK\nINV", 306, BOTTOM_Y + 34, 0, 0, 0, 10},
+        {"TQ\nkW\nMOT", 410, BOTTOM_Y + 34, 0, 0, 0, 10},
+        {"RPM\nPK\nINV", 506, BOTTOM_Y + 34, 0, 0, 0, 10},
+        {"TQ\nkW\nMOT", 610, BOTTOM_Y + 34, 0, 0, 0, 10},
+        {"RPM\nPK\nINV", 706, BOTTOM_Y + 34, 0, 0, 0, 10},
+    };
+    lv_layer_t * layer = lv_event_get_layer(e);
+    lv_area_t origin;
+    const lv_area_t * clip = &layer->_clip_area;
+    lv_obj_get_coords(lv_event_get_current_target_obj(e), &origin);
+    for(uint32_t i = 0U; i < sizeof(lines) / sizeof(lines[0]); i++) {
+        lv_area_t a = {origin.x1 + lines[i].x, origin.y1 + lines[i].y,
+                       origin.x1 + lines[i].x + lines[i].w - 1,
+                       origin.y1 + lines[i].y + lines[i].h - 1};
+        if(a.x2 < clip->x1 || a.x1 > clip->x2 || a.y2 < clip->y1 || a.y1 > clip->y2) continue;
+        fill_rect(layer, a.x1, a.y1, a.x2, a.y2, C_LINE);
+    }
+    for(uint32_t i = 0U; i < sizeof(captions) / sizeof(captions[0]); i++) {
+        const lv_font_t * font = captions[i].unit ? &dash_font_s : &dash_font_xs;
+        const int32_t top = origin.y1 + captions[i].y;
+        /* 先按单行高度剔除；多行标题保守延伸到屏底，再用实际文字尺寸裁剪。 */
+        const int32_t bottom = captions[i].line_space ? origin.y2 : top + font->line_height - 1;
+        if(top > clip->y2 || bottom < clip->y1 || origin.x1 + captions[i].x > clip->x2) continue;
+        lv_draw_label_dsc_t dsc;
+        lv_point_t size;
+        lv_draw_label_dsc_init(&dsc);
+        dsc.text = captions[i].text;
+        dsc.font = font;
+        dsc.color = lv_color_hex(C_DIM);
+        dsc.letter_space = captions[i].unit ? 0 : 1;
+        dsc.line_space = captions[i].line_space;
+        dsc.align = captions[i].centered ? LV_TEXT_ALIGN_CENTER : LV_TEXT_ALIGN_LEFT;
+        lv_text_get_size(&size, dsc.text, dsc.font, dsc.letter_space, dsc.line_space,
+                         LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        dsc.text_size = size;
+        lv_area_t a = {origin.x1 + captions[i].x, origin.y1 + captions[i].y,
+                       origin.x1 + captions[i].x + (captions[i].w ? captions[i].w : size.x) - 1,
+                       origin.y1 + captions[i].y + size.y - 1};
+        if(a.x2 < clip->x1 || a.x1 > clip->x2 || a.y2 < clip->y1 || a.y1 > clip->y2) continue;
+        lv_draw_label(layer, &dsc, &a);
+    }
+}
 
 /* Generic bar: track + proportional fill, optional 25/50/75 % gaps. */
 static void bar_draw_cb(lv_event_t * e)
@@ -517,8 +594,7 @@ static void logo_draw_cb(lv_event_t * e)
 static lv_obj_t * top_block(lv_obj_t * scr, int32_t x, int32_t w, const char * caption,
                             lv_obj_t ** caption_out)
 {
-    lv_obj_t * cap = make_label(scr, &st_caption, x, 7, w, NULL, caption);
-    if(caption_out != NULL) *caption_out = cap;
+    if(caption_out != NULL) *caption_out = make_label(scr, &st_caption, x, 7, w, NULL, caption);
     return make_label(scr, &st_value_m, x, 23, w, NULL, "");
 }
 
@@ -527,10 +603,9 @@ static void create_top(lv_obj_t * scr)
     lv_obj_t * logo = make_box(scr, 12, (TOP_H - (int32_t)dash_logo.header.h) / 2,
                                dash_logo.header.w, dash_logo.header.h);
     lv_obj_add_event_cb(logo, logo_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
-    make_line(scr, 164, 10, 1, TOP_H - 20);
 
-    ui.best = top_block(scr, 176, 86, "BEST", NULL);
-    ui.last = top_block(scr, 266, 86, "LAST", NULL);
+    ui.best = top_block(scr, 176, 86, NULL, NULL);
+    ui.last = top_block(scr, 266, 86, NULL, NULL);
 
     ui.delta = make_label(scr, &st_value_m, 356, 4, 148, &st_center, "");
     ui.delta_bar = make_box(scr, 364, 33, 132, 9);
@@ -538,17 +613,15 @@ static void create_top(lv_obj_t * scr)
 
     ui.lap_count = top_block(scr, 516, 46, "LAP", &ui.lap_caption);
     ui.left_value = top_block(scr, 566, 56, "LEFT", &ui.left_caption);
-    ui.odometer = top_block(scr, 630, 84, "ODO KM", NULL);
+    ui.odometer = top_block(scr, 630, 84, NULL, NULL);
 
     ui.gps_caption = make_label(scr, &st_caption, 730, 7, 0, NULL, "GPS");
-    /* 单天线标记：两个标签都在建界面时分配好，切换只改隐藏标志。真机 LVGL 池只有 60 KB，
-     * 池耗尽会断言死循环，所以不能在运行中换文字或加本地样式。 */
+    /* 单天线标记预建两个标签，切换只改隐藏标志，避免运行时重新分配文字或样式。 */
     ui.gps_caption_single = make_label(scr, &st_caption_warn, 730, 7, 0, NULL, "GPS 1");
     lv_obj_add_flag(ui.gps_caption_single, LV_OBJ_FLAG_HIDDEN);
     ui.signal = make_box(scr, 730, 24, 44, 20);
     lv_obj_add_event_cb(ui.signal, signal_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
 
-    make_line(scr, 0, TOP_H, DASH_SCREEN_W, 1);
 }
 
 static void create_left(lv_obj_t * scr)
@@ -567,7 +640,6 @@ static void create_left(lv_obj_t * scr)
     ui.mode_name = make_label(ui.mode_tile, &st_mode_name, 0, 58, MODE_W, &st_center,
                               "Acceleration");
 
-    make_label(scr, &st_caption, 114, 66, 0, NULL, "SLIP");
     ui.slip_value = make_label(scr, &st_xl, 114, 92, 0, NULL, "0");
     ui.slip_meter = make_box(scr, 14, 158, 172, 8);
     lv_obj_add_event_cb(ui.slip_meter, slip_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
@@ -585,8 +657,6 @@ static void create_left(lv_obj_t * scr)
                                            tire_y[wheel] + (TIRE_H - 19) / 2, 42,
                                            wheel < 2U ? &st_right : NULL, "");
     }
-    /* Chassis hint between the tyres. */
-    make_line(scr, TIRE_LX + TIRE_W + 9, TIRE_FY + 8, 2, TIRE_RY + TIRE_H - TIRE_FY - 16);
 
     ui.night_button = make_box(scr, NIGHT_X, NIGHT_Y, NIGHT_W, NIGHT_H);
     lv_obj_set_style_radius(ui.night_button, 6, 0);
@@ -597,11 +667,10 @@ static void create_left(lv_obj_t * scr)
     ui.night_icon = make_label(ui.night_button, &st_value, 0, 0, 0, NULL, LV_SYMBOL_EYE_OPEN);
     lv_obj_center(ui.night_icon);
 
-    make_line(scr, LEFT_W, MID_Y, 1, BOTTOM_Y - MID_Y);
 }
 
 static lv_obj_t * pedal(lv_obj_t * scr, int32_t x, int32_t width, dash_bar_t * bar,
-                        const char * caption, uint32_t color, lv_style_t *value_style,
+                        uint32_t color, lv_style_t *value_style,
                         int32_t label_x, int32_t label_w, lv_obj_t ** pct_out)
 {
     lv_obj_t * obj = make_box(scr, x, PEDAL_Y, width, PEDAL_H);
@@ -609,8 +678,6 @@ static lv_obj_t * pedal(lv_obj_t * scr, int32_t x, int32_t width, dash_bar_t * b
     *pct_out = make_label(scr, value_style, label_x, PEDAL_Y + PEDAL_H + 6, label_w,
                           &st_center, "0%");
     lv_obj_set_style_text_color(*pct_out, lv_color_hex(color), 0);
-    make_label(scr, &st_caption, label_x, PEDAL_Y + PEDAL_H + 28, label_w,
-               &st_center, caption);
     return obj;
 }
 
@@ -626,14 +693,10 @@ static void create_centre(lv_obj_t * scr)
     /* 三格车速的墨迹约 263 px 宽；右移 6 px 后与左侧 REG 条和右侧
      * THROTTLE 条各留约 5 px，不再因数字宽度变化压住竖条。 */
     ui.speed = make_label(scr, &st_speed, 268, 166, 276, &st_center, "--");
-    make_label(scr, &st_unit, 268, 302, 276, &st_center, "km/h");
 
     {
-        static const char * const sop_caption[2] = {"DISCH", "CHG"};
         for(uint32_t row = 0U; row < 2U; row++) {
             const int32_t y = SOP_Y + (int32_t)row * SOP_ROW_H;
-            make_label(scr, &st_caption, SOP_X, y + 4, SOP_CAP_W, &st_center,
-                       sop_caption[row]);
             ui.sop_power[row] = make_label(scr, &st_value, SOP_POWER_X, y, SOP_POWER_W,
                                            &st_center, "");
             ui.sop_current[row] = make_label(scr, &st_value, SOP_CURRENT_X, y, SOP_CURRENT_W,
@@ -643,11 +706,11 @@ static void create_centre(lv_obj_t * scr)
 
     /* 两条制动条放在车速数字左侧；三格车速的墨迹会伸到约 x268，
      * 条块一旦进入该范围就会压住数字。 */
-    ui.regen_bar = pedal(scr, REGEN_X, BRAKE_PEDAL_W, &s_regen_bar, "REG", C_BLUE,
+    ui.regen_bar = pedal(scr, REGEN_X, BRAKE_PEDAL_W, &s_regen_bar, C_BLUE,
                          &st_aux_value, 200, 44, &ui.regen_pct);
-    ui.brake_bar = pedal(scr, MECH_X, BRAKE_PEDAL_W, &s_brake_bar, "MECH", C_RED,
+    ui.brake_bar = pedal(scr, MECH_X, BRAKE_PEDAL_W, &s_brake_bar, C_RED,
                          &st_aux_value, 234, 44, &ui.brake_pct);
-    ui.throttle_bar = pedal(scr, THROTTLE_X, PEDAL_W, &s_throttle_bar, "THROTTLE", C_GREEN,
+    ui.throttle_bar = pedal(scr, THROTTLE_X, PEDAL_W, &s_throttle_bar, C_GREEN,
                             &st_value, THROTTLE_X - 26, 84, &ui.throttle_pct);
 
     ui.steer_ring = make_box(scr, STEER_X, STEER_Y, STEER_D, STEER_D);
@@ -666,11 +729,9 @@ static void create_centre(lv_obj_t * scr)
     lv_obj_add_flag(ui.alert_box, LV_OBJ_FLAG_HIDDEN);
 }
 
-/* Right column row: caption plus one value at RIGHT_VAL_X and an optional
- * second value right-aligned to RIGHT_END_X. */
-static lv_obj_t * right_row(lv_obj_t * scr, int32_t y, const char * caption, lv_obj_t ** second)
+/* 右栏数值从 RIGHT_VAL_X 起，第二列向 RIGHT_END_X 右对齐；固定标题随背景绘制。 */
+static lv_obj_t * right_row(lv_obj_t * scr, int32_t y, lv_obj_t ** second)
 {
-    make_label(scr, &st_caption, RIGHT_COL_X, y + 4, 0, NULL, caption);
     if(second != NULL) {
         *second = make_label(scr, &st_value, RIGHT_END_X - 66, y, 66, &st_right, "");
     }
@@ -679,26 +740,20 @@ static lv_obj_t * right_row(lv_obj_t * scr, int32_t y, const char * caption, lv_
 
 static void create_right(lv_obj_t * scr)
 {
-    make_line(scr, RIGHT_X, MID_Y, 1, BOTTOM_Y - MID_Y);
-
-    make_label(scr, &st_caption, RIGHT_COL_X, 60, 0, NULL, "SOC");
     ui.soc = make_label(scr, &st_xl, RIGHT_COL_X, 74, 0, NULL, "0%");
     ui.soc_bar = make_box(scr, RIGHT_COL_X, 126, RIGHT_END_X - RIGHT_COL_X, 10);
     lv_obj_add_event_cb(ui.soc_bar, bar_draw_cb, LV_EVENT_DRAW_MAIN, &s_soc_bar);
 
-    ui.hv_voltage = right_row(scr, 148, "HV", &ui.hv_current);
-    ui.power_live = right_row(scr, 148 + RIGHT_ROW_H, "PWR", NULL);
+    ui.hv_voltage = right_row(scr, 148, &ui.hv_current);
+    ui.power_live = right_row(scr, 148 + RIGHT_ROW_H, NULL);
     /* PK: highest power and highest discharge current since power-on. */
-    ui.power_peak = right_row(scr, 148 + 2 * RIGHT_ROW_H, "PK", &ui.current_peak);
-    ui.max_temp = right_row(scr, 148 + 3 * RIGHT_ROW_H, "TMAX", NULL);
-    make_line(scr, RIGHT_COL_X, 240, RIGHT_END_X - RIGHT_COL_X, 1);
-    ui.lv_voltage = right_row(scr, 247, "LV", &ui.lv_current);
-    ui.lv_power = right_row(scr, 247 + RIGHT_ROW_H, "", NULL);
-    make_line(scr, RIGHT_COL_X, 295, RIGHT_END_X - RIGHT_COL_X, 1);
+    ui.power_peak = right_row(scr, 148 + 2 * RIGHT_ROW_H, &ui.current_peak);
+    ui.max_temp = right_row(scr, 148 + 3 * RIGHT_ROW_H, NULL);
+    ui.lv_voltage = right_row(scr, 247, &ui.lv_current);
+    ui.lv_power = right_row(scr, 247 + RIGHT_ROW_H, NULL);
     {
-        static const char * const fan_caption[3] = {"FAN1", "FAN2", "FAN3"};
         for(uint32_t fan = 0U; fan < 3U; fan++) {
-            ui.fan_duty[fan] = right_row(scr, 302 + (int32_t)fan * RIGHT_ROW_H, fan_caption[fan],
+            ui.fan_duty[fan] = right_row(scr, 302 + (int32_t)fan * RIGHT_ROW_H,
                                          &ui.fan_rpm[fan]);
         }
     }
@@ -709,10 +764,6 @@ static void create_bottom(lv_obj_t * scr)
     static const char * const names[4] = {"FL", "RL", "FR", "RR"};
     static const uint8_t column[4] = {0, 2, 1, 3};   /* screen order FL FR RL RR */
 
-    make_line(scr, 0, BOTTOM_Y, DASH_SCREEN_W, 1);
-    for(uint32_t col = 1U; col < 4U; col++) {
-        make_line(scr, (int32_t)col * 200, BOTTOM_Y + 10, 1, DASH_SCREEN_H - BOTTOM_Y - 20);
-    }
     for(uint32_t wheel = 0U; wheel < 4U; wheel++) {
         dash_motor_ui_t * m = &ui.motors[wheel];
         int32_t x = (int32_t)column[wheel] * 200;
@@ -725,11 +776,6 @@ static void create_bottom(lv_obj_t * scr)
         lv_obj_set_style_radius(m->diag, 4, 0);
         lv_obj_set_style_bg_color(m->diag, lv_color_hex(C_ALERT), 0);
 
-        /* Multi-line captions share the 24 px row pitch of the value labels. */
-        lv_obj_t * cap = make_label(scr, &st_caption, x + 10, y + 4, 0, NULL, "TQ\nkW\nMOT");
-        lv_obj_set_style_text_line_space(cap, 10, 0);
-        cap = make_label(scr, &st_caption, x + 106, y + 4, 0, NULL, "RPM\nPK\nINV");
-        lv_obj_set_style_text_line_space(cap, 10, 0);
         m->torque = make_label(scr, &st_value, x + 36, y, 62, &st_right, "");
         m->power = make_label(scr, &st_value, x + 36, y + 24, 62, &st_right, "");
         m->motor_temp = make_label(scr, &st_value, x + 36, y + 48, 62, &st_right, "");
@@ -747,6 +793,7 @@ void Dash_View_Create(void)
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(scr, lv_color_hex(C_BG), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(scr, background_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
 
     init_style(&st_caption, &dash_font_xs, C_DIM);
     lv_style_set_text_letter_space(&st_caption, 1);
@@ -759,14 +806,10 @@ void Dash_View_Create(void)
     init_style(&st_xl, &dash_font_xl, C_TEXT);
     init_style(&st_mode_name, &dash_font_xs, C_TEXT);
     init_style(&st_speed, &dash_font_speed, C_TEXT);
-    init_style(&st_unit, &dash_font_s, C_DIM);
     lv_style_init(&st_right);
     lv_style_set_text_align(&st_right, LV_TEXT_ALIGN_RIGHT);
     lv_style_init(&st_center);
     lv_style_set_text_align(&st_center, LV_TEXT_ALIGN_CENTER);
-    lv_style_init(&st_line);
-    lv_style_set_bg_color(&st_line, lv_color_hex(C_LINE));
-    lv_style_set_bg_opa(&st_line, LV_OPA_COVER);
 
     create_top(scr);
     create_left(scr);

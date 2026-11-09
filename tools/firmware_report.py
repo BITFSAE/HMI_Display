@@ -50,7 +50,8 @@ def report(elf, prefix, stack_dir):
             raise ValueError(f"{region} exceeds hardware capacity: {used} > {capacity}")
         print(f"{region:5}: {used:6,d} / {capacity:6,d} bytes ({used / capacity:5.1%}), free {capacity - used:,d}")
     print("SRAM includes linker heap/MSP reservation; RTOS stacks are inside .bss or its heap.")
-    print("CCM includes the 60 KiB LVGL pool at LV_MEM_ADR, which ELF size omits.")
+    print(f"CCM includes a {pool // 1024} KiB LVGL reservation at LV_MEM_ADR, which ELF size omits.")
+    print("This is reserved capacity, not live usage; g_firmware_diag.lvgl_* reports runtime allocations.")
     if stack_dir:
         frames = []
         for path in Path(stack_dir).rglob("*.su"):

@@ -1759,7 +1759,8 @@ static void test_ui(void)
         assert(g_speed==kmh&&Dashboard_UI_GetCurrentData()->speed==kmh);
     }
     lv_mem_monitor_t m;lv_mem_monitor(&m);assert(m.free_size>1024);
-    printf("UI: 400 telemetry/mode/alert cycles, identical-value skip and 120 KiB host pool passed (peak %zu, free %zu)\n",m.max_used,m.free_size);
+    printf("UI: 400 telemetry/mode/alert cycles, identical-value skip and %u KiB host pool passed (peak %zu, free %zu, largest %zu)\n",
+           (unsigned)(LV_MEM_SIZE/1024U),m.max_used,m.free_size,m.free_biggest_size);
 }
 /* 方向盘转角环：UI 副本与有效位、圆弧方向（左转为正，自 12 点逆时针）、±180° 限幅、无效时清空。
  * 环心 (558,83)、外半径 25、环宽 5，取环上 9/3/6 点钟及 12 点钟两侧的像素判断是否为白色圆弧；
@@ -1921,7 +1922,7 @@ static void test_splash(void)
     assert(!Splash_View_IsActive()&&lv_obj_get_child_count(lv_screen_active())==children-1U);
     lv_mem_monitor_t without_overlay;lv_mem_monitor(&without_overlay);
     size_t overlay_bytes=(with_overlay.total_size-with_overlay.free_size)-(without_overlay.total_size-without_overlay.free_size);
-    assert(overlay_bytes<1024);   /* 覆盖层对象 + 事件表 + 局部样式；LVGL 池几乎没有余量，不能多占 */
+    assert(overlay_bytes<1024);   /* 覆盖层对象、事件表和局部样式的分配预算。 */
     memcpy(splash_ref,frame_pixels,sizeof(frame_pixels));       /* 开屏结束后的仪表，后面的重放必须还原成它 */
     assert(splash_nonblack(0,480)>0);
 
@@ -2015,6 +2016,12 @@ int main(int argc,char **argv)
     else test_splash();
 #endif
     if(argc==2) {render_modes(argv[1]);return 0;}
-    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_single_antenna();test_default_mode();test_ui();test_steering_ring();test_motor_peak();test_gps_motion();test_can_tx_sustained();return 0;
+    test_can();test_can_tx_recovery();test_brake_pedal_module();test_can_decode();test_brake_pedal_can();test_steering();test_odometer();test_gps();test_speed_module();test_gps_pipeline();test_continuity();test_gps_link();test_gps_config();test_cli();test_ui_speed();test_mode_touch();test_mode_touch_release();test_single_antenna();test_default_mode();test_ui();test_steering_ring();test_motor_peak();test_gps_motion();test_can_tx_sustained();
+    /* 完整负载后检查分配器和连续余量，受限池测试也走同一条路径。 */
+    lv_mem_monitor_t memory;lv_mem_monitor(&memory);
+    assert(lv_mem_test()==LV_RESULT_OK&&memory.free_biggest_size>=4096U);
+    printf("UI memory final: %u KiB host pool, peak %zu, free %zu, largest %zu, allocator intact\n",
+           (unsigned)(LV_MEM_SIZE/1024U),memory.max_used,memory.free_size,memory.free_biggest_size);
+    return 0;
 }
 /* USER CODE END Firmware_Regression */

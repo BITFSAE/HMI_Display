@@ -5,6 +5,7 @@
                  (6 boot frames + 1 replay frame) to PNG
 --compare-ref R  require the rendered frames to match git ref R pixel for pixel
                  (R must already contain dashboard_view.c)
+--lvgl-pool-kib N override the host LVGL pool to stress the firmware memory budget
 """
 import argparse
 from contextlib import nullcontext
@@ -52,7 +53,10 @@ def main():
     parser.add_argument('--compare-ref', help='Git ref whose UI pixels should remain unchanged')
     parser.add_argument('--png', type=Path, help='Write rendered dashboard frames as PNG into this directory')
     parser.add_argument('--build-dir', type=Path, help='Reuse a local build directory')
+    parser.add_argument('--lvgl-pool-kib', type=int, help='Host LVGL pool size in KiB (default: twice the firmware pool)')
     args = parser.parse_args()
+    if args.lvgl_pool_kib is not None and args.lvgl_pool_kib < 2:
+        parser.error('--lvgl-pool-kib must be at least 2')
     if args.build_dir:
         args.build_dir.mkdir(parents=True, exist_ok=True)
     context = nullcontext(str(args.build_dir.resolve())) if args.build_dir else tempfile.TemporaryDirectory(prefix='hmi-regression-')
@@ -86,7 +90,11 @@ def main():
             # Features match the firmware. Host pointers are 64 bits; double the
             # pool for headless rendering. Target margin is measured on board.
             config = (core / 'lv_conf.h').read_text()
-            config = config.replace('#endif /*LV_CONF_H*/', '\n#undef LV_MEM_SIZE\n#define LV_MEM_SIZE (120 * 1024U)\n#undef LV_MEM_ADR\n#define LV_MEM_ADR 0\n#undef LV_ASSERT_HANDLER_INCLUDE\n#define LV_ASSERT_HANDLER_INCLUDE "firmware_diag.h"\n#undef LV_ASSERT_HANDLER\n#define LV_ASSERT_HANDLER Firmware_Diag_LvglAssert();\n#endif /*LV_CONF_H*/')
+            target_pool = re.search(r'#define\s+LV_MEM_SIZE\s+\((\d+)\s*\*\s*1024U\)', config)
+            if target_pool is None:
+                raise ValueError('Cannot determine firmware LVGL pool size')
+            host_pool_kib = args.lvgl_pool_kib if args.lvgl_pool_kib is not None else int(target_pool[1]) * 2
+            config = config.replace('#endif /*LV_CONF_H*/', f'\n#undef LV_MEM_SIZE\n#define LV_MEM_SIZE ({host_pool_kib} * 1024U)\n#undef LV_MEM_ADR\n#define LV_MEM_ADR 0\n#undef LV_ASSERT_HANDLER_INCLUDE\n#define LV_ASSERT_HANDLER_INCLUDE "firmware_diag.h"\n#undef LV_ASSERT_HANDLER\n#define LV_ASSERT_HANDLER Firmware_Diag_LvglAssert();\n#endif /*LV_CONF_H*/')
             write_changed(conf, config)
             directory = work / label
             directory.mkdir(exist_ok=True)
@@ -121,6 +129,10 @@ def main():
             for frame in range(FRAMES):
                 assert (work / f'current/mode-{frame}.rgb565').read_bytes() == (work / f'baseline/mode-{frame}.rgb565').read_bytes(), f'Frame {frame}: rendered pixels changed'
             print(f'All {FRAMES} 800x480 frames match the baseline pixel for pixel')
+            if (work / 'baseline_tree/stm32_port/Core/Src/splash_view.c').exists():
+                for frame in range(SPLASH_FRAMES):
+                    assert (work / f'current/splash-{frame}.rgb565').read_bytes() == (work / f'baseline/splash-{frame}.rgb565').read_bytes(), f'Splash frame {frame}: rendered pixels changed'
+                print(f'All {SPLASH_FRAMES} splash frames match the baseline pixel for pixel')
 
 
 if __name__ == '__main__':

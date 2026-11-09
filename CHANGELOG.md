@@ -2,6 +2,15 @@
 
 ## 未发布
 
+### 2026-11-09 减少 LVGL 分配并澄清 CCM 预留
+
+- 将 11 条分隔线和 27 个固定标题改为屏幕背景绘制回调，删除一个空标题标签，共减少 39 个 LVGL 对象；描述表保存在 Flash，移除两份不再使用的共享样式。动态数值仍使用独立控件，背景按裁剪区绘制，不改变触摸区域和 CAN 数据处理。
+- 对比 `d4f8465`，同一完整主机回归的 LVGL 分配峰值由 60,176 B 降到 49,680 B，减少 10,496 B（17.4%）。这些是 64 位主机数据，不作为 STM32 的实测余量。
+- 新增 `--lvgl-pool-kib` 压力测试参数，默认主机池仍为固件池的两倍。64 KiB 主机池通过完整回归，结束时空闲 21,168 B、最大连续块 17,872 B，分配器检查通过；56 KiB 主机池在完整回归中分配失败。因此本次保留固件 60 KiB CCM 池，让优化节省的空间留在池内；不据主机结果缩小真机预算。
+- 构建报告按配置显示 LVGL 预留容量，并明确 CCM 93.8% 是固定预留，运行分配量由诊断字段读取。资源说明移除过期的“当前占用”，配置表链接预留与运行用量说明。
+- 验证：`python3 tools/run_firmware_tests.py --compare-ref d4f8465 --png /tmp/dash` 全部通过（ASan/UBSan），8 张仪表和 7 张开屏图与原版逐像素一致；400 轮更新、开屏/重放/跳过和全套 CAN/GPS 回归通过。`--lvgl-pool-kib 64` 回归通过。`./build_fw.sh` 无警告：Flash 299,156 B（76.1%，较改前 +280 B），主 SRAM 108,808 B（83.0%，−24 B），CCM 61,440 B（93.8%，预留不变）。`./run_sim_mac.sh --build-only` 通过，链接器仍提示既有的重复 LVGL 库，链接配置未改；`git diff --check` 通过。
+- **未验证 / 待办**：本机未安装 CubeIDE，未完成 CubeIDE 完整构建；未烧录。需实屏核对显示与刷新耗时，运行开屏、重放、告警和连续遥测后读取 `lvgl_used_peak_bytes`、`lvgl_free_bytes` 和 `lvgl_largest_free_bytes`，据此评估是否缩小池。
+
 ### 2026-11-09 后制动油压改用 MPa 并更新标定
 
 - 按用户确认的最新 ECU DBC 截图，先在中央库提交 [fb0baab](https://github.com/BITFSAE/vehicle-interfaces/commit/fb0baab) 登记并校验 `0x305`：`OilPressure_R` 为后制动油压，Byte6..7 改名为前制动油压 `OilPressure_F`，两路单位均为 MPa。HMI 保留后油压 0.001 MPa/LSB 原始计数，前油压不参与机械制动条。

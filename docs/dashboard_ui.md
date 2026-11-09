@@ -71,6 +71,8 @@ SOP 来自 BMS 的 `0x4A0`（功率，kW）和 `0x4A3`（电流，A），接收�
 
 加入单天线标记后（对比 `2b7fde4`）：Flash +468 B，主 SRAM +24 B，CCM 不变；主机回归池峰值 59,936 → 60,176 B（多一个隐藏的琥珀色标签，约 +240 B）。标记用两个在建界面时分配好的标签切换隐藏标志，运行中不分配 LVGL 内存；目标机指针为 32 位，余量未上板实测。
 
+固定标题和分隔线由屏幕背景绘制回调生成，描述表保存在 Flash，不为每项创建 LVGL 对象。动态数值仍使用标签和独立失效区域；内存池的预留与实际用量见[资源说明](firmware_optimization.md#ccm-预留与运行用量)。
+
 ## 标识
 
 `tools/assets/BITFSAE.svg` 离线栅格化为 140×29 的 A8 透明度图（4,060 B Flash），由绘制回调 `lv_draw_image` 以白色着色。A8 在 LVGL 软件渲染中直接以 Flash 数据为遮罩混合，不经解码缓冲，不占 RAM，也无需开启 `LV_USE_IMAGE` 控件；只在顶栏重绘时参与绘制。SVG 运行时渲染需 ThorVG（C++、数十 KB Flash 与较大内存），不采用。更换标识或尺寸：替换 SVG 后运行 `tools/gen_dash_logo.sh [高度]`，必要时调整 `create_top()` 中各块的 x 坐标。

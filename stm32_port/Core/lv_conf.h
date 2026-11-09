@@ -69,12 +69,9 @@
 
 #if LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN
     /** Size of memory available for `lv_malloc()` in bytes (>= 2kB) */
-    /* 2026-10-07: the dashboard UI needs far more than the old 40/44 KiB pool.
-     * A simulator run of the same UI measured ~58 KiB steady plus a transient
-     * peak; with the 44 KiB pool lv_malloc ran out mid-boot and LV_ASSERT_HANDLER
-     * (= while(1)) froze the firmware. The pool now lives in the 64 KiB CCM RAM
-     * (LV_MEM_ADR below) which the CPU alone can access - exactly how LVGL uses
-     * it. 60 KiB keeps 4 KiB of CCM free; main SRAM gains ~50 KiB of stack room. */
+    /* 固定预留容量，不代表运行时已分配量。池放在 CPU 专用 CCM，避免挤占主 SRAM；
+     * 界面优化释放的空间保留给瞬时绘制和碎片余量。缩池前应上板核对
+     * g_firmware_diag.lvgl_used_peak_bytes 与 lvgl_largest_free_bytes。 */
     #define LV_MEM_SIZE (60 * 1024U)          /**< [bytes] */
 
     /** Size of the memory expand for `lv_malloc()` in bytes */
